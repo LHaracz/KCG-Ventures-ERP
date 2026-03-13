@@ -1,5 +1,3 @@
-import type { Schema } from "@instantdb/react";
-
 const schema = {
   calibration: {
     id: "string",
@@ -133,7 +131,7 @@ const schema = {
     id: "string",
     email: "string?",
   },
-} satisfies Schema;
+};
 
 export default schema;
 
