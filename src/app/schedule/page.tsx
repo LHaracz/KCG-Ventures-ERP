@@ -38,12 +38,12 @@ export default function SchedulePage() {
     const load = async () => {
       setIsLoading(true);
       setError(null);
-      const { data, err } = await supabase
+      const { data, error } = await supabase
         .from("schedule_events")
         .select("*")
         .eq("user_id", user.id)
         .order("start_at", { ascending: true });
-      if (err) setError(err.message);
+      if (error) setError(error.message);
       else setEvents((data || []) as ScheduleEvent[]);
       setIsLoading(false);
     };
