@@ -5,6 +5,7 @@ const APP_ID = "YOUR_APP_ID_HERE";
 
 export const db = init({
   appId: APP_ID,
-  schema,
+  // Cast to any to satisfy InstantDB's expected schema shape while using our plain object.
+  schema: schema as any,
 });
 
