@@ -359,7 +359,10 @@ export default function MicrogreensPage() {
                     onChange={(e) =>
                       setEditing({
                         ...editing,
-                        default_soak_offset_days: e.target.value,
+                        default_soak_offset_days:
+                          e.target.value === ""
+                            ? ""
+                            : Number(e.target.value),
                       })
                     }
                     className="w-full rounded-md border border-gray-300 bg-white px-2 py-1.5 text-xs text-black placeholder:text-gray-400 shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500 disabled:text-gray-500"
@@ -375,7 +378,10 @@ export default function MicrogreensPage() {
                     onChange={(e) =>
                       setEditing({
                         ...editing,
-                        light_offset_days: e.target.value,
+                        light_offset_days:
+                          e.target.value === ""
+                            ? ""
+                            : Number(e.target.value),
                       })
                     }
                     className="w-full rounded-md border border-gray-300 bg-white px-2 py-1.5 text-xs text-black placeholder:text-gray-400 shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500 disabled:text-gray-500"
@@ -391,7 +397,10 @@ export default function MicrogreensPage() {
                     onChange={(e) =>
                       setEditing({
                         ...editing,
-                        harvest_offset_days: e.target.value,
+                        harvest_offset_days:
+                          e.target.value === ""
+                            ? ""
+                            : Number(e.target.value),
                       })
                     }
                     className="w-full rounded-md border border-gray-300 bg-white px-2 py-1.5 text-xs text-black placeholder:text-gray-400 shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500 disabled:text-gray-500"
