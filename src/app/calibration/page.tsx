@@ -295,7 +295,7 @@ export default function CalibrationPage() {
           <h1 className="mb-1 text-2xl font-semibold text-zinc-900">
             Freeze Dryer Calibration
           </h1>
-          <p className="text-sm text-zinc-600">
+          <p className="text-sm text-black">
             Maintain machine-level settings and ingredient-specific profiles to
             drive feasibility and tray/schedule planning.
           </p>
@@ -307,7 +307,7 @@ export default function CalibrationPage() {
             Machine / Facility Settings
           </h2>
           {!machine && !isLoading && (
-            <p className="text-[11px] text-zinc-600">
+            <p className="text-[11px] text-black">
               No machine settings found. Create a baseline configuration for
               your freeze dryers.
             </p>
@@ -384,7 +384,7 @@ export default function CalibrationPage() {
               <h2 className="text-sm font-semibold text-zinc-900">
                 Ingredient / Material Freeze Dryer Profiles
               </h2>
-              <p className="text-[11px] text-zinc-600">
+              <p className="text-[11px] text-black">
                 Profiles override machine defaults for specific ingredients and
                 are used to compute cycle times, fresh loads, and dry fractions.
               </p>
@@ -402,7 +402,7 @@ export default function CalibrationPage() {
             <div className="lg:col-span-2">
               <div className="max-h-64 overflow-y-auto rounded-md border border-zinc-200">
                 <table className="min-w-full border-collapse text-left">
-                  <thead className="bg-zinc-50 text-[11px] text-zinc-600">
+                  <thead className="bg-zinc-50 text-[11px] text-black">
                     <tr>
                       <th className="px-2 py-1 font-medium">Name</th>
                       <th className="px-2 py-1 font-medium">Type</th>
@@ -417,7 +417,7 @@ export default function CalibrationPage() {
                       <tr>
                         <td
                           colSpan={6}
-                          className="px-2 py-3 text-center text-[11px] text-zinc-500"
+                          className="px-2 py-3 text-center text-[11px] text-black"
                         >
                           Loading profiles…
                         </td>
@@ -430,7 +430,7 @@ export default function CalibrationPage() {
                         return (
                           <tr
                             key={p.id}
-                            className={`border-b text-[11px] ${
+                            className={`border-b text-[11px] text-black ${
                               selectedProfileId === p.id
                                 ? "bg-emerald-50"
                                 : "bg-white"
@@ -473,7 +473,7 @@ export default function CalibrationPage() {
                       <tr>
                         <td
                           colSpan={6}
-                          className="px-2 py-3 text-center text-[11px] text-zinc-500"
+                          className="px-2 py-3 text-center text-[11px] text-black"
                         >
                           No profiles yet. Create profiles for key ingredients,
                           raw and dried microgreens.
@@ -491,7 +491,7 @@ export default function CalibrationPage() {
                   Derived metrics (selected profile)
                 </h3>
                 {!effectiveProfileMetrics ? (
-                  <p className="text-[11px] text-zinc-500">
+                      <p className="text-[11px] text-black">
                     Select a profile to see how it overrides machine defaults.
                   </p>
                 ) : (
@@ -718,7 +718,7 @@ export default function CalibrationPage() {
                     </button>
                     <button
                       type="button"
-                      className="text-[11px] text-zinc-500 underline"
+                      className="text-[11px] text-black underline"
                       onClick={() => setProfileEditing(null)}
                     >
                       Cancel

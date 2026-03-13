@@ -52,7 +52,7 @@ export function Navigation() {
         </nav>
         <div className="flex items-center gap-3">
           {isLoading ? (
-            <span className="text-xs text-zinc-500">Checking session…</span>
+            <span className="text-xs text-black">Checking session…</span>
           ) : user ? (
             <>
               <span className="hidden text-xs text-zinc-600 sm:inline">

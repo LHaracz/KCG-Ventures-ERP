@@ -170,7 +170,7 @@ export default function MicrogreensPage() {
   const list = useMemo(
     () =>
       rows.map((m: any) => (
-        <tr key={m.id} className="border-b text-xs">
+        <tr key={m.id} className="border-b text-xs text-black">
           <td className="px-2 py-1 font-medium text-zinc-900">{m.name}</td>
           <td className="px-2 py-1">
             {m.soaking_required ? "Yes" : "No"}
@@ -207,7 +207,7 @@ export default function MicrogreensPage() {
             <h1 className="mb-1 text-2xl font-semibold text-zinc-900">
               Microgreen Guide
             </h1>
-            <p className="text-sm text-zinc-600">
+            <p className="text-sm text-black">
               Manage microgreen parameters for scheduling and yield analysis.
             </p>
           </div>
@@ -222,7 +222,7 @@ export default function MicrogreensPage() {
 
         <section className="overflow-x-auto rounded-md border border-zinc-200 bg-white">
           <table className="min-w-full border-collapse text-left">
-            <thead className="bg-zinc-50 text-xs text-zinc-600">
+            <thead className="bg-zinc-50 text-xs text-black">
               <tr>
                 <th className="px-2 py-1 font-medium">Name</th>
                 <th className="px-2 py-1 font-medium">Soak?</th>
@@ -237,7 +237,7 @@ export default function MicrogreensPage() {
                 <tr>
                   <td
                     colSpan={6}
-                    className="px-2 py-4 text-center text-xs text-zinc-500"
+                    className="px-2 py-4 text-center text-xs text-black"
                   >
                     Loading microgreens…
                   </td>
@@ -248,7 +248,7 @@ export default function MicrogreensPage() {
                 <tr>
                   <td
                     colSpan={6}
-                    className="px-2 py-4 text-center text-xs text-zinc-500"
+                    className="px-2 py-4 text-center text-xs text-black"
                   >
                     No microgreens yet. Create your first entry to start
                     planning and logging yields.
@@ -425,9 +425,9 @@ export default function MicrogreensPage() {
                   {saving ? "Saving…" : "Save microgreen"}
                 </button>
                 <button
-                  type="button"
-                  className="text-xs text-zinc-500 underline"
-                  onClick={() => setEditing(null)}
+                type="button"
+                className="text-xs text-black underline"
+                onClick={() => setEditing(null)}
                 >
                   Cancel
                 </button>

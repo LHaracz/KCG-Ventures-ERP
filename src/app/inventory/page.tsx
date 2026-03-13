@@ -81,6 +81,51 @@ export default function InventoryPage() {
     });
   };
 
+  const handleDeleteItem = async (item: any) => {
+    if (!user) return;
+    setItemError(null);
+    const confirmed =
+      typeof window !== "undefined"
+        ? window.confirm(
+            `Delete inventory item "${item.name}"? This will delete related adjustments and BOM lines that use this item.`,
+          )
+        : true;
+    if (!confirmed) return;
+
+    try {
+      const { error: bomError } = await supabase
+        .from("bom_lines")
+        .delete()
+        .eq("inventory_item", item.id)
+        .eq("user_id", user.id);
+      if (bomError) throw bomError;
+
+      const { error: adjError } = await supabase
+        .from("inventory_adjustments")
+        .delete()
+        .eq("inventory_item", item.id)
+        .eq("user_id", user.id);
+      if (adjError) throw adjError;
+
+      const { error } = await supabase
+        .from("inventory_items")
+        .delete()
+        .eq("id", item.id)
+        .eq("user_id", user.id);
+      if (error) throw error;
+
+      setItems((prev) => prev.filter((it: any) => it.id !== item.id));
+      if (selectedItemId === item.id) {
+        setSelectedItemId("");
+      }
+      if (editing && editing.id === item.id) {
+        setEditing(null);
+      }
+    } catch (err: any) {
+      setItemError(err.message || "Failed to delete inventory item.");
+    }
+  };
+
   const handleItemSubmit = async (e: FormEvent) => {
     e.preventDefault();
     if (!user || !editing) return;
@@ -244,7 +289,7 @@ export default function InventoryPage() {
             <h1 className="mb-1 text-2xl font-semibold text-zinc-900">
               Inventory & Cycle Count
             </h1>
-            <p className="text-sm text-zinc-600">
+            <p className="text-sm text-black">
               Manage materials, capture purchases and usage, and run cycle
               counts.
             </p>
@@ -266,7 +311,7 @@ export default function InventoryPage() {
               </h2>
               <div className="max-h-64 space-y-2 overflow-y-auto">
                 {isLoading ? (
-                  <p className="text-xs text-zinc-500">Loading items…</p>
+                  <p className="text-xs text-black">Loading items…</p>
                 ) : items.length ? (
                   items.map((it: any) => (
                     <div
@@ -277,7 +322,7 @@ export default function InventoryPage() {
                         <div className="text-xs font-medium text-zinc-900">
                           {it.name}
                         </div>
-                        <div className="text-[11px] text-zinc-600">
+                        <div className="text-[11px] text-black">
                           {it.quantity_on_hand} {it.unit} on hand · Cost:
                           {` ${it.cost_per_unit} / ${it.unit}`}
                           {it.par_level != null &&
@@ -288,17 +333,26 @@ export default function InventoryPage() {
                             )}`}
                         </div>
                       </div>
-                      <button
-                        type="button"
-                        className="text-[11px] text-emerald-700 underline"
-                        onClick={() => handleEditItem(it)}
-                      >
-                        Edit
-                      </button>
+                      <div className="flex flex-col items-end gap-1 text-[11px]">
+                        <button
+                          type="button"
+                          className="text-emerald-700 underline"
+                          onClick={() => handleEditItem(it)}
+                        >
+                          Edit
+                        </button>
+                        <button
+                          type="button"
+                          className="text-red-600 underline"
+                          onClick={() => handleDeleteItem(it)}
+                        >
+                          Delete
+                        </button>
+                      </div>
                     </div>
                   ))
                 ) : (
-                  <p className="text-xs text-zinc-500">
+                  <p className="text-xs text-black">
                     No inventory items yet. Add your first material to start
                     tracking usage and cycle counts.
                   </p>
@@ -414,7 +468,7 @@ export default function InventoryPage() {
                     </button>
                     <button
                       type="button"
-                      className="text-xs text-zinc-500 underline"
+                      className="text-xs text-black underline"
                       onClick={() => setEditing(null)}
                     >
                       Cancel
@@ -483,7 +537,7 @@ export default function InventoryPage() {
                         }
                         className="w-full rounded-md border border-gray-300 bg-white px-2 py-1.5 text-xs text-black placeholder:text-gray-400 shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500 disabled:text-gray-500"
                       />
-                      <p className="mt-1 text-[11px] text-zinc-500">
+                      <p className="mt-1 text-[11px] text-black">
                         We will compute the delta from the current on-hand
                         quantity.
                       </p>
@@ -505,7 +559,7 @@ export default function InventoryPage() {
                         }
                         className="w-full rounded-md border border-gray-300 bg-white px-2 py-1.5 text-xs text-black placeholder:text-gray-400 shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500 disabled:text-gray-500"
                       />
-                      <p className="mt-1 text-[11px] text-zinc-500">
+                      <p className="mt-1 text-[11px] text-black">
                         Positive values increase on-hand; negative values
                         decrease on-hand.
                       </p>
@@ -545,7 +599,7 @@ export default function InventoryPage() {
               {adjustmentsList.length ? (
                 <div className="max-h-64 overflow-y-auto">
                   <table className="min-w-full border-collapse text-left">
-                    <thead className="bg-zinc-50 text-[11px] text-zinc-600">
+                    <thead className="bg-zinc-50 text-[11px] text-black">
                       <tr>
                         <th className="px-2 py-1 font-medium">Item</th>
                         <th className="px-2 py-1 font-medium">Type</th>
@@ -556,7 +610,7 @@ export default function InventoryPage() {
                     </thead>
                     <tbody>
                       {adjustmentsList.map((a: any) => (
-                        <tr key={a.id} className="border-b text-[11px]">
+                        <tr key={a.id} className="border-b text-[11px] text-black">
                           <td className="px-2 py-1">{a.itemName}</td>
                           <td className="px-2 py-1">{a.adjustment_type}</td>
                           <td className="px-2 py-1">
@@ -574,7 +628,7 @@ export default function InventoryPage() {
                   </table>
                 </div>
               ) : (
-                <p className="text-xs text-zinc-500">
+                <p className="text-xs text-black">
                   Adjustments will appear here once they are recorded.
                 </p>
               )}

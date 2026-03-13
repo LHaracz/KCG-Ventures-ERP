@@ -33,6 +33,10 @@ const perms: Perms = {
     read: { user: ["==", ["$user.id"]] },
     write: { user: ["==", ["$user.id"]] },
   },
+  product_variants: {
+    read: { user: ["==", ["$user.id"]] },
+    write: { user: ["==", ["$user.id"]] },
+  },
   production_targets: {
     read: { user: ["==", ["$user.id"]] },
     write: { user: ["==", ["$user.id"]] },

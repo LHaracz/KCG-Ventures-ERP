@@ -9,7 +9,7 @@ export default function Home() {
 
   if (isLoading) {
     return (
-      <div className="flex min-h-[60vh] items-center justify-center text-sm text-zinc-500">
+      <div className="flex min-h-[60vh] items-center justify-center text-sm text-black">
         Loading dashboard…
       </div>
     );
@@ -21,7 +21,7 @@ export default function Home() {
         <h1 className="mb-3 text-2xl font-semibold text-zinc-900">
           Welcome to KCG Ventures ERP
         </h1>
-        <p className="mb-6 text-sm text-zinc-600">
+        <p className="mb-6 text-sm text-black">
           Plan production cycles, check freeze dryer feasibility, manage
           inventory, and project cycle-level costs and profit for the shared
           BotanIQals + MiniLeaf facility.
@@ -43,7 +43,7 @@ export default function Home() {
           <h1 className="mb-2 text-2xl font-semibold text-zinc-900">
             Production Dashboard
           </h1>
-          <p className="text-sm text-zinc-600">
+          <p className="text-sm text-black">
             High-level view of your latest production cycle, feasibility, and
             key shortcuts.
           </p>
@@ -54,7 +54,7 @@ export default function Home() {
             <h2 className="mb-1 text-sm font-semibold text-zinc-900">
               Production Cycle Summary
             </h2>
-            <p className="text-xs text-zinc-500">
+            <p className="text-xs text-black">
               Cycle overview and feasibility will appear here once cycles are
               configured.
             </p>
@@ -63,7 +63,7 @@ export default function Home() {
             <h2 className="mb-1 text-sm font-semibold text-zinc-900">
               Feasibility Status
             </h2>
-            <p className="text-xs text-zinc-500">
+            <p className="text-xs text-black">
               Freeze dryer and inventory feasibility for the active cycle.
             </p>
           </div>

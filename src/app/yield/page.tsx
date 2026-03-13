@@ -4,12 +4,13 @@ import { FormEvent, useEffect, useMemo, useState } from "react";
 import { AuthGuard } from "@/components/AuthGuard";
 import { formatDate } from "@/lib/date";
 import { useSupabase } from "@/components/InstantProvider";
+import { gramsToOz, toGrams } from "@/lib/units";
 
 type YieldForm = {
   microgreenId: string;
   harvest_date: string;
-  fresh_yield_g: number | "";
-  dried_yield_g: number | "";
+  fresh_yield_oz: number | "";
+  dried_yield_oz: number | "";
   tray_identifier: string;
 };
 
@@ -27,8 +28,8 @@ export default function YieldPage() {
   const [form, setForm] = useState<YieldForm>({
     microgreenId: "",
     harvest_date: new Date().toISOString().slice(0, 10),
-    fresh_yield_g: "",
-    dried_yield_g: "",
+    fresh_yield_oz: "",
+    dried_yield_oz: "",
     tray_identifier: "",
   });
   const [saving, setSaving] = useState(false);
@@ -115,12 +116,17 @@ export default function YieldPage() {
     setSaving(true);
     setError(null);
     try {
+      const freshInGrams = toGrams(Number(form.fresh_yield_oz || 0), "oz");
+      const driedInGrams =
+        form.dried_yield_oz === ""
+          ? null
+          : toGrams(Number(form.dried_yield_oz), "oz");
+
       const { error } = await supabase.from("yield_entries").insert({
         microgreen: form.microgreenId,
         harvest_date: new Date(form.harvest_date).toISOString(),
-        fresh_yield_g: Number(form.fresh_yield_g || 0),
-        dried_yield_g:
-          form.dried_yield_g === "" ? null : Number(form.dried_yield_g),
+        fresh_yield_g: freshInGrams,
+        dried_yield_g: driedInGrams,
         tray_identifier: form.tray_identifier || null,
         user_id: user.id,
       });
@@ -135,8 +141,8 @@ export default function YieldPage() {
       setForm({
         microgreenId: form.microgreenId,
         harvest_date: new Date().toISOString().slice(0, 10),
-        fresh_yield_g: "",
-        dried_yield_g: "",
+        fresh_yield_oz: "",
+        dried_yield_oz: "",
         tray_identifier: "",
       });
     } catch (err: any) {
@@ -180,8 +186,8 @@ export default function YieldPage() {
     return Object.entries(map).map(([id, v]) => ({
       id,
       name: v.name,
-      avgFresh: v.freshCount ? v.freshTotal / v.freshCount : 0,
-      avgDried: v.driedCount ? v.driedTotal / v.driedCount : 0,
+      avgFresh: v.freshCount ? gramsToOz(v.freshTotal / v.freshCount) : 0,
+      avgDried: v.driedCount ? gramsToOz(v.driedTotal / v.driedCount) : 0,
     }));
   }, [recentEntries, microgreens]);
 
@@ -192,7 +198,7 @@ export default function YieldPage() {
           <h1 className="mb-1 text-2xl font-semibold text-zinc-900">
             Yield Logging
           </h1>
-          <p className="text-sm text-zinc-600">
+          <p className="text-sm text-black">
             Log tray yields and monitor rolling averages by microgreen.
           </p>
         </header>
@@ -320,15 +326,15 @@ export default function YieldPage() {
               <div className="grid gap-2 sm:grid-cols-2">
                 <div>
                   <label className="mb-1 block font-medium text-zinc-800">
-                    Fresh yield (g)
+                    Fresh yield (oz)
                   </label>
                   <input
                     type="number"
-                    value={form.fresh_yield_g}
+                    value={form.fresh_yield_oz}
                     onChange={(e) =>
                       setForm((prev) => ({
                         ...prev,
-                        fresh_yield_g:
+                        fresh_yield_oz:
                           e.target.value === ""
                             ? ""
                             : Number(e.target.value),
@@ -339,15 +345,15 @@ export default function YieldPage() {
                 </div>
                 <div>
                   <label className="mb-1 block font-medium text-zinc-800">
-                    Dried yield (g, optional)
+                    Dried yield (oz, optional)
                   </label>
                   <input
                     type="number"
-                    value={form.dried_yield_g}
+                    value={form.dried_yield_oz}
                     onChange={(e) =>
                       setForm((prev) => ({
                         ...prev,
-                        dried_yield_g:
+                        dried_yield_oz:
                           e.target.value === ""
                             ? ""
                             : Number(e.target.value),
@@ -378,7 +384,7 @@ export default function YieldPage() {
                 Recent entries
               </h2>
               {isLoading ? (
-                <p className="text-xs text-zinc-500">Loading entries…</p>
+                <p className="text-xs text-black">Loading entries…</p>
               ) : recentEntries.length ? (
                 <div className="max-h-64 space-y-2 overflow-y-auto">
                   {recentEntries.slice(0, 20).map((e: any) => {
@@ -392,11 +398,13 @@ export default function YieldPage() {
                           <div className="text-xs font-medium text-zinc-900">
                             {mg?.name ?? "Unknown"}
                           </div>
-                          <div className="text-[11px] text-zinc-600">
+                          <div className="text-[11px] text-black">
                             {formatDate(e.harvest_date)} · Fresh:{" "}
-                            {e.fresh_yield_g} g
+                            {gramsToOz(e.fresh_yield_g).toFixed(1)} oz
                             {e.dried_yield_g != null &&
-                              ` · Dried: ${e.dried_yield_g} g`}
+                              ` · Dried: ${gramsToOz(
+                                e.dried_yield_g
+                              ).toFixed(1)} oz`}
                             {e.tray_identifier &&
                               ` · Tray: ${e.tray_identifier}`}
                           </div>
@@ -406,7 +414,7 @@ export default function YieldPage() {
                   })}
                 </div>
               ) : (
-                <p className="text-xs text-zinc-500">
+                <p className="text-xs text-black">
                   No yield entries yet. Start by logging your first tray.
                 </p>
               )}
@@ -418,20 +426,20 @@ export default function YieldPage() {
               </h2>
               {averagesByMicrogreen.length ? (
                 <table className="min-w-full border-collapse text-left">
-                  <thead className="bg-zinc-50 text-[11px] text-zinc-600">
+                  <thead className="bg-zinc-50 text-[11px] text-black">
                     <tr>
                       <th className="px-2 py-1 font-medium">Microgreen</th>
                       <th className="px-2 py-1 font-medium">
-                        Avg fresh / tray (g)
+                        Avg fresh / tray (oz)
                       </th>
                       <th className="px-2 py-1 font-medium">
-                        Avg dried / tray (g)
+                        Avg dried / tray (oz)
                       </th>
                     </tr>
                   </thead>
                   <tbody>
                     {averagesByMicrogreen.map((row) => (
-                      <tr key={row.id} className="border-b text-[11px]">
+                      <tr key={row.id} className="border-b text-[11px] text-black">
                         <td className="px-2 py-1">{row.name}</td>
                         <td className="px-2 py-1">
                           {row.avgFresh.toFixed(1)}
@@ -444,7 +452,7 @@ export default function YieldPage() {
                   </tbody>
                 </table>
               ) : (
-                <p className="text-xs text-zinc-500">
+                <p className="text-xs text-black">
                   Averages will appear once you have yield entries.
                 </p>
               )}

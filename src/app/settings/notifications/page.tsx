@@ -33,7 +33,7 @@ export default function NotificationSettingsPage() {
               placeholder="one@example.com, another@example.com"
               className="w-full rounded-md border border-zinc-300 px-2 py-1.5 text-xs shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
             />
-            <p className="mt-1 text-[11px] text-zinc-500">
+            <p className="mt-1 text-[11px] text-black">
               Enter a comma-separated list of addresses to receive future
               reminders.
             </p>
@@ -53,7 +53,7 @@ export default function NotificationSettingsPage() {
               Enable email reminders (future feature)
             </label>
           </div>
-          <p className="mt-3 text-[11px] text-zinc-500">
+          <p className="mt-3 text-[11px] text-black">
             These settings are UI-only for now. In a future phase, they will be
             wired to background jobs that send actual reminder emails.
           </p>

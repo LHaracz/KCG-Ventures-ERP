@@ -8,6 +8,8 @@ type ProductForm = {
   id?: string;
   name: string;
   unit: string;
+  is_microgreen: boolean;
+  microgreen_id: string;
   sale_price_per_unit: number | "";
   shelf_life_days: number | "";
   notes: string;
@@ -23,6 +25,7 @@ type BomForm = {
   freeze_dryer_profile_id: string;
   qty_per_unit: number | "";
   unit_label: string;
+  sale_price: number | "";
   notes: string;
 };
 
@@ -44,11 +47,24 @@ export default function ProductsPage() {
   const [bomError, setBomError] = useState<string | null>(null);
   const [bomSaving, setBomSaving] = useState(false);
 
+  const [variants, setVariants] = useState<any[]>([]);
+  const [variantEditing, setVariantEditing] = useState<{
+    id?: string;
+    name: string;
+    size_oz: number | "";
+    sku: string;
+    sale_price: number | "";
+    unit_cost: number | "";
+    is_active: boolean;
+  } | null>(null);
+  const [variantError, setVariantError] = useState<string | null>(null);
+  const [variantSaving, setVariantSaving] = useState(false);
+
   useEffect(() => {
     if (!user) return;
     const load = async () => {
       setIsLoading(true);
-      const [p, m, i, b, fdp] = await Promise.all([
+      const [p, m, i, b, fdp, v] = await Promise.all([
         supabase
           .from("products")
           .select("*")
@@ -73,16 +89,25 @@ export default function ProductsPage() {
           .select("*")
           .eq("user_id", user.id)
           .order("name", { ascending: true }),
+        supabase
+          .from("product_variants")
+          .select("*")
+          .eq("user_id", user.id),
       ]);
       setProducts(p.data || []);
       setMicrogreens(m.data || []);
       setItems(i.data || []);
       setBomLines(b.data || []);
       setProfiles(fdp.data || []);
+      setVariants((v.data || []) as any[]);
       setIsLoading(false);
     };
     load();
   }, [user, supabase]);
+
+  const productVariants = selectedProductId
+    ? variants.filter((v: any) => v.product_id === selectedProductId)
+    : [];
 
   const selectedProduct = products.find((p: any) => p.id === selectedProductId);
 
@@ -91,6 +116,8 @@ export default function ProductsPage() {
     setEditing({
       name: "",
       unit: "",
+      is_microgreen: false,
+      microgreen_id: "",
       sale_price_per_unit: "",
       shelf_life_days: "",
       notes: "",
@@ -105,12 +132,68 @@ export default function ProductsPage() {
       id: p.id,
       name: p.name,
       unit: p.unit,
-      sale_price_per_unit: p.sale_price_per_unit,
+      is_microgreen: Boolean(p.is_microgreen),
+      microgreen_id: p.microgreen ?? "",
+      sale_price_per_unit: p.sale_price_per_unit ?? "",
       shelf_life_days: p.shelf_life_days ?? "",
       notes: p.notes ?? "",
       target_batch_size: p.target_batch_size ?? "",
       target_batch_unit: p.target_batch_unit ?? "",
     });
+  };
+
+  const handleDeleteProduct = async (p: any) => {
+    if (!user) return;
+    setProductError(null);
+    const confirmed =
+      typeof window !== "undefined"
+        ? window.confirm(
+            `Delete product "${p.name}"? This will delete its BOM lines and any cycle targets/plan lines that reference it.`,
+          )
+        : true;
+    if (!confirmed) return;
+
+    try {
+      const { error: targetError } = await supabase
+        .from("production_targets")
+        .delete()
+        .eq("product", p.id)
+        .eq("user_id", user.id);
+      if (targetError) throw targetError;
+
+      const { error: planError } = await supabase
+        .from("production_plan_lines")
+        .delete()
+        .eq("source_product", p.id)
+        .eq("user_id", user.id);
+      if (planError) throw planError;
+
+      const { error: bomError } = await supabase
+        .from("bom_lines")
+        .delete()
+        .eq("product", p.id)
+        .eq("user_id", user.id);
+      if (bomError) throw bomError;
+
+      const { error } = await supabase
+        .from("products")
+        .delete()
+        .eq("id", p.id)
+        .eq("user_id", user.id);
+      if (error) throw error;
+
+      setProducts((prev) => prev.filter((prod: any) => prod.id !== p.id));
+      setBomLines((prev) => prev.filter((b: any) => b.product !== p.id));
+      if (selectedProductId === p.id) {
+        setSelectedProductId("");
+        setBomEditing(null);
+      }
+      if (editing && editing.id === p.id) {
+        setEditing(null);
+      }
+    } catch (err: any) {
+      setProductError(err.message || "Failed to delete product.");
+    }
   };
 
   const handleProductSubmit = async (e: FormEvent) => {
@@ -132,10 +215,19 @@ export default function ProductsPage() {
         return;
       }
 
+      if (editing.is_microgreen && !editing.microgreen_id) {
+        setProductError("Microgreen products must have a microgreen selected.");
+        setProductSaving(false);
+        return;
+      }
       const payload: any = {
         name: editing.name.trim(),
         unit: editing.unit.trim(),
-        sale_price_per_unit: Number(editing.sale_price_per_unit || 0),
+        is_microgreen: editing.is_microgreen,
+        microgreen: editing.is_microgreen ? editing.microgreen_id || null : null,
+        sale_price_per_unit: editing.is_microgreen
+          ? null
+          : Number(editing.sale_price_per_unit || 0),
         shelf_life_days:
           editing.shelf_life_days === ""
             ? null
@@ -216,6 +308,7 @@ export default function ProductsPage() {
       freeze_dryer_profile_id: "",
       qty_per_unit: "",
       unit_label: "",
+      sale_price: "",
       notes: "",
     });
   };
@@ -237,6 +330,7 @@ export default function ProductsPage() {
             freeze_dryer_profile_id: "",
             qty_per_unit: "",
             unit_label: item?.unit ?? "",
+            sale_price: "",
             notes: "",
           }
     );
@@ -278,6 +372,23 @@ export default function ProductsPage() {
         setBomSaving(false);
         return;
       }
+      if (
+        (bomEditing.line_type === "raw_microgreen" ||
+          bomEditing.line_type === "dried_microgreen") &&
+        !bomEditing.unit_label?.trim()
+      ) {
+        setBomError("Enter a unit (e.g. oz or g) for microgreen quantity.");
+        setBomSaving(false);
+        return;
+      }
+      const isVariantLine =
+        selectedProduct?.is_microgreen &&
+        bomEditing.line_type === "raw_microgreen";
+      if (isVariantLine && bomEditing.sale_price === "") {
+        setBomError("Enter a sale price for this variant.");
+        setBomSaving(false);
+        return;
+      }
       const payload: any = {
         product: selectedProductId,
         line_type: bomEditing.line_type,
@@ -297,6 +408,9 @@ export default function ProductsPage() {
             : null,
         qty_per_unit: Number(bomEditing.qty_per_unit || 0),
         unit_label: bomEditing.unit_label.trim(),
+        sale_price: isVariantLine
+          ? Number(bomEditing.sale_price || 0)
+          : null,
         material_name_snapshot: bomEditing.notes
           ? undefined
           : undefined,
@@ -345,6 +459,103 @@ export default function ProductsPage() {
     }
   };
 
+  const handleNewVariant = () => {
+    if (!selectedProductId) return;
+    setVariantError(null);
+    setVariantEditing({
+      name: "",
+      size_oz: "",
+      sku: "",
+      sale_price: "",
+      unit_cost: "",
+      is_active: true,
+    });
+  };
+
+  const handleEditVariant = (v: any) => {
+    setVariantError(null);
+    setVariantEditing({
+      id: v.id,
+      name: v.name ?? "",
+      size_oz: v.size_oz ?? "",
+      sku: v.sku ?? "",
+      sale_price: v.sale_price ?? "",
+      unit_cost: v.unit_cost ?? "",
+      is_active: v.is_active !== false,
+    });
+  };
+
+  const handleVariantSubmit = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!user || !selectedProductId || !variantEditing) return;
+    const sizeOz = Number(variantEditing.size_oz);
+    if (Number.isNaN(sizeOz) || sizeOz <= 0) {
+      setVariantError("Size (oz) must be a positive number.");
+      return;
+    }
+    setVariantSaving(true);
+    setVariantError(null);
+    try {
+      const salePrice = variantEditing.sale_price === "" ? null : Number(variantEditing.sale_price);
+      const unitCost = variantEditing.unit_cost === "" ? null : Number(variantEditing.unit_cost);
+      const payload = {
+        product_id: selectedProductId,
+        name: variantEditing.name.trim(),
+        size_oz: sizeOz,
+        sku: variantEditing.sku?.trim() || null,
+        sale_price: salePrice,
+        unit_cost: unitCost,
+        is_active: variantEditing.is_active,
+        user_id: user.id,
+      };
+      if (variantEditing.id) {
+        const { error } = await supabase
+          .from("product_variants")
+          .update({
+            name: payload.name,
+            size_oz: payload.size_oz,
+            sku: payload.sku,
+            sale_price: payload.sale_price,
+            unit_cost: payload.unit_cost,
+            is_active: payload.is_active,
+          })
+          .eq("id", variantEditing.id)
+          .eq("user_id", user.id);
+        if (error) throw error;
+      } else {
+        const { error } = await supabase
+          .from("product_variants")
+          .insert(payload);
+        if (error) throw error;
+      }
+      const { data: refreshed } = await supabase
+        .from("product_variants")
+        .select("*")
+        .eq("user_id", user.id);
+      setVariants(refreshed || []);
+      setVariantEditing(null);
+    } catch (err: any) {
+      setVariantError(err.message || "Failed to save variant.");
+    } finally {
+      setVariantSaving(false);
+    }
+  };
+
+  const handleVariantDelete = async (id: string) => {
+    setVariantError(null);
+    try {
+      const { error } = await supabase
+        .from("product_variants")
+        .delete()
+        .eq("id", id)
+        .eq("user_id", user?.id || "");
+      if (error) throw error;
+      setVariants((prev) => prev.filter((v: any) => v.id !== id));
+    } catch (err: any) {
+      setVariantError(err.message || "Failed to delete variant.");
+    }
+  };
+
   return (
     <AuthGuard>
       <div className="mx-auto max-w-5xl space-y-6">
@@ -353,7 +564,7 @@ export default function ProductsPage() {
             <h1 className="mb-1 text-2xl font-semibold text-zinc-900">
               Products & BOM
             </h1>
-            <p className="text-sm text-zinc-600">
+            <p className="text-sm text-black">
               Define products linked to microgreens and maintain Bills of
               Materials for cost projections.
             </p>
@@ -375,7 +586,7 @@ export default function ProductsPage() {
               </h2>
               <div className="max-h-64 space-y-2 overflow-y-auto">
                 {isLoading ? (
-                  <p className="text-xs text-zinc-500">Loading products…</p>
+                  <p className="text-xs text-black">Loading products…</p>
                 ) : products.length ? (
                   products.map((p: any) => {
                     const mg = microgreens.find(
@@ -396,28 +607,43 @@ export default function ProductsPage() {
                           <div className="text-xs font-medium text-zinc-900">
                             {p.name}
                           </div>
-                          <div className="text-[11px] text-zinc-600">
-                            {mg?.name ?? "Unlinked"} · {p.sale_price_per_unit} /
-                            {` ${p.unit}`} · Dried: {p.dried_needed_g_per_unit} g
-                            {p.fresh_needed_g_per_unit != null &&
+                          <div className="text-[11px] text-black">
+                            {mg?.name ?? "Unlinked"}
+                            {p.is_microgreen
+                              ? ` · ${variants.filter((v: any) => v.product_id === p.id).length} variant(s)`
+                              : ` · ${p.sale_price_per_unit ?? "—"} / ${p.unit} · Dried: ${p.dried_needed_g_per_unit ?? "—"} g`}
+                            {!p.is_microgreen &&
+                              p.fresh_needed_g_per_unit != null &&
                               ` · Fresh: ${p.fresh_needed_g_per_unit} g`}
                           </div>
                         </div>
-                        <button
-                          type="button"
-                          className="text-[11px] text-emerald-700 underline"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleEditProduct(p);
-                          }}
-                        >
-                          Edit
-                        </button>
+                        <div className="flex flex-col items-end gap-1 text-[11px]">
+                          <button
+                            type="button"
+                            className="text-emerald-700 underline"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleEditProduct(p);
+                            }}
+                          >
+                            Edit
+                          </button>
+                          <button
+                            type="button"
+                            className="text-red-600 underline"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleDeleteProduct(p);
+                            }}
+                          >
+                            Delete
+                          </button>
+                        </div>
                       </button>
                     );
                   })
                 ) : (
-                  <p className="text-xs text-zinc-500">
+                  <p className="text-xs text-black">
                     No products yet. Create your first one to connect microgreen
                     demand to BOMs and cycles.
                   </p>
@@ -460,25 +686,70 @@ export default function ProductsPage() {
                         className="w-full rounded-md border border-gray-300 bg-white px-2 py-1.5 text-xs text-black placeholder:text-gray-400 shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500 disabled:text-gray-500"
                       />
                     </div>
-                    <div>
-                      <label className="mb-1 block font-medium text-zinc-800">
-                        Sale price per unit
-                      </label>
+                    <div className="flex items-center gap-2 sm:col-span-2">
                       <input
-                        type="number"
-                        value={editing.sale_price_per_unit}
+                        type="checkbox"
+                        id="is_microgreen"
+                        checked={editing.is_microgreen}
                         onChange={(e) =>
                           setEditing({
                             ...editing,
-                            sale_price_per_unit:
-                              e.target.value === ""
-                                ? ""
-                                : Number(e.target.value),
+                            is_microgreen: e.target.checked,
+                            microgreen_id: e.target.checked ? editing.microgreen_id : "",
                           })
                         }
-                        className="w-full rounded-md border border-gray-300 bg-white px-2 py-1.5 text-xs text-black placeholder:text-gray-400 shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500 disabled:text-gray-500"
+                        className="h-4 w-4 rounded border-gray-300 text-emerald-600 focus:ring-emerald-500"
                       />
+                      <label
+                        htmlFor="is_microgreen"
+                        className="text-xs font-medium text-zinc-800"
+                      >
+                        Is Microgreen — define size & price per variant in BOM
+                      </label>
                     </div>
+                    {editing.is_microgreen && (
+                      <div className="sm:col-span-2">
+                        <label className="mb-1 block font-medium text-zinc-800">
+                          Microgreen (required for MiniLeaf)
+                        </label>
+                        <select
+                          required={editing.is_microgreen}
+                          value={editing.microgreen_id}
+                          onChange={(e) =>
+                            setEditing({ ...editing, microgreen_id: e.target.value })
+                          }
+                          className="w-full rounded-md border border-gray-300 bg-white px-2 py-1.5 text-xs text-black shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                        >
+                          <option value="">Select microgreen…</option>
+                          {microgreens.map((m: any) => (
+                            <option key={m.id} value={m.id}>
+                              {m.name}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
+                    {!editing.is_microgreen && (
+                      <div>
+                        <label className="mb-1 block font-medium text-zinc-800">
+                          Sale price per unit
+                        </label>
+                        <input
+                          type="number"
+                          value={editing.sale_price_per_unit}
+                          onChange={(e) =>
+                            setEditing({
+                              ...editing,
+                              sale_price_per_unit:
+                                e.target.value === ""
+                                  ? ""
+                                  : Number(e.target.value),
+                            })
+                          }
+                          className="w-full rounded-md border border-gray-300 bg-white px-2 py-1.5 text-xs text-black placeholder:text-gray-400 shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500 disabled:text-gray-500"
+                        />
+                      </div>
+                    )}
                     <div>
                       <label className="mb-1 block font-medium text-zinc-800">
                         Shelf life (days, optional)
@@ -562,7 +833,7 @@ export default function ProductsPage() {
                     </button>
                     <button
                       type="button"
-                      className="text-xs text-zinc-500 underline"
+                      className="text-xs text-black underline"
                       onClick={() => setEditing(null)}
                     >
                       Cancel
@@ -574,6 +845,176 @@ export default function ProductsPage() {
           </div>
 
           <div className="space-y-4">
+            {selectedProduct?.is_microgreen && (
+              <div className="rounded-md border border-zinc-200 bg-white p-4 text-xs">
+                <div className="mb-2 flex items-center justify-between">
+                  <h2 className="text-sm font-semibold text-zinc-900">
+                    Variants (pack size in oz)
+                  </h2>
+                  <button
+                    type="button"
+                    onClick={handleNewVariant}
+                    className="rounded-md bg-emerald-600 px-3 py-1 text-[11px] font-medium text-white shadow-sm hover:bg-emerald-700"
+                  >
+                    Add variant
+                  </button>
+                </div>
+                <p className="mb-2 text-[11px] text-zinc-600">
+                  MiniLeaf planner uses variants to convert unit counts into ounces. Product microgreen is from the product link above.
+                </p>
+                {productVariants.length > 0 && (
+                  <table className="min-w-full border-collapse text-left">
+                    <thead className="bg-zinc-50 text-[11px] text-black">
+                      <tr>
+                        <th className="px-2 py-1 font-medium">Name</th>
+                        <th className="px-2 py-1 font-medium">Size (oz)</th>
+                        <th className="px-2 py-1 font-medium">Sale price</th>
+                        <th className="px-2 py-1 font-medium">Unit cost</th>
+                        <th className="px-2 py-1 font-medium">SKU</th>
+                        <th className="px-2 py-1 font-medium">Active</th>
+                        <th className="px-2 py-1 font-medium">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {productVariants.map((v: any) => (
+                        <tr key={v.id} className="border-b text-[11px] text-black">
+                          <td className="px-2 py-1">{v.name}</td>
+                          <td className="px-2 py-1">{v.size_oz}</td>
+                          <td className="px-2 py-1">{v.sale_price != null ? `$${Number(v.sale_price).toFixed(2)}` : "—"}</td>
+                          <td className="px-2 py-1">{v.unit_cost != null ? `$${Number(v.unit_cost).toFixed(2)}` : "—"}</td>
+                          <td className="px-2 py-1">{v.sku ?? "—"}</td>
+                          <td className="px-2 py-1">{v.is_active !== false ? "Yes" : "No"}</td>
+                          <td className="px-2 py-1">
+                            <button
+                              type="button"
+                              className="mr-2 text-emerald-700 underline"
+                              onClick={() => handleEditVariant(v)}
+                            >
+                              Edit
+                            </button>
+                            <button
+                              type="button"
+                              className="text-red-600 underline"
+                              onClick={() => handleVariantDelete(v.id)}
+                            >
+                              Remove
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+                {variantEditing && (
+                  <form onSubmit={handleVariantSubmit} className="mt-3 space-y-2 rounded-md bg-zinc-50 p-3">
+                    <div className="grid gap-2 sm:grid-cols-2">
+                      <div>
+                        <label className="mb-1 block font-medium text-zinc-800">Name</label>
+                        <input
+                          type="text"
+                          required
+                          value={variantEditing.name}
+                          onChange={(e) => setVariantEditing({ ...variantEditing, name: e.target.value })}
+                          className="w-full rounded-md border border-zinc-300 px-2 py-1.5 text-xs"
+                        />
+                      </div>
+                      <div>
+                        <label className="mb-1 block font-medium text-zinc-800">Size (oz) *</label>
+                        <input
+                          type="number"
+                          required
+                          min={0.01}
+                          step={0.01}
+                          value={variantEditing.size_oz}
+                          onChange={(e) =>
+                            setVariantEditing({
+                              ...variantEditing,
+                              size_oz: e.target.value === "" ? "" : Number(e.target.value),
+                            })
+                          }
+                          className="w-full rounded-md border border-zinc-300 px-2 py-1.5 text-xs"
+                        />
+                      </div>
+                      <div>
+                        <label className="mb-1 block font-medium text-zinc-800">Sale price ($, optional)</label>
+                        <input
+                          type="number"
+                          min={0}
+                          step={0.01}
+                          value={variantEditing.sale_price}
+                          onChange={(e) =>
+                            setVariantEditing({
+                              ...variantEditing,
+                              sale_price: e.target.value === "" ? "" : Number(e.target.value),
+                            })
+                          }
+                          className="w-full rounded-md border border-zinc-300 px-2 py-1.5 text-xs"
+                        />
+                      </div>
+                      <div>
+                        <label className="mb-1 block font-medium text-zinc-800">Unit cost ($, optional)</label>
+                        <input
+                          type="number"
+                          min={0}
+                          step={0.01}
+                          value={variantEditing.unit_cost}
+                          onChange={(e) =>
+                            setVariantEditing({
+                              ...variantEditing,
+                              unit_cost: e.target.value === "" ? "" : Number(e.target.value),
+                            })
+                          }
+                          className="w-full rounded-md border border-zinc-300 px-2 py-1.5 text-xs"
+                        />
+                      </div>
+                      <div>
+                        <label className="mb-1 block font-medium text-zinc-800">SKU (optional)</label>
+                        <input
+                          type="text"
+                          value={variantEditing.sku}
+                          onChange={(e) => setVariantEditing({ ...variantEditing, sku: e.target.value })}
+                          className="w-full rounded-md border border-zinc-300 px-2 py-1.5 text-xs"
+                        />
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="checkbox"
+                          id="variant_active"
+                          checked={variantEditing.is_active}
+                          onChange={(e) =>
+                            setVariantEditing({ ...variantEditing, is_active: e.target.checked })
+                          }
+                          className="h-4 w-4 rounded border-zinc-300 text-emerald-600"
+                        />
+                        <label htmlFor="variant_active" className="text-xs font-medium text-zinc-800">
+                          Active
+                        </label>
+                      </div>
+                    </div>
+                    {variantError && (
+                      <p className="text-xs text-red-600" role="alert">{variantError}</p>
+                    )}
+                    <div className="flex gap-2">
+                      <button
+                        type="submit"
+                        disabled={variantSaving}
+                        className="rounded-md bg-emerald-600 px-3 py-1.5 text-[11px] font-medium text-white hover:bg-emerald-700 disabled:opacity-70"
+                      >
+                        {variantSaving ? "Saving…" : "Save variant"}
+                      </button>
+                      <button
+                        type="button"
+                        className="text-[11px] text-zinc-600 underline"
+                        onClick={() => setVariantEditing(null)}
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </form>
+                )}
+              </div>
+            )}
+
             <div className="rounded-md border border-zinc-200 bg-white p-4 text-xs">
               <div className="mb-2 flex items-center justify-between">
                 <h2 className="text-sm font-semibold text-zinc-900">
@@ -589,22 +1030,27 @@ export default function ProductsPage() {
                 </button>
               </div>
               {!selectedProduct ? (
-                <p className="text-xs text-zinc-500">
+                <p className="text-xs text-black">
                   Select a product to view and edit its BOM lines.
                 </p>
               ) : (
                 <>
-                  <p className="mb-2 text-[11px] text-zinc-600">
-                    {selectedProduct.name} · {selectedProduct.sale_price_per_unit}
-                    {` / ${selectedProduct.unit}`}
+                  <p className="mb-2 text-[11px] text-black">
+                    {selectedProduct.name}
+                    {selectedProduct.is_microgreen
+                      ? " · Variants in BOM"
+                      : ` · ${selectedProduct.sale_price_per_unit ?? "—"} / ${selectedProduct.unit}`}
                   </p>
                   <table className="min-w-full border-collapse text-left">
-                  <thead className="bg-zinc-50 text-[11px] text-zinc-600">
+                  <thead className="bg-zinc-50 text-[11px] text-black">
                       <tr>
                       <th className="px-2 py-1 font-medium">Material</th>
                       <th className="px-2 py-1 font-medium">Type</th>
                         <th className="px-2 py-1 font-medium">Qty per unit</th>
                         <th className="px-2 py-1 font-medium">Unit</th>
+                        {selectedProduct?.is_microgreen && (
+                          <th className="px-2 py-1 font-medium">Price</th>
+                        )}
                       <th className="px-2 py-1 font-medium">Notes</th>
                         <th className="px-2 py-1 font-medium">Actions</th>
                       </tr>
@@ -612,11 +1058,18 @@ export default function ProductsPage() {
                     <tbody>
                       {productBomLines.length ? (
                         productBomLines.map((b: any) => (
-                          <tr key={b.id} className="border-b text-[11px]">
+                          <tr key={b.id} className="border-b text-[11px] text-black">
                             <td className="px-2 py-1">{b.itemName}</td>
                           <td className="px-2 py-1">{b.line_type}</td>
                             <td className="px-2 py-1">{b.qty_per_unit}</td>
                             <td className="px-2 py-1">{b.unit_label}</td>
+                            {selectedProduct?.is_microgreen && (
+                              <td className="px-2 py-1">
+                                {b.line_type === "raw_microgreen" && b.sale_price != null
+                                  ? `$${Number(b.sale_price).toFixed(2)}`
+                                  : "—"}
+                              </td>
+                            )}
                           <td className="px-2 py-1">{b.notes ?? ""}</td>
                             <td className="px-2 py-1">
                               <button
@@ -625,14 +1078,21 @@ export default function ProductsPage() {
                                 onClick={() =>
                                   setBomEditing({
                                     id: b.id,
-                                  line_type: b.line_type,
-                                    inventory_item_id: b.inventory_item,
-                                  microgreen_id: b.microgreen_id,
-                                  freeze_dryer_profile_id:
-                                    b.freeze_dryer_profile_id,
+                                    line_type: b.line_type,
+                                    inventory_item_id: b.inventory_item ?? "",
+                                    microgreen_id: b.microgreen_id,
+                                    freeze_dryer_profile_id:
+                                      b.freeze_dryer_profile_id,
                                     qty_per_unit: b.qty_per_unit,
-                                    unit_label: b.unit_label,
-                                  notes: b.notes ?? "",
+                                    unit_label:
+                                      b.unit_label ??
+                                      (b.line_type === "raw_microgreen"
+                                        ? "oz"
+                                        : b.line_type === "dried_microgreen"
+                                          ? "g"
+                                          : ""),
+                                    sale_price: b.sale_price ?? "",
+                                    notes: b.notes ?? "",
                                   })
                                 }
                               >
@@ -652,7 +1112,7 @@ export default function ProductsPage() {
                         <tr>
                           <td
                             colSpan={4}
-                            className="px-2 py-3 text-center text-[11px] text-zinc-500"
+                            className="px-2 py-3 text-center text-[11px] text-black"
                           >
                             No BOM lines yet. Add ingredients and packaging for
                             this product.
@@ -673,13 +1133,26 @@ export default function ProductsPage() {
                           </label>
                           <select
                             value={bomEditing.line_type}
-                            onChange={(e) =>
+                            onChange={(e) => {
+                              const newType = e.target
+                                .value as BomForm["line_type"];
+                              const prev = bomEditing as BomForm;
+                              const defaultUnit =
+                                newType === "raw_microgreen"
+                                  ? "oz"
+                                  : newType === "dried_microgreen"
+                                    ? "g"
+                                    : prev.unit_label;
                               setBomEditing({
-                                ...(bomEditing as BomForm),
-                                line_type: e.target
-                                  .value as BomForm["line_type"],
-                              })
-                            }
+                                ...prev,
+                                line_type: newType,
+                                unit_label:
+                                  newType === "inventory_item" ||
+                                  newType === "packaging"
+                                    ? prev.unit_label
+                                    : defaultUnit,
+                              });
+                            }}
                             className="w-full rounded-md border border-gray-300 bg-white px-2 py-1.5 text-xs text-black placeholder:text-gray-400 shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500 disabled:text-gray-500"
                           >
                             <option value="inventory_item">Inventory item</option>
@@ -734,6 +1207,30 @@ export default function ProductsPage() {
                                   </option>
                                 ))}
                               </select>
+                              {selectedProduct?.is_microgreen &&
+                                bomEditing.line_type === "raw_microgreen" && (
+                                  <div className="mt-2">
+                                    <label className="mb-1 block font-medium text-zinc-800">
+                                      Variant sale price
+                                    </label>
+                                    <input
+                                      type="number"
+                                      step="0.01"
+                                      min="0"
+                                      value={bomEditing.sale_price}
+                                      onChange={(e) =>
+                                        setBomEditing({
+                                          ...(bomEditing as BomForm),
+                                          sale_price:
+                                            e.target.value === ""
+                                              ? ""
+                                              : Number(e.target.value),
+                                        })
+                                      }
+                                      className="w-full rounded-md border border-gray-300 bg-white px-2 py-1.5 text-xs text-black placeholder:text-gray-400 shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500 disabled:text-gray-500"
+                                    />
+                                  </div>
+                                )}
                               {bomEditing.line_type === "dried_microgreen" && (
                                 <>
                                   <label className="mt-2 mb-1 block font-medium text-zinc-800">
@@ -786,16 +1283,42 @@ export default function ProductsPage() {
                           <label className="mb-1 block font-medium text-zinc-800">
                             Unit label
                           </label>
-                          <input
-                            type="text"
-                            readOnly
-                            value={bomEditing.unit_label}
-                            className="w-full rounded-md border border-gray-200 bg-zinc-100 px-2 py-1.5 text-[11px] text-black shadow-inner disabled:text-gray-500"
-                          />
-                          <p className="mt-1 text-[10px] text-zinc-500">
-                            Must match the inventory item's unit exactly. No
-                            unit conversions are applied.
-                          </p>
+                          {(bomEditing.line_type === "inventory_item" ||
+                            bomEditing.line_type === "packaging") ? (
+                            <>
+                              <input
+                                type="text"
+                                readOnly
+                                value={bomEditing.unit_label}
+                                className="w-full rounded-md border border-gray-200 bg-zinc-100 px-2 py-1.5 text-[11px] text-black shadow-inner disabled:text-gray-500"
+                              />
+                              <p className="mt-1 text-[10px] text-black">
+                                Must match the inventory item&apos;s unit
+                                exactly.
+                              </p>
+                            </>
+                          ) : (
+                            <>
+                              <input
+                                type="text"
+                                required
+                                value={bomEditing.unit_label}
+                                onChange={(e) =>
+                                  setBomEditing({
+                                    ...(bomEditing as BomForm),
+                                    unit_label: e.target.value,
+                                  })
+                                }
+                                placeholder="oz or g"
+                                className="w-full rounded-md border border-gray-300 bg-white px-2 py-1.5 text-[11px] text-black placeholder:text-gray-400 shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                              />
+                              <p className="mt-1 text-[10px] text-black">
+                                Use &quot;oz&quot; for fresh (e.g. 2 for 2oz
+                                container) or &quot;g&quot; for dried. Planning
+                                converts to grams.
+                              </p>
+                            </>
+                          )}
                         </div>
                         <div className="sm:col-span-3">
                           <label className="mb-1 block font-medium text-zinc-800">
@@ -829,7 +1352,7 @@ export default function ProductsPage() {
                         </button>
                         <button
                           type="button"
-                          className="text-[11px] text-zinc-500 underline"
+                          className="text-[11px] text-black underline"
                           onClick={() => setBomEditing(null)}
                         >
                           Cancel

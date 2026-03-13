@@ -6,7 +6,11 @@ import { AuthGuard } from "@/components/AuthGuard";
 import { formatDate } from "@/lib/date";
 import { useSupabase } from "@/components/InstantProvider";
 
+type BusinessType = "MiniLeaf" | "BotanIQals";
+
 type CycleForm = {
+  business_type: BusinessType;
+  harvest_date: string;
   start_date: string;
   end_date: string;
   status: "draft" | "planned" | "completed";
@@ -18,9 +22,12 @@ export default function CyclesPage() {
   const [targets, setTargets] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
+  const today = new Date().toISOString().slice(0, 10);
   const [form, setForm] = useState<CycleForm>({
-    start_date: new Date().toISOString().slice(0, 10),
-    end_date: new Date().toISOString().slice(0, 10),
+    business_type: "MiniLeaf",
+    harvest_date: today,
+    start_date: today,
+    end_date: today,
     status: "draft",
   });
   const [saving, setSaving] = useState(false);
@@ -51,32 +58,75 @@ export default function CyclesPage() {
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
     if (!user) return;
-    if (new Date(form.start_date) > new Date(form.end_date)) {
-      setError("Start date must be on or before end date.");
-      return;
-    }
-    setSaving(true);
     setError(null);
+
+    if (form.business_type === "MiniLeaf") {
+      if (!form.harvest_date?.trim()) {
+        setError("Harvest date is required for MiniLeaf cycles.");
+        return;
+      }
+    } else {
+      if (!form.start_date?.trim() || !form.end_date?.trim()) {
+        setError("Start date and end date are required for BotanIQals cycles.");
+        return;
+      }
+      if (new Date(form.start_date) > new Date(form.end_date)) {
+        setError("End date must be on or after start date.");
+        return;
+      }
+    }
+
+    setSaving(true);
     try {
-      const { error } = await supabase.from("production_cycles").insert({
-        start_date: new Date(form.start_date).toISOString(),
-        end_date: new Date(form.end_date).toISOString(),
+      const isMiniLeaf = form.business_type === "MiniLeaf";
+      const harvestDate = isMiniLeaf ? form.harvest_date : null;
+      const startDate = isMiniLeaf
+        ? new Date(form.harvest_date)
+        : new Date(form.start_date);
+      const endDate = isMiniLeaf
+        ? new Date(form.harvest_date)
+        : new Date(form.end_date);
+      if (isMiniLeaf) {
+        startDate.setDate(startDate.getDate() - 21);
+      }
+
+      const payload: Record<string, unknown> = {
+        start_date: startDate.toISOString(),
+        end_date: endDate.toISOString(),
         status: form.status,
+        business_type: form.business_type,
         user_id: user.id,
-      });
-      if (error) throw error;
+      };
+      if (harvestDate) {
+        payload.harvest_date = harvestDate;
+      }
+      const { error: insertError } = await supabase
+        .from("production_cycles")
+        .insert(payload);
+      if (insertError) throw insertError;
       const { data: refreshed } = await supabase
         .from("production_cycles")
         .select("*")
         .eq("user_id", user.id)
         .order("start_date", { ascending: false });
       setCycles(refreshed || []);
-    } catch (err: any) {
-      setError(err.message || "Failed to create cycle.");
+      setForm((prev) => ({
+        ...prev,
+        harvest_date: today,
+        start_date: today,
+        end_date: today,
+      }));
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Failed to create cycle.");
     } finally {
       setSaving(false);
     }
   };
+
+  const displayBusinessType = (c: { business_type?: string; brand?: string }) =>
+    c.business_type === "MiniLeaf" || c.brand === "minileaf"
+      ? "MiniLeaf"
+      : "BotanIQals";
 
   return (
     <AuthGuard>
@@ -97,40 +147,82 @@ export default function CyclesPage() {
               Create cycle
             </h2>
             <form onSubmit={handleSubmit} className="space-y-2">
-              <div className="grid gap-2 sm:grid-cols-2">
-                <div>
-                  <label className="mb-1 block font-medium text-zinc-800">
-                    Start date
-                  </label>
-                  <input
-                    type="date"
-                    value={form.start_date}
-                    onChange={(e) =>
-                      setForm((prev) => ({
-                        ...prev,
-                        start_date: e.target.value,
-                      }))
-                    }
-                    className="w-full rounded-md border border-zinc-300 px-2 py-1.5 shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
-                  />
-                </div>
-                <div>
-                  <label className="mb-1 block font-medium text-zinc-800">
-                    End date
-                  </label>
-                  <input
-                    type="date"
-                    value={form.end_date}
-                    onChange={(e) =>
-                      setForm((prev) => ({
-                        ...prev,
-                        end_date: e.target.value,
-                      }))
-                    }
-                    className="w-full rounded-md border border-zinc-300 px-2 py-1.5 shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
-                  />
-                </div>
+              <div>
+                <label className="mb-1 block font-medium text-zinc-800">
+                  Business type
+                </label>
+                <select
+                  value={form.business_type}
+                  onChange={(e) =>
+                    setForm((prev) => ({
+                      ...prev,
+                      business_type: e.target.value as BusinessType,
+                    }))
+                  }
+                  className="w-full rounded-md border border-zinc-300 px-2 py-1.5 shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                >
+                  <option value="MiniLeaf">MiniLeaf (fresh microgreens)</option>
+                  <option value="BotanIQals">BotanIQals (dried products)</option>
+                </select>
               </div>
+
+              {form.business_type === "MiniLeaf" ? (
+                <div>
+                  <label className="mb-1 block font-medium text-zinc-800">
+                    Harvest date <span className="text-red-600">*</span>
+                  </label>
+                  <input
+                    type="date"
+                    required
+                    value={form.harvest_date}
+                    onChange={(e) =>
+                      setForm((prev) => ({
+                        ...prev,
+                        harvest_date: e.target.value,
+                      }))
+                    }
+                    className="w-full rounded-md border border-zinc-300 px-2 py-1.5 shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                  />
+                </div>
+              ) : (
+                <div className="grid gap-2 sm:grid-cols-2">
+                  <div>
+                    <label className="mb-1 block font-medium text-zinc-800">
+                      Start date <span className="text-red-600">*</span>
+                    </label>
+                    <input
+                      type="date"
+                      required
+                      value={form.start_date}
+                      onChange={(e) =>
+                        setForm((prev) => ({
+                          ...prev,
+                          start_date: e.target.value,
+                        }))
+                      }
+                      className="w-full rounded-md border border-zinc-300 px-2 py-1.5 shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1 block font-medium text-zinc-800">
+                      End date <span className="text-red-600">*</span>
+                    </label>
+                    <input
+                      type="date"
+                      required
+                      value={form.end_date}
+                      onChange={(e) =>
+                        setForm((prev) => ({
+                          ...prev,
+                          end_date: e.target.value,
+                        }))
+                      }
+                      className="w-full rounded-md border border-zinc-300 px-2 py-1.5 shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                    />
+                  </div>
+                </div>
+              )}
+
               <div>
                 <label className="mb-1 block font-medium text-zinc-800">
                   Status
@@ -170,13 +262,14 @@ export default function CyclesPage() {
               Existing cycles
             </h2>
             {isLoading ? (
-              <p className="text-xs text-zinc-500">Loading cycles…</p>
+              <p className="text-xs text-black">Loading cycles…</p>
             ) : cycles.length ? (
               <div className="max-h-72 space-y-2 overflow-y-auto">
                 {cycles.map((c: any) => {
                   const cycleTargets = targets.filter(
                     (t: any) => t.production_cycle === c.id
                   );
+                  const businessLabel = displayBusinessType(c);
                   return (
                     <div
                       key={c.id}
@@ -184,9 +277,12 @@ export default function CyclesPage() {
                     >
                       <div>
                         <div className="text-xs font-medium text-zinc-900">
-                          {formatDate(c.start_date)} – {formatDate(c.end_date)}
+                          {c.harvest_date
+                            ? `${businessLabel} · Harvest: ${formatDate(c.harvest_date)}`
+                            : `${formatDate(c.start_date)} – ${formatDate(c.end_date)}`}
                         </div>
                         <div className="text-[11px] text-zinc-600">
+                          {!c.harvest_date && `${businessLabel} · `}
                           Status: {c.status} · Targets: {cycleTargets.length}
                         </div>
                       </div>
@@ -201,7 +297,7 @@ export default function CyclesPage() {
                 })}
               </div>
             ) : (
-              <p className="text-xs text-zinc-500">
+              <p className="text-xs text-black">
                 No cycles yet. Create a cycle to begin planning feasibility and
                 tray runs.
               </p>
@@ -212,4 +308,3 @@ export default function CyclesPage() {
     </AuthGuard>
   );
 }
-
