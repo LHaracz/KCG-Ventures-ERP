@@ -1,6 +1,4 @@
-import type { Perms } from "@instantdb/react";
-
-const perms: Perms = {
+const perms = {
   calibration: {
     read: { user: ["==", ["$user.id"]] },
     write: { user: ["==", ["$user.id"]] },
