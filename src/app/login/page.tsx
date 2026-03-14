@@ -1,45 +1,40 @@
 "use client";
 
-import { FormEvent, useState } from "react";
+import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { useSupabase } from "@/components/InstantProvider";
 
 export default function LoginPage() {
   const router = useRouter();
   const { user, isLoading, supabase } = useSupabase();
-  const [email, setEmail] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [message, setMessage] = useState<string | null>(null);
 
   if (!isLoading && user) {
     router.replace("/");
   }
 
-  const handleSendMagicLink = async (e: FormEvent) => {
-    e.preventDefault();
+  const handleSignInWithGoogle = async () => {
     setLoading(true);
     setError(null);
-    setMessage(null);
     try {
-      const { error } = await supabase.auth.signInWithOtp({
-        email,
+      // Prefer current origin so OAuth always redirects back to where the user is (Vercel or localhost).
+      const redirectTo =
+        (typeof window !== "undefined" ? `${window.location.origin}/` : null) ||
+        process.env.NEXT_PUBLIC_FRONTEND_URL ||
+        undefined;
+
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider: "google",
         options: {
-          emailRedirectTo:
-            typeof window !== "undefined"
-              ? `${window.location.origin}/`
-              : undefined,
+          redirectTo,
         },
       });
       if (error) {
         setError(error.message);
-      } else {
-        setMessage(
-          "We sent a magic login link to your email. Click it to access the ERP."
-        );
       }
     } catch (err: any) {
-      setError(err?.message || "Failed to send magic link.");
+      setError(err?.message || "Failed to start Google sign-in.");
     } finally {
       setLoading(false);
     }
@@ -51,41 +46,24 @@ export default function LoginPage() {
         Log in to KCG Ventures ERP
       </h1>
       <p className="mb-6 text-sm text-zinc-600">
-        Enter your email to receive a secure magic link via Supabase. Click the
-        link in your inbox to sign in.
+        Sign in securely with your Google account via Supabase.
       </p>
 
-      <form onSubmit={handleSendMagicLink} className="space-y-4">
-        <div>
-          <label className="mb-1 block text-sm font-medium text-zinc-800">
-            Email address
-          </label>
-          <input
-            type="email"
-            required
-            className="w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm text-black placeholder:text-gray-400 shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500 disabled:text-gray-500"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-          />
-        </div>
+      <div className="space-y-4">
         {error && (
           <p className="text-sm text-red-600" role="alert">
             {error}
           </p>
         )}
-        {message && (
-          <p className="text-sm text-emerald-700" role="status">
-            {message}
-          </p>
-        )}
         <button
-          type="submit"
+          type="button"
           disabled={loading}
           className="inline-flex w-full items-center justify-center rounded-md bg-emerald-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-70"
+          onClick={handleSignInWithGoogle}
         >
-          {loading ? "Sending link…" : "Send magic link"}
+          {loading ? "Redirecting…" : "Continue with Google"}
         </button>
-      </form>
+      </div>
     </div>
   );
 }

@@ -128,6 +128,52 @@ export default function CyclesPage() {
       ? "MiniLeaf"
       : "BotanIQals";
 
+  const handleDeleteCycle = async (id: string) => {
+    if (!user) return;
+    if (typeof window !== "undefined") {
+      const confirmed = window.confirm(
+        "Delete this production cycle and all associated targets, plan lines, and schedule events? This cannot be undone."
+      );
+      if (!confirmed) return;
+    }
+    setError(null);
+    try {
+      // Remove dependent data first to avoid orphaned records.
+      await supabase
+        .from("schedule_events")
+        .delete()
+        .eq("production_cycle_id", id)
+        .eq("user_id", user.id);
+
+      await supabase
+        .from("production_plan_lines")
+        .delete()
+        .eq("production_cycle", id)
+        .eq("user_id", user.id);
+
+      await supabase
+        .from("production_targets")
+        .delete()
+        .eq("production_cycle", id)
+        .eq("user_id", user.id);
+
+      const { error: deleteCycleError } = await supabase
+        .from("production_cycles")
+        .delete()
+        .eq("id", id)
+        .eq("user_id", user.id);
+
+      if (deleteCycleError) throw deleteCycleError;
+
+      setCycles((prev) => prev.filter((c) => c.id !== id));
+      setTargets((prev) => prev.filter((t) => t.production_cycle !== id));
+    } catch (err: unknown) {
+      setError(
+        err instanceof Error ? err.message : "Failed to delete production cycle."
+      );
+    }
+  };
+
   return (
     <AuthGuard>
       <div className="mx-auto max-w-5xl space-y-6">
@@ -286,12 +332,21 @@ export default function CyclesPage() {
                           Status: {c.status} · Targets: {cycleTargets.length}
                         </div>
                       </div>
-                      <Link
-                        href={`/cycles/${c.id}/plan`}
-                        className="text-[11px] font-medium text-emerald-700 underline"
-                      >
-                        Open planner
-                      </Link>
+                      <div className="flex items-center gap-2">
+                        <Link
+                          href={`/cycles/${c.id}/plan`}
+                          className="text-[11px] font-medium text-emerald-700 underline"
+                        >
+                          Open planner
+                        </Link>
+                        <button
+                          type="button"
+                          className="text-[11px] font-medium text-red-600 underline"
+                          onClick={() => handleDeleteCycle(c.id)}
+                        >
+                          Delete
+                        </button>
+                      </div>
                     </div>
                   );
                 })}

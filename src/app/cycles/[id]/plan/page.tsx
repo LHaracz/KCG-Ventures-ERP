@@ -539,10 +539,10 @@ export default function CyclePlanPage() {
           if (!mg) continue;
           const daysToHarvest = mg.harvest_offset_days ?? mg.days_to_harvest ?? 0;
           const germinationDays = mg.light_offset_days ?? mg.germination_days ?? 0;
-          const soakOffset = mg.default_soak_offset_days ?? 1;
           const sowDate = addDays(harvestDate, -daysToHarvest);
           const lightDate = addDays(sowDate, germinationDays);
-          const soakDate = mg.soaking_required ? addDays(sowDate, -soakOffset) : null;
+          // Soak always happens the day before sow when soaking is required.
+          const soakDate = mg.soaking_required ? addDays(sowDate, -1) : null;
           const drainDate = mg.soaking_required ? sowDate : null;
 
           planInserts.push({
@@ -643,7 +643,8 @@ export default function CyclePlanPage() {
           const germinationDays = mg?.light_offset_days ?? mg?.germination_days ?? 0;
           const sowDate = addDays(block.start, -daysToHarvest);
           const lightDate = addDays(sowDate, germinationDays);
-          const soakDate = mg?.soaking_required ? addDays(sowDate, -(mg.default_soak_offset_days ?? 1)) : null;
+          // Soak always happens the day before sow when soaking is required.
+          const soakDate = mg?.soaking_required ? addDays(sowDate, -1) : null;
           const drainDate = mg?.soaking_required ? sowDate : null;
 
           planInserts.push({
