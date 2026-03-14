@@ -13,7 +13,8 @@ const navItems = [
   { href: "/products", label: "Products & BOM" },
   { href: "/cycles", label: "Production Cycles & Planner" },
   { href: "/schedule", label: "Schedule" },
-  { href: "/settings/notifications", label: "Notifications" },
+  { href: "/notifications", label: "Alerts" },
+  { href: "/settings/notifications", label: "Notification settings" },
 ];
 
 export function Navigation() {
