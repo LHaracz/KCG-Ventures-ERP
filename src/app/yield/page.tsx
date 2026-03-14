@@ -43,12 +43,10 @@ export default function YieldPage() {
         supabase
           .from("microgreens")
           .select("*")
-          .eq("user_id", user.id)
           .order("name", { ascending: true }),
         supabase
           .from("yield_entries")
           .select("*")
-          .eq("user_id", user.id)
           .order("created_at", { ascending: false })
           .limit(100),
       ]);
@@ -134,7 +132,6 @@ export default function YieldPage() {
       const { data: refreshed } = await supabase
         .from("yield_entries")
         .select("*")
-        .eq("user_id", user.id)
         .order("created_at", { ascending: false })
         .limit(100);
       setRecentEntries(refreshed || []);

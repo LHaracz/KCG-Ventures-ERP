@@ -42,12 +42,10 @@ export default function InventoryPage() {
         supabase
           .from("inventory_items")
           .select("*")
-          .eq("user_id", user.id)
           .order("name", { ascending: true }),
         supabase
           .from("inventory_adjustments")
           .select("*")
-          .eq("user_id", user.id)
           .order("created_at", { ascending: false })
           .limit(100),
       ]);
@@ -174,7 +172,6 @@ export default function InventoryPage() {
       const { data: refreshed } = await supabase
         .from("inventory_items")
         .select("*")
-        .eq("user_id", user.id)
         .order("name", { ascending: true });
       setItems(refreshed || []);
       setEditing(null);
@@ -251,12 +248,10 @@ export default function InventoryPage() {
           supabase
             .from("inventory_items")
             .select("*")
-            .eq("user_id", user.id)
             .order("name", { ascending: true }),
           supabase
             .from("inventory_adjustments")
             .select("*")
-            .eq("user_id", user.id)
             .order("created_at", { ascending: false })
             .limit(100),
         ]);

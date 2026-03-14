@@ -64,17 +64,14 @@ export default function CalibrationPage() {
         supabase
           .from("freeze_dryer_machine_settings")
           .select("*")
-          .eq("user_id", user.id)
           .maybeSingle(),
         supabase
           .from("freeze_dryer_profiles")
           .select("*")
-          .eq("user_id", user.id)
           .order("name", { ascending: true }),
         supabase
           .from("microgreens")
           .select("*")
-          .eq("user_id", user.id)
           .order("name", { ascending: true }),
       ]);
 

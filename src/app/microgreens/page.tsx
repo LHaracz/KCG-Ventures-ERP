@@ -32,7 +32,6 @@ export default function MicrogreensPage() {
       const { data, error } = await supabase
         .from("microgreens")
         .select("*")
-        .eq("user_id", user.id)
         .order("name", { ascending: true });
       if (error) {
         setError(error.message);
@@ -141,7 +140,6 @@ export default function MicrogreensPage() {
       const { data: refreshed } = await supabase
         .from("microgreens")
         .select("*")
-        .eq("user_id", user.id)
         .order("name", { ascending: true });
       setRows(refreshed || []);
       setEditing(null);

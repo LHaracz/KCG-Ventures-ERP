@@ -68,31 +68,25 @@ export default function ProductsPage() {
         supabase
           .from("products")
           .select("*")
-          .eq("user_id", user.id)
           .order("name", { ascending: true }),
         supabase
           .from("microgreens")
           .select("*")
-          .eq("user_id", user.id)
           .order("name", { ascending: true }),
         supabase
           .from("inventory_items")
           .select("*")
-          .eq("user_id", user.id)
           .order("name", { ascending: true }),
         supabase
           .from("bom_lines")
-          .select("*")
-          .eq("user_id", user.id),
+          .select("*"),
         supabase
           .from("freeze_dryer_profiles")
           .select("*")
-          .eq("user_id", user.id)
           .order("name", { ascending: true }),
         supabase
           .from("product_variants")
-          .select("*")
-          .eq("user_id", user.id),
+          .select("*"),
       ]);
       setProducts(p.data || []);
       setMicrogreens(m.data || []);

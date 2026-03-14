@@ -117,38 +117,23 @@ export default function CyclePlanPage() {
           .select("*")
           .eq("production_cycle", cycleId)
           .eq("user_id", user.id),
-        supabase.from("products").select("*").eq("user_id", user.id),
-        supabase.from("microgreens").select("*").eq("user_id", user.id),
-        supabase.from("bom_lines").select("*").eq("user_id", user.id),
-        supabase.from("inventory_items").select("*").eq("user_id", user.id),
-        supabase
-          .from("calibration")
-          .select("*")
-          .eq("user_id", user.id)
-          .limit(1)
-          .maybeSingle(),
+        supabase.from("products").select("*"),
+        supabase.from("microgreens").select("*"),
+        supabase.from("bom_lines").select("*"),
+        supabase.from("inventory_items").select("*"),
+        supabase.from("calibration").select("*").limit(1).maybeSingle(),
         supabase
           .from("production_plan_lines")
           .select("*")
           .eq("production_cycle", cycleId)
           .eq("user_id", user.id),
-        supabase
-          .from("yield_entries")
-          .select("*")
-          .eq("user_id", user.id),
-        supabase
-          .from("product_variants")
-          .select("*")
-          .eq("user_id", user.id),
+        supabase.from("yield_entries").select("*"),
+        supabase.from("product_variants").select("*"),
         supabase
           .from("freeze_dryer_machine_settings")
           .select("*")
-          .eq("user_id", user.id)
           .maybeSingle(),
-        supabase
-          .from("freeze_dryer_profiles")
-          .select("*")
-          .eq("user_id", user.id),
+        supabase.from("freeze_dryer_profiles").select("*"),
       ]);
 
       if (cRes.data) setCycle(cRes.data);
