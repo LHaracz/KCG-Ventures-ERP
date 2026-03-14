@@ -18,10 +18,17 @@ export function addDays(date: Date, days: number): Date {
   return d;
 }
 
+/** Format as local calendar date (avoids UTC date-only strings showing as previous day). */
 export function formatDate(dateStr: string | null | undefined): string {
   if (!dateStr) return "";
-  const d = new Date(dateStr);
-  if (Number.isNaN(d.getTime())) return "";
-  return d.toLocaleDateString();
+  const datePart = dateStr.slice(0, 10);
+  const [y, m, d] = datePart.split(/[-/]/).map(Number);
+  if (y != null && m != null && d != null && !Number.isNaN(y) && !Number.isNaN(m) && !Number.isNaN(d)) {
+    const local = new Date(y, m - 1, d, 0, 0, 0, 0);
+    return local.toLocaleDateString();
+  }
+  const fallback = new Date(dateStr);
+  if (Number.isNaN(fallback.getTime())) return "";
+  return fallback.toLocaleDateString();
 }
 
