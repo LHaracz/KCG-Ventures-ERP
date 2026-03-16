@@ -384,22 +384,25 @@ export default function SchedulePage() {
         const bomLinesForScaling: BomLineForScaling[] = bomLines
           .filter((b) => b.product === product.id)
           .filter((b) => b.line_type !== "dried_microgreen")
-          .filter((b) => b.inventory_item) // ingredients/packaging
           .map((b) => {
-            const item = items.find((i) => i.id === b.inventory_item);
+            const item = b.inventory_item
+              ? items.find((i) => i.id === b.inventory_item)
+              : null;
+            const ingredientName =
+              item?.name ?? (b as any).material_name_snapshot ?? "Unknown";
             return {
               bomLineId: b.id,
               productId: product.id,
               ingredientId: b.inventory_item || b.id,
-              ingredientName: item?.name ?? "Unknown",
+              ingredientName,
               qtyPerUnit: Number(b.qty_per_unit || 0),
-              unitLabel: item?.unit ?? b.unit_label ?? "",
+              unitLabel: b.unit_label || item?.unit || product.unit || "",
             };
           })
           .filter((l) => l.qtyPerUnit > 0);
 
         if (!bomLinesForScaling.length) {
-          warnings.push("No inventory/packaging BOM lines found for scaling.");
+          warnings.push("No BOM lines found for scaling.");
         }
 
         const perCycle = batchCycles.map((c) =>
