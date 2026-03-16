@@ -94,17 +94,15 @@ export default function SchedulePage() {
         supabase
           .from("microgreens")
           .select("*")
-          .eq("user_id", user.id)
           .order("name", { ascending: true }),
         supabase.from("yield_entries").select("*"),
         supabase
           .from("freeze_dryer_profiles")
           .select("*")
-          .eq("user_id", user.id),
+          ,
         supabase
           .from("freeze_dryer_machine_settings")
           .select("*")
-          .eq("user_id", user.id)
           .maybeSingle(),
       ]);
 
