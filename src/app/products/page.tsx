@@ -235,12 +235,19 @@ export default function ProductsPage() {
       };
 
       if (editing.id) {
-        const { error } = await supabase
+        const { data: updated, error } = await supabase
           .from("products")
           .update(payload)
           .eq("id", editing.id)
-          .eq("user_id", user.id);
+          .eq("user_id", user.id)
+          .select("id, target_batch_size, target_batch_unit")
+          .maybeSingle();
         if (error) throw error;
+        if (!updated) {
+          throw new Error(
+            "Save did not update any rows. This usually means the product row was not matched (user_id/id mismatch) or an RLS policy blocked the update.",
+          );
+        }
       } else {
         const { data, error } = await supabase
           .from("products")
