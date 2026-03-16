@@ -86,7 +86,7 @@ export default function SchedulePage() {
           .select("*")
           .eq("user_id", user.id),
         supabase.from("products").select("*").order("name", { ascending: true }),
-        supabase.from("bom_lines").select("*").eq("user_id", user.id),
+        supabase.from("bom_lines").select("*"),
         supabase
           .from("inventory_items")
           .select("*")
