@@ -96,7 +96,7 @@ export default function SchedulePage() {
           .select("*")
           .eq("user_id", user.id)
           .order("name", { ascending: true }),
-        supabase.from("yield_entries").select("*").eq("user_id", user.id),
+        supabase.from("yield_entries").select("*"),
         supabase
           .from("freeze_dryer_profiles")
           .select("*")
