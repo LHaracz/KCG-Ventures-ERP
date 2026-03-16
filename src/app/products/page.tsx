@@ -239,7 +239,6 @@ export default function ProductsPage() {
           .from("products")
           .update(payload)
           .eq("id", editing.id)
-          .eq("user_id", user.id)
           .select("id, target_batch_size, target_batch_unit")
           .maybeSingle();
         if (error) throw error;
