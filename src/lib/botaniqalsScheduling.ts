@@ -165,23 +165,6 @@ export function estimateTraysNeededForDriedDemand(
     const driedRequiredG = demand[microgreenId].driedRequiredG;
     const entries = yieldEntries.filter((y) => y.microgreen === microgreenId);
 
-    const driedSamples = entries
-      .map((e) => Number(e.dried_yield_g ?? 0))
-      .filter((n) => Number.isFinite(n) && n > 0);
-    const avgDried = avg(driedSamples);
-
-    if (avgDried && avgDried > 0) {
-      result.push({
-        microgreenId,
-        driedRequiredG,
-        avgDriedGPerTray: avgDried,
-        traysNeeded: Math.ceil(driedRequiredG / avgDried),
-        warning: null,
-      });
-      continue;
-    }
-
-    // Fallback: infer dried yield from fresh yield and dry matter fraction.
     const freshSamples = entries
       .map((e) => Number(e.fresh_yield_g ?? 0))
       .filter((n) => Number.isFinite(n) && n > 0);
@@ -195,8 +178,7 @@ export function estimateTraysNeededForDriedDemand(
         driedRequiredG,
         avgDriedGPerTray: inferredAvgDried,
         traysNeeded: Math.ceil(driedRequiredG / inferredAvgDried),
-        warning:
-          "No dried yield data; using fresh yield × dry matter fraction to estimate trays.",
+        warning: null,
       });
       continue;
     }
