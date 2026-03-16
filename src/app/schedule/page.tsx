@@ -90,7 +90,6 @@ export default function SchedulePage() {
         supabase
           .from("inventory_items")
           .select("*")
-          .eq("user_id", user.id)
           .order("name", { ascending: true }),
         supabase
           .from("microgreens")
@@ -388,13 +387,19 @@ export default function SchedulePage() {
             const item = b.inventory_item
               ? items.find((i) => i.id === b.inventory_item)
               : null;
-            const ingredientName =
-              item?.name ?? (b as any).material_name_snapshot ?? "Unknown";
+            const mg = (b as any).microgreen_id
+              ? microgreens.find((m) => m.id === (b as any).microgreen_id)
+              : null;
+            let materialName = (b as any).material_name_snapshot as string | null;
+            if (!materialName) {
+              if (item) materialName = item.name;
+              else if (mg) materialName = mg.name;
+            }
             return {
               bomLineId: b.id,
               productId: product.id,
               ingredientId: b.inventory_item || b.id,
-              ingredientName,
+              ingredientName: materialName || "Unknown",
               qtyPerUnit: Number(b.qty_per_unit || 0),
               unitLabel: b.unit_label || item?.unit || product.unit || "",
             };
