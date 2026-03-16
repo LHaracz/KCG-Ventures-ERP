@@ -1,9 +1,9 @@
-\"use client\";
+"use client";
 
-import { useEffect, useMemo, useState, FormEvent } from \"react\";
-import { AuthGuard } from \"@/components/AuthGuard\";
-import { useSupabase } from \"@/components/InstantProvider\";
-import { formatDate } from \"@/lib/date\";
+import { useEffect, useMemo, useState, FormEvent } from "react";
+import { AuthGuard } from "@/components/AuthGuard";
+import { useSupabase } from "@/components/InstantProvider";
+import { formatDate } from "@/lib/date";
 import {
   AggregatedIngredientRequirement,
   BomLineForScaling,
@@ -12,7 +12,7 @@ import {
   aggregateCycleRequirements,
   scaleBomLines,
   splitIntoCycles,
-} from \"@/lib/manufacturing\";
+} from "@/lib/manufacturing";
 
 type ScheduleEvent = {
   id: string;
@@ -46,7 +46,7 @@ type ProductRow = {
 
 type ManufacturingForm = {
   productId: string;
-  plannedQuantity: number | \"\";
+  plannedQuantity: number | "";
   plannedDate: string;
   assignedTo: string;
   notes: string;
@@ -55,8 +55,8 @@ type ManufacturingForm = {
 export default function SchedulePage() {
   const { user, supabase } = useSupabase();
 
-  const [activeTab, setActiveTab] = useState<\"agenda\" | \"manufacturing\">(
-    \"agenda\",
+  const [activeTab, setActiveTab] = useState<"agenda" | "manufacturing">(
+    "agenda",
   );
 
   const [events, setEvents] = useState<ScheduleEvent[]>([]);
@@ -73,11 +73,11 @@ export default function SchedulePage() {
   );
 
   const [form, setForm] = useState<ManufacturingForm>({
-    productId: \"\",
-    plannedQuantity: \"\",
-    plannedDate: \"\",
-    assignedTo: \"\",
-    notes: \"\",
+    productId: "",
+    plannedQuantity: "",
+    plannedDate: "",
+    assignedTo: "",
+    notes: "",
   });
   const [savingManufacturing, setSavingManufacturing] = useState(false);
 
@@ -87,10 +87,10 @@ export default function SchedulePage() {
       setIsLoadingEvents(true);
       setEventsError(null);
       const { data, error } = await supabase
-        .from(\"schedule_events\")
-        .select(\"*\")
-        .eq(\"user_id\", user.id)
-        .order(\"start_at\", { ascending: true });
+        .from("schedule_events")
+        .select("*")
+        .eq("user_id", user.id)
+        .order("start_at", { ascending: true });
       if (error) setEventsError(error.message);
       else setEvents((data || []) as ScheduleEvent[]);
       setIsLoadingEvents(false);
@@ -104,18 +104,18 @@ export default function SchedulePage() {
       setIsLoadingManufacturing(true);
       setManufacturingError(null);
       const [pRes, bRes, iRes] = await Promise.all([
-        supabase.from(\"products\").select(\"*\").order(\"name\", {
+        supabase.from("products").select("*").order("name", {
           ascending: true,
         }),
-        supabase.from(\"bom_lines\").select(\"*\"),
-        supabase.from(\"inventory_items\").select(\"*\"),
+        supabase.from("bom_lines").select("*"),
+        supabase.from("inventory_items").select("*"),
       ]);
       if (pRes.error || bRes.error || iRes.error) {
         setManufacturingError(
           pRes.error?.message ||
             bRes.error?.message ||
             iRes.error?.message ||
-            \"Failed to load manufacturing data.\",
+            "Failed to load manufacturing data.",
         );
       } else {
         setProducts((pRes.data || []) as ProductRow[]);
@@ -158,14 +158,14 @@ export default function SchedulePage() {
       .filter((b: any) => b.product === selectedProduct.id)
       .map((b: any) => {
         const item = items.find((i: any) => i.id === b.inventory_item);
-        const ingredientName = item?.name ?? b.material_name_snapshot ?? \"\"; // fall back to snapshot when present
+        const ingredientName = item?.name ?? b.material_name_snapshot ?? ""; // fall back to snapshot when present
         return {
           bomLineId: b.id,
           productId: selectedProduct.id,
           ingredientId: b.inventory_item || b.id,
-          ingredientName: ingredientName || \"Unknown ingredient\",
+          ingredientName: ingredientName || "Unknown ingredient",
           qtyPerUnit: Number(b.qty_per_unit || 0),
-          unitLabel: b.unit_label || selectedProduct.unit || \"unit\",
+          unitLabel: b.unit_label || selectedProduct.unit || "unit",
         } as BomLineForScaling;
       })
       .filter((line) => line.qtyPerUnit > 0);
@@ -173,7 +173,7 @@ export default function SchedulePage() {
 
   const manufacturingCycles: ManufacturingCycle[] = useMemo(() => {
     const plannedQtyNumber =
-      form.plannedQuantity === \"\" ? 0 : Number(form.plannedQuantity || 0);
+      form.plannedQuantity === "" ? 0 : Number(form.plannedQuantity || 0);
     if (!targetBatchSize || targetBatchSize <= 0) return [];
     if (!plannedQtyNumber || plannedQtyNumber <= 0) return [];
     return splitIntoCycles(plannedQtyNumber, targetBatchSize);
@@ -199,28 +199,28 @@ export default function SchedulePage() {
     e.preventDefault();
     if (!user) return;
     if (!selectedProduct) {
-      setManufacturingError(\"Select a product.\");
+      setManufacturingError("Select a product.");
       return;
     }
     const plannedQtyNumber =
-      form.plannedQuantity === \"\" ? 0 : Number(form.plannedQuantity || 0);
+      form.plannedQuantity === "" ? 0 : Number(form.plannedQuantity || 0);
     if (!plannedQtyNumber || plannedQtyNumber <= 0) {
-      setManufacturingError(\"Enter a planned quantity.\");
+      setManufacturingError("Enter a planned quantity.");
       return;
     }
     if (!form.plannedDate) {
-      setManufacturingError(\"Choose a planned date.\");
+      setManufacturingError("Choose a planned date.");
       return;
     }
     if (!targetBatchSize || targetBatchSize <= 0) {
       setManufacturingError(
-        \"Selected product does not have a target batch size. Set it in Products & BOM.\",
+        "Selected product does not have a target batch size. Set it in Products & BOM.",
       );
       return;
     }
     if (!manufacturingCycles.length) {
       setManufacturingError(
-        \"No cycles could be generated. Check planned quantity and target batch size.\",
+        "No cycles could be generated. Check planned quantity and target batch size.",
       );
       return;
     }
@@ -234,12 +234,12 @@ export default function SchedulePage() {
 
       const inserts = manufacturingCycles.map((cycle) => ({
         production_cycle_id: null,
-        business_type: \"Manufacturing\",
+        business_type: "Manufacturing",
         product_id: selectedProduct.id,
         product_variant_id: null,
         microgreen_id: null,
         freeze_dryer_profile_id: null,
-        event_type: \"manufacturing_cycle\",
+        event_type: "manufacturing_cycle",
         title: `${selectedProduct.name} – cycle ${cycle.index}`,
         start_at: startIso,
         end_at: null,
@@ -248,34 +248,34 @@ export default function SchedulePage() {
         trays: null,
         run_number: cycle.index,
         machine_number: null,
-        status: \"planned\",
+        status: "planned",
         notes: form.notes || null,
         user_id: user.id,
         assigned_to: form.assignedTo || null,
       }));
 
       const { error } = await supabase
-        .from(\"schedule_events\")
+        .from("schedule_events")
         .insert(inserts as any);
       if (error) {
         throw error;
       }
 
       const { data: refreshed } = await supabase
-        .from(\"schedule_events\")
-        .select(\"*\")
-        .eq(\"user_id\", user.id)
-        .order(\"start_at\", { ascending: true });
+        .from("schedule_events")
+        .select("*")
+        .eq("user_id", user.id)
+        .order("start_at", { ascending: true });
       setEvents((refreshed || []) as ScheduleEvent[]);
 
       setForm((prev) => ({
         ...prev,
-        plannedQuantity: \"\",
-        notes: \"\",
+        plannedQuantity: "",
+        notes: "",
       }));
     } catch (err: any) {
       setManufacturingError(
-        err?.message || \"Failed to save manufacturing schedule.\",
+        err?.message || "Failed to save manufacturing schedule.",
       );
     } finally {
       setSavingManufacturing(false);
@@ -284,75 +284,75 @@ export default function SchedulePage() {
 
   return (
     <AuthGuard>
-      <div className=\"mx-auto max-w-5xl space-y-6\">
+      <div className="mx-auto max-w-5xl space-y-6">
         <header>
-          <h1 className=\"mb-1 text-2xl font-semibold text-zinc-900\">
+          <h1 className="mb-1 text-2xl font-semibold text-zinc-900">
             Production Schedule
           </h1>
-          <p className=\"text-sm text-zinc-600\">
+          <p className="text-sm text-zinc-600">
             View grow, harvest, freeze-dryer, packaging, and supplement
             manufacturing events generated for your production.
           </p>
         </header>
 
-        <div className=\"flex gap-2 border-b border-zinc-200 text-xs\">
+        <div className="flex gap-2 border-b border-zinc-200 text-xs">
           <button
-            type=\"button\"
-            onClick={() => setActiveTab(\"agenda\")}
+            type="button"
+            onClick={() => setActiveTab("agenda")}
             className={`border-b-2 px-3 py-1.5 ${
-              activeTab === \"agenda\"
-                ? \"border-emerald-600 text-emerald-700\"
-                : \"border-transparent text-zinc-600 hover:text-zinc-900\"
+              activeTab === "agenda"
+                ? "border-emerald-600 text-emerald-700"
+                : "border-transparent text-zinc-600 hover:text-zinc-900"
             }`}
           >
             Agenda
           </button>
           <button
-            type=\"button\"
-            onClick={() => setActiveTab(\"manufacturing\")}
+            type="button"
+            onClick={() => setActiveTab("manufacturing")}
             className={`border-b-2 px-3 py-1.5 ${
-              activeTab === \"manufacturing\"
-                ? \"border-emerald-600 text-emerald-700\"
-                : \"border-transparent text-zinc-600 hover:text-zinc-900\"
+              activeTab === "manufacturing"
+                ? "border-emerald-600 text-emerald-700"
+                : "border-transparent text-zinc-600 hover:text-zinc-900"
             }`}
           >
             Supplement manufacturing
           </button>
         </div>
 
-        {activeTab === \"agenda\" && (
+        {activeTab === "agenda" && (
           <>
             {isLoadingEvents ? (
-              <p className=\"text-sm text-black\">Loading schedule…</p>
+              <p className="text-sm text-black">Loading schedule…</p>
             ) : eventsError ? (
-              <p className=\"text-sm text-red-600\" role=\"alert\">
+              <p className="text-sm text-red-600" role="alert">
                 {eventsError}
               </p>
             ) : events.length === 0 ? (
-              <p className=\"text-sm text-black\">
+              <p className="text-sm text-black">
                 No scheduled events yet. Generate a schedule from a production
                 cycle planner or add manufacturing cycles to see tasks appear
                 here.
               </p>
             ) : (
-              <section className=\"space-y-4 rounded-md border border-zinc-200 bg-white p-4 text-xs\">
-                <h2 className=\"text-sm font-semibold text-zinc-900\">
+              <section className="space-y-4 rounded-md border border-zinc-200 bg-white p-4 text-xs">
+                <h2 className="text-sm font-semibold text-zinc-900">
                   Agenda view (by date)
                 </h2>
-                <div className=\"max-h-[36rem] space-y-4 overflow-y-auto\">
+                <div className="max-h-[36rem] space-y-4 overflow-y-auto">
                   {eventsByDate.map(([dateKey, dayEvents]) => (
                     <div key={dateKey}>
-                      <div className=\"mb-1.5 text-[11px] font-semibold text-zinc-700\">
+                      <div className="mb-1.5 text-[11px] font-semibold text-zinc-700">
                         {formatDate(dateKey)}
                       </div>
-                      <div className=\"space-y-2\">
+                      <div className="space-y-2">
                         {dayEvents.map((ev) => (
                           <div
                             key={ev.id}
-                            className=\"rounded border border-zinc-100 bg-zinc-50 px-2 py-1.5\"
+                            className="rounded border border-zinc-100 bg-zinc-50 px-2 py-1.5"
                           >
                             <div
-                              className=\"flex cursor-pointer items-start justify-between\"
+                              className="flex cursor-pointer items-start justify-between"
                               onClick={() =>
                                 setExpandedId(
                                   expandedId === ev.id ? null : ev.id,
@@ -360,11 +360,11 @@ export default function SchedulePage() {
                               }
                             >
                               <div>
-                                <div className=\"text-[11px] font-semibold text-zinc-900\">
+                                <div className="text-[11px] font-semibold text-zinc-900">
                                   {ev.title}
                                 </div>
-                                <div className=\"text-[11px] text-zinc-600\">
-                                  <span className=\"capitalize\">
+                                <div className="text-[11px] text-zinc-600">
+                                  <span className="capitalize">
                                     {ev.event_type}
                                   </span>
                                   {ev.trays != null &&
@@ -377,27 +377,27 @@ export default function SchedulePage() {
                                   {ev.run_number != null &&
                                     ` · Run #${ev.run_number}`}
                                 </div>
-                                <div className=\"mt-0.5 text-[10px] text-zinc-500\">
+                                <div className="mt-0.5 text-[10px] text-zinc-500">
                                   Status:{" "}
-                                  <span className=\"capitalize\">
-                                    {ev.status || \"planned\"}
+                                  <span className="capitalize">
+                                    {ev.status || "planned"}
                                   </span>
                                 </div>
                               </div>
                               <span
                                 className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${
-                                  ev.status === \"infeasible\"
-                                    ? \"bg-red-100 text-red-700\"
-                                    : ev.status === \"warning\"
-                                    ? \"bg-amber-100 text-amber-700\"
-                                    : \"bg-emerald-100 text-emerald-700\"
+                                  ev.status === "infeasible"
+                                    ? "bg-red-100 text-red-700"
+                                    : ev.status === "warning"
+                                    ? "bg-amber-100 text-amber-700"
+                                    : "bg-emerald-100 text-emerald-700"
                                 }`}
                               >
                                 {ev.event_type}
                               </span>
                             </div>
                             {expandedId === ev.id && (
-                              <div className=\"mt-2 border-t border-zinc-200 pt-2 text-[10px] text-zinc-600\">
+                              <div className="mt-2 border-t border-zinc-200 pt-2 text-[10px] text-zinc-600">
                                 {ev.business_type && (
                                   <div>Business: {ev.business_type}</div>
                                 )}
@@ -425,31 +425,31 @@ export default function SchedulePage() {
           </>
         )}
 
-        {activeTab === \"manufacturing\" && (
-          <section className=\"space-y-4 rounded-md border border-zinc-200 bg-white p-4 text-xs\">
-            <h2 className=\"text-sm font-semibold text-zinc-900\">
+        {activeTab === "manufacturing" && (
+          <section className="space-y-4 rounded-md border border-zinc-200 bg-white p-4 text-xs">
+            <h2 className="text-sm font-semibold text-zinc-900">
               Supplement manufacturing schedule
             </h2>
-            <p className=\"text-[11px] text-zinc-600\">
+            <p className="text-[11px] text-zinc-600">
               Plan manufacturing cycles for finished products using their Bills
               of Materials and target batch sizes defined in Products &amp; BOM.
             </p>
 
             {isLoadingManufacturing ? (
-              <p className=\"text-xs text-black\">Loading manufacturing data…</p>
+              <p className="text-xs text-black">Loading manufacturing data…</p>
             ) : manufacturingError ? (
-              <p className=\"text-xs text-red-600\" role=\"alert\">
+              <p className="text-xs text-red-600" role="alert">
                 {manufacturingError}
               </p>
             ) : (
               <>
                 <form
                   onSubmit={handleManufacturingSubmit}
-                  className=\"grid gap-3 border-b border-zinc-200 pb-4 text-xs sm:grid-cols-2\"
+                  className="grid gap-3 border-b border-zinc-200 pb-4 text-xs sm:grid-cols-2"
                 >
-                  <div className=\"space-y-2\">
+                  <div className="space-y-2">
                     <div>
-                      <label className=\"mb-1 block font-medium text-zinc-800\">
+                      <label className="mb-1 block font-medium text-zinc-800">
                         Product
                       </label>
                       <select
@@ -461,9 +461,9 @@ export default function SchedulePage() {
                           }))
                         }
                         required
-                        className=\"w-full rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-xs text-black shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500\"
+                        className="w-full rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-xs text-black shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
                       >
-                        <option value=\"\">Select product…</option>
+                        <option value="">Select product…</option>
                         {manufacturableProducts.map((p) => (
                           <option key={p.id} value={p.id}>
                             {p.name}
@@ -472,32 +472,32 @@ export default function SchedulePage() {
                       </select>
                     </div>
                     <div>
-                      <label className=\"mb-1 block font-medium text-zinc-800\">
+                      <label className="mb-1 block font-medium text-zinc-800">
                         Planned quantity
                       </label>
                       <input
-                        type=\"number\"
+                        type="number"
                         min={1}
                         value={form.plannedQuantity}
                         onChange={(e) =>
                           setForm((prev) => ({
                             ...prev,
                             plannedQuantity:
-                              e.target.value === \"\"
-                                ? \"\"
+                              e.target.value === ""
+                                ? ""
                                 : Number(e.target.value),
                           }))
                         }
                         required
-                        className=\"w-full rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-xs text-black shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500\"
+                        className="w-full rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-xs text-black shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
                       />
                     </div>
                     <div>
-                      <label className=\"mb-1 block font-medium text-zinc-800\">
+                      <label className="mb-1 block font-medium text-zinc-800">
                         Planned date
                       </label>
                       <input
-                        type=\"date\"
+                        type="date"
                         value={form.plannedDate}
                         onChange={(e) =>
                           setForm((prev) => ({
@@ -506,17 +506,17 @@ export default function SchedulePage() {
                           }))
                         }
                         required
-                        className=\"w-full rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-xs text-black shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500\"
+                        className="w-full rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-xs text-black shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
                       />
                     </div>
                   </div>
-                  <div className=\"space-y-2\">
+                  <div className="space-y-2">
                     <div>
-                      <label className=\"mb-1 block font-medium text-zinc-800\">
+                      <label className="mb-1 block font-medium text-zinc-800">
                         Assigned person (optional)
                       </label>
                       <input
-                        type=\"text\"
+                        type="text"
                         value={form.assignedTo}
                         onChange={(e) =>
                           setForm((prev) => ({
@@ -524,11 +524,11 @@ export default function SchedulePage() {
                             assignedTo: e.target.value,
                           }))
                         }
-                        className=\"w-full rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-xs text-black shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500\"
+                        className="w-full rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-xs text-black shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
                       />
                     </div>
                     <div>
-                      <label className=\"mb-1 block font-medium text-zinc-800\">
+                      <label className="mb-1 block font-medium text-zinc-800">
                         Notes (optional)
                       </label>
                       <textarea
@@ -540,67 +540,67 @@ export default function SchedulePage() {
                             notes: e.target.value,
                           }))
                         }
-                        className=\"w-full rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-xs text-black shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500\"
+                        className="w-full rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-xs text-black shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
                       />
                     </div>
-                    <div className=\"pt-1\">
+                    <div className="pt-1">
                       <button
-                        type=\"submit\"
+                        type="submit"
                         disabled={savingManufacturing}
-                        className=\"rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white shadow-sm hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-70\"
+                        className="rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white shadow-sm hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-70"
                       >
                         {savingManufacturing
-                          ? \"Saving…\"
-                          : \"Save manufacturing schedule\"}
+                          ? "Saving…"
+                          : "Save manufacturing schedule"}
                       </button>
                     </div>
                   </div>
                 </form>
 
                 {selectedProduct && (
-                  <div className=\"grid gap-4 text-xs md:grid-cols-2\">
-                    <div className=\"space-y-3\">
-                      <div className=\"rounded-md border border-zinc-200 bg-zinc-50 p-3\">
-                        <div className=\"mb-1 text-[11px] font-semibold text-zinc-900\">
+                  <div className="grid gap-4 text-xs md:grid-cols-2">
+                    <div className="space-y-3">
+                      <div className="rounded-md border border-zinc-200 bg-zinc-50 p-3">
+                        <div className="mb-1 text-[11px] font-semibold text-zinc-900">
                           Batch properties
                         </div>
-                        <div className=\"space-y-1 text-[11px] text-black\">
+                        <div className="space-y-1 text-[11px] text-black">
                           <div>
-                            <span className=\"font-medium\">
+                            <span className="font-medium">
                               Product:
-                            </span>{\" "}
+                            </span>{" "}
                             {selectedProduct.name}
                           </div>
                           <div>
-                            <span className=\"font-medium\">
+                            <span className="font-medium">
                               Planned quantity:
-                            </span>{\" "}
-                            {form.plannedQuantity || \"—\"}{" "}
+                            </span>{" "}
+                            {form.plannedQuantity || "—"}{" "}
                             {selectedProduct.unit}
                           </div>
                           <div>
-                            <span className=\"font-medium\">
+                            <span className="font-medium">
                               Target batch size:
-                            </span>{\" "}
-                            {targetBatchSize ?? \"Not set\"}{" "}
+                            </span>{" "}
+                            {targetBatchSize ?? "Not set"}{" "}
                             {selectedProduct.target_batch_unit ||
                               selectedProduct.unit}
                           </div>
                           <div>
-                            <span className=\"font-medium\">
+                            <span className="font-medium">
                               Number of cycles:
-                            </span>{\" "}
-                            {manufacturingCycles.length || \"—\"}
+                            </span>{" "}
+                            {manufacturingCycles.length || "—"}
                           </div>
                         </div>
                       </div>
 
-                      <div className=\"rounded-md border border-zinc-200 bg-zinc-50 p-3\">
-                        <div className=\"mb-1 text-[11px] font-semibold text-zinc-900\">
+                      <div className="rounded-md border border-zinc-200 bg-zinc-50 p-3">
+                        <div className="mb-1 text-[11px] font-semibold text-zinc-900">
                           Cycle breakdown
                         </div>
                         {manufacturingCycles.length ? (
-                          <ul className=\"space-y-1 text-[11px] text-black\">
+                          <ul className="space-y-1 text-[11px] text-black">
                             {manufacturingCycles.map((c) => (
                               <li key={c.index}>
                                 Cycle {c.index}: {c.quantity}{" "}
@@ -609,30 +609,30 @@ export default function SchedulePage() {
                             ))}
                           </ul>
                         ) : (
-                          <p className=\"text-[11px] text-black\">
+                          <p className="text-[11px] text-black">
                             Enter a planned quantity to see cycle breakdown.
                           </p>
                         )}
                       </div>
                     </div>
 
-                    <div className=\"space-y-3\">
-                      <div className=\"rounded-md border border-zinc-200 bg-zinc-50 p-3\">
-                        <div className=\"mb-1 text-[11px] font-semibold text-zinc-900\">
+                    <div className="space-y-3">
+                      <div className="rounded-md border border-zinc-200 bg-zinc-50 p-3">
+                        <div className="mb-1 text-[11px] font-semibold text-zinc-900">
                           Ingredients per cycle
                         </div>
                         {cycleRequirements.length && bomLinesForProduct.length ? (
-                          <div className=\"max-h-48 space-y-2 overflow-y-auto\">
+                          <div className="max-h-48 space-y-2 overflow-y-auto">
                             {cycleRequirements.map((cycleReqs, idx) => (
-                              <div key={idx} className=\"border-t border-zinc-200 pt-2 first:border-t-0 first:pt-0\">
-                                <div className=\"mb-1 text-[11px] font-medium text-zinc-900\">
+                              <div key={idx} className="border-t border-zinc-200 pt-2 first:border-t-0 first:pt-0">
+                                <div className="mb-1 text-[11px] font-medium text-zinc-900">
                                   Cycle {cycleReqs[0]?.cycleIndex} (
                                   {manufacturingCycles.find(
                                     (c) => c.index === cycleReqs[0]?.cycleIndex,
-                                  )?.quantity ?? \"?\"}{" "}
+                                  )?.quantity ?? "?"}{" "}
                                   {selectedProduct.unit})
                                 </div>
-                                <ul className=\"space-y-0.5 text-[11px] text-black\">
+                                <ul className="space-y-0.5 text-[11px] text-black">
                                   {cycleReqs.map((req) => (
                                     <li key={req.bomLineId}>
                                       {req.ingredientName}:{" "}
@@ -644,7 +644,7 @@ export default function SchedulePage() {
                             ))}
                           </div>
                         ) : (
-                          <p className=\"text-[11px] text-black\">
+                          <p className="text-[11px] text-black">
                             Define BOM lines for this product to see ingredient
                             requirements per cycle. Each BOM line&apos;s
                             quantity is per 1 finished unit.
@@ -652,12 +652,12 @@ export default function SchedulePage() {
                         )}
                       </div>
 
-                      <div className=\"rounded-md border border-zinc-200 bg-zinc-50 p-3\">
-                        <div className=\"mb-1 text-[11px] font-semibold text-zinc-900\">
+                      <div className="rounded-md border border-zinc-200 bg-zinc-50 p-3">
+                        <div className="mb-1 text-[11px] font-semibold text-zinc-900">
                           Total ingredient requirements
                         </div>
                         {totalRequirements.length ? (
-                          <ul className=\"space-y-0.5 text-[11px] text-black\">
+                          <ul className="space-y-0.5 text-[11px] text-black">
                             {totalRequirements.map((req) => (
                               <li key={req.ingredientId}>
                                 {req.ingredientName}:{" "}
@@ -666,7 +666,7 @@ export default function SchedulePage() {
                             ))}
                           </ul>
                         ) : (
-                          <p className=\"text-[11px] text-black\">
+                          <p className="text-[11px] text-black">
                             Totals will appear once a product, quantity, and BOM
                             lines are defined.
                           </p>
