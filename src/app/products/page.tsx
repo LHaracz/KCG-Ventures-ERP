@@ -605,7 +605,7 @@ export default function ProductsPage() {
                             {mg?.name ?? "Unlinked"}
                             {p.is_microgreen
                               ? ` · ${variants.filter((v: any) => v.product_id === p.id).length} variant(s)`
-                              : ` · ${p.sale_price_per_unit ?? "—"} / ${p.unit} · Dried: ${p.dried_needed_g_per_unit ?? "—"} g`}
+                              : ` · ${p.sale_price_per_unit ?? "—"} / ${p.unit} · Batch: ${p.target_batch_size ?? "—"} ${p.target_batch_unit ?? p.unit ?? ""} · Dried: ${p.dried_needed_g_per_unit ?? "—"} g`}
                             {!p.is_microgreen &&
                               p.fresh_needed_g_per_unit != null &&
                               ` · Fresh: ${p.fresh_needed_g_per_unit} g`}
