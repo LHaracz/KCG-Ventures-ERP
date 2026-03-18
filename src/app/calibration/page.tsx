@@ -16,6 +16,7 @@ type MachineSettings = {
 
 type ProfileRow = {
   id: string;
+  user_id?: string | null;
   name: string;
   profile_type: string;
   linked_microgreen_id: string | null;
@@ -68,7 +69,8 @@ export default function CalibrationPage() {
         supabase
           .from("freeze_dryer_profiles")
           .select("*")
-          .eq("user_id", user.id)
+          // Include both user-owned profiles and shared/global profiles (user_id null)
+          .or(`user_id.eq.${user.id},user_id.is.null`)
           .order("name", { ascending: true }),
         supabase
           .from("microgreens")
@@ -233,12 +235,30 @@ export default function CalibrationPage() {
       };
 
       if (profileEditing.id) {
-        const { error } = await supabase
+        // If the profile is shared/global (user_id null) or not owned by this user,
+        // updating may be blocked by RLS. In that case we create a user-owned copy.
+        const existing = profiles.find((p) => p.id === profileEditing.id) || null;
+        const isOwnedByUser = (existing as any)?.user_id === user.id;
+
+        const { data: updated, error } = await supabase
           .from("freeze_dryer_profiles")
           .update(payload)
           .eq("id", profileEditing.id)
-          .eq("user_id", user.id);
+          .select("id");
         if (error) throw error;
+        if ((!updated || updated.length === 0) && !isOwnedByUser) {
+          const { data, error: insertErr } = await supabase
+            .from("freeze_dryer_profiles")
+            .insert({
+              ...payload,
+              user_id: user.id,
+            })
+            .select("*");
+          if (insertErr) throw insertErr;
+          if (data && data[0]) {
+            setSelectedProfileId(data[0].id);
+          }
+        }
       } else {
         const { data, error } = await supabase
           .from("freeze_dryer_profiles")
@@ -256,7 +276,7 @@ export default function CalibrationPage() {
       const { data: refreshed } = await supabase
         .from("freeze_dryer_profiles")
         .select("*")
-        .eq("user_id", user.id)
+        .or(`user_id.eq.${user.id},user_id.is.null`)
         .order("name", { ascending: true });
       setProfiles((refreshed || []) as ProfileRow[]);
       setProfileEditing(null);
