@@ -20,6 +20,7 @@ export default function CyclesPage() {
   const { user, supabase } = useSupabase();
   const [cycles, setCycles] = useState<any[]>([]);
   const [targets, setTargets] = useState<any[]>([]);
+  const [batches, setBatches] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [completingCycleId, setCompletingCycleId] = useState<string | null>(
     null,
@@ -40,7 +41,7 @@ export default function CyclesPage() {
     if (!user) return;
     const load = async () => {
       setIsLoading(true);
-      const [c, t] = await Promise.all([
+      const [c, t, b] = await Promise.all([
         supabase
           .from("production_cycles")
           .select("*")
@@ -50,9 +51,17 @@ export default function CyclesPage() {
           .from("production_targets")
           .select("*")
           .eq("user_id", user.id),
+        supabase
+          .from("botaniqals_production_batches")
+          .select(
+            "id, production_cycle_id, product_id, product_variant_id, batch_id, quantity_produced, production_start_at, production_end_at, completed_at, created_at, products(name)",
+          )
+          .eq("user_id", user.id)
+          .order("created_at", { ascending: false }),
       ]);
       setCycles(c.data || []);
       setTargets(t.data || []);
+      setBatches(b.data || []);
       setIsLoading(false);
     };
     load();
@@ -218,6 +227,16 @@ export default function CyclesPage() {
         .eq("user_id", user.id);
       if (cycleErr) throw cycleErr;
 
+      const { data: refreshedBatches, error: batchesErr } = await supabase
+        .from("botaniqals_production_batches")
+        .select(
+          "id, production_cycle_id, product_id, product_variant_id, batch_id, quantity_produced, production_start_at, production_end_at, completed_at, created_at, products(name)",
+        )
+        .eq("user_id", user.id)
+        .order("created_at", { ascending: false });
+      if (batchesErr) throw batchesErr;
+      setBatches(refreshedBatches || []);
+
       setCycles((prev) =>
         prev.map((c) => (c.id === cycle.id ? { ...c, status: "completed" } : c)),
       );
@@ -374,6 +393,9 @@ export default function CyclesPage() {
                   const cycleTargets = targets.filter(
                     (t: any) => t.production_cycle === c.id
                   );
+                  const cycleBatches = batches.filter(
+                    (b: any) => b.production_cycle_id === c.id,
+                  );
                   const businessLabel = displayBusinessType(c);
                   const isBotaniqals = businessLabel === "BotanIQals";
                   return (
@@ -391,6 +413,16 @@ export default function CyclesPage() {
                           {!c.harvest_date && `${businessLabel} · `}
                           Status: {c.status} · Targets: {cycleTargets.length}
                         </div>
+                        {isBotaniqals && cycleBatches.length > 0 && (
+                          <div className="mt-1 text-[11px] text-zinc-700">
+                            Batches:{" "}
+                            {cycleBatches
+                              .slice(0, 3)
+                              .map((b: any) => b.batch_id)
+                              .join(", ")}
+                            {cycleBatches.length > 3 ? "…" : ""}
+                          </div>
+                        )}
                       </div>
                       <div className="flex items-center gap-2">
                         <Link
