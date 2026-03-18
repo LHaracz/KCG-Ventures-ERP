@@ -68,6 +68,7 @@ export default function CalibrationPage() {
         supabase
           .from("freeze_dryer_profiles")
           .select("*")
+          .eq("user_id", user.id)
           .order("name", { ascending: true }),
         supabase
           .from("microgreens")
