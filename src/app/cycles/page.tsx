@@ -21,6 +21,7 @@ export default function CyclesPage() {
   const [cycles, setCycles] = useState<any[]>([]);
   const [targets, setTargets] = useState<any[]>([]);
   const [batches, setBatches] = useState<any[]>([]);
+  const [products, setProducts] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [completingCycleId, setCompletingCycleId] = useState<string | null>(
     null,
@@ -41,7 +42,7 @@ export default function CyclesPage() {
     if (!user) return;
     const load = async () => {
       setIsLoading(true);
-      const [c, t, b] = await Promise.all([
+      const [c, t, b, p] = await Promise.all([
         supabase
           .from("production_cycles")
           .select("*")
@@ -58,10 +59,12 @@ export default function CyclesPage() {
           )
           .eq("user_id", user.id)
           .order("created_at", { ascending: false }),
+        supabase.from("products").select("*"),
       ]);
       setCycles(c.data || []);
       setTargets(t.data || []);
       setBatches(b.data || []);
+      setProducts(p.data || []);
       setIsLoading(false);
     };
     load();
@@ -255,6 +258,40 @@ export default function CyclesPage() {
       setCompletingCycleId(null);
     }
   };
+
+  const batchDetailRows = cycles
+    .filter((c: any) => displayBusinessType(c) === "BotanIQals")
+    .flatMap((cycle: any) => {
+      const cycleTargets = targets.filter(
+        (t: any) => t.production_cycle === cycle.id,
+      );
+      const cycleBatch = batches.find(
+        (b: any) => b.production_cycle_id === cycle.id,
+      );
+      return cycleTargets
+        .map((t: any) => {
+          const qty =
+            Number(t.quantity_to_produce ?? t.target_units ?? 0) || 0;
+          if (!qty) return null;
+          const product = products.find((p: any) => p.id === t.product);
+          return {
+            cycleId: cycle.id,
+            cycleLabel: cycle.harvest_date
+              ? `Harvest: ${formatDate(cycle.harvest_date)}`
+              : `${formatDate(cycle.start_date)} – ${formatDate(
+                  cycle.end_date,
+                )}`,
+            productName: product?.name ?? "Unknown product",
+            quantity: qty,
+            batchId: cycleBatch?.batch_id ?? "—",
+            start:
+              cycleBatch?.production_start_at ?? cycle.start_date ?? null,
+            end:
+              cycleBatch?.production_end_at ?? cycle.end_date ?? null,
+          };
+        })
+        .filter(Boolean) as any[];
+    });
 
   return (
     <AuthGuard>
@@ -467,6 +504,46 @@ export default function CyclesPage() {
             )}
           </div>
         </section>
+
+        {batchDetailRows.length > 0 && (
+          <section className="rounded-md border border-zinc-200 bg-white p-4 text-xs">
+            <h2 className="mb-2 text-sm font-semibold text-zinc-900">
+              BotanIQals batch details
+            </h2>
+            <div className="overflow-x-auto">
+              <table className="min-w-full border-collapse text-left">
+                <thead className="bg-zinc-50 text-[11px] text-black">
+                  <tr>
+                    <th className="px-2 py-1 font-medium">Cycle</th>
+                    <th className="px-2 py-1 font-medium">Product</th>
+                    <th className="px-2 py-1 font-medium">Quantity</th>
+                    <th className="px-2 py-1 font-medium">Batch ID</th>
+                    <th className="px-2 py-1 font-medium">Start</th>
+                    <th className="px-2 py-1 font-medium">End</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {batchDetailRows.map((row: any, idx: number) => (
+                    <tr key={`${row.cycleId}-${idx}`} className="border-b text-[11px] text-black">
+                      <td className="px-2 py-1">{row.cycleLabel}</td>
+                      <td className="px-2 py-1">{row.productName}</td>
+                      <td className="px-2 py-1">
+                        {Number(row.quantity).toString()}
+                      </td>
+                      <td className="px-2 py-1 font-mono">{row.batchId}</td>
+                      <td className="px-2 py-1">
+                        {row.start ? formatDate(row.start) : "—"}
+                      </td>
+                      <td className="px-2 py-1">
+                        {row.end ? formatDate(row.end) : "—"}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        )}
       </div>
     </AuthGuard>
   );
