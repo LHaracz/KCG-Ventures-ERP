@@ -185,9 +185,15 @@ export default function SchedulePage() {
         dryFractionByMicrogreen,
       );
 
-      const capacityTraysPerRun =
-        Number(machine?.trays_per_machine_per_cycle || 0) *
-        Number(machine?.number_of_freeze_dryers || 0);
+      const numMachines = Number(machine?.number_of_freeze_dryers ?? 1);
+      const defaultProfileFreshCapacityG = Number(
+        machine?.default_fresh_load_per_tray_g ?? 0,
+      );
+      if (!machine) {
+        warnings.push(
+          `${cycle.id}: Freeze-dryer machine settings not found; assuming ${numMachines} freeze-dryer machine(s).`,
+        );
+      }
 
       // Build and schedule runs per microgreen, sequentially per cycle.
       const allRuns = trayEst.flatMap((t) => {
@@ -196,10 +202,30 @@ export default function SchedulePage() {
           demand[t.microgreenId]?.explicitProfileId ?? null,
           profiles,
         );
+        const profileFreshCapacityG = Number(
+          prof?.fresh_load_per_tray_g_override ?? defaultProfileFreshCapacityG,
+        );
+        const avgFreshGPerTray = Number(t.avgFreshGPerTray ?? 0);
+        const traysPerMachineThisProfile =
+          profileFreshCapacityG > 0 && avgFreshGPerTray > 0
+            ? Math.max(1, Math.floor(profileFreshCapacityG / avgFreshGPerTray))
+            : 1;
+        const capacityTraysPerRun = traysPerMachineThisProfile * numMachines;
+
+        if (!(profileFreshCapacityG > 0)) {
+          warnings.push(
+            `${cycle.id}: ${prof?.name ?? "Freeze-dryer profile"} has no fresh-capacity (g) set; defaulting to 1 tray per machine per run.`,
+          );
+        } else if (!(avgFreshGPerTray > 0)) {
+          warnings.push(
+            `${cycle.id}: Missing avg fresh yield for ${t.microgreenId}; defaulting to 1 tray per machine per run for ${prof?.name ?? "freeze-dryer profile"}.`,
+          );
+        }
+
         return buildRunsForMicrogreen(
           t.microgreenId,
           t.traysNeeded,
-          capacityTraysPerRun || 1,
+          capacityTraysPerRun,
           prof?.id ?? null,
         );
       });
@@ -270,9 +296,15 @@ export default function SchedulePage() {
         dryFractionByMicrogreen,
       );
 
-      const capacityTraysPerRun =
-        Number(machine?.trays_per_machine_per_cycle || 0) *
-        Number(machine?.number_of_freeze_dryers || 0);
+      const numMachines = Number(machine?.number_of_freeze_dryers ?? 1);
+      const defaultProfileFreshCapacityG = Number(
+        machine?.default_fresh_load_per_tray_g ?? 0,
+      );
+      if (!machine) {
+        warnings.push(
+          `${cycle.id}: Freeze-dryer machine settings not found; assuming ${numMachines} freeze-dryer machine(s).`,
+        );
+      }
 
       const allRuns = trayEst.flatMap((t) => {
         const prof = getProfileForMicrogreen(
@@ -280,10 +312,30 @@ export default function SchedulePage() {
           demand[t.microgreenId]?.explicitProfileId ?? null,
           profiles,
         );
+        const profileFreshCapacityG = Number(
+          prof?.fresh_load_per_tray_g_override ?? defaultProfileFreshCapacityG,
+        );
+        const avgFreshGPerTray = Number(t.avgFreshGPerTray ?? 0);
+        const traysPerMachineThisProfile =
+          profileFreshCapacityG > 0 && avgFreshGPerTray > 0
+            ? Math.max(1, Math.floor(profileFreshCapacityG / avgFreshGPerTray))
+            : 1;
+        const capacityTraysPerRun = traysPerMachineThisProfile * numMachines;
+
+        if (!(profileFreshCapacityG > 0)) {
+          warnings.push(
+            `${cycle.id}: ${prof?.name ?? "Freeze-dryer profile"} has no fresh-capacity (g) set; defaulting to 1 tray per machine per run.`,
+          );
+        } else if (!(avgFreshGPerTray > 0)) {
+          warnings.push(
+            `${cycle.id}: Missing avg fresh yield for ${t.microgreenId}; defaulting to 1 tray per machine per run for ${prof?.name ?? "freeze-dryer profile"}.`,
+          );
+        }
+
         return buildRunsForMicrogreen(
           t.microgreenId,
           t.traysNeeded,
-          capacityTraysPerRun || 1,
+          capacityTraysPerRun,
           prof?.id ?? null,
         );
       });

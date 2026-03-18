@@ -144,7 +144,10 @@ export function hasAnyDriedMicrogreenLines(
 export type TrayEstimation = {
   microgreenId: string;
   driedRequiredG: number;
+  avgFreshGPerTray: number | null;
   avgDriedGPerTray: number | null;
+  dryMatterFractionUsed: number | null;
+  freshRequiredG: number | null;
   traysNeeded: number;
   warning: string | null;
 };
@@ -172,13 +175,37 @@ export function estimateTraysNeededForDriedDemand(
     const dryFraction = dryFractionByMicrogreen[microgreenId] ?? null;
 
     if (avgFresh && avgFresh > 0 && dryFraction && dryFraction > 0) {
-      const inferredAvgDried = avgFresh * dryFraction;
+      const inferredAvgDried = avgFresh * dryFraction; // dried per microgreen tray
+      const freshRequiredG = driedRequiredG / dryFraction;
       result.push({
         microgreenId,
         driedRequiredG,
+        avgFreshGPerTray: avgFresh,
         avgDriedGPerTray: inferredAvgDried,
-        traysNeeded: Math.ceil(driedRequiredG / inferredAvgDried),
+        dryMatterFractionUsed: dryFraction,
+        freshRequiredG,
+        traysNeeded: Math.ceil(freshRequiredG / avgFresh),
         warning: null,
+      });
+      continue;
+    }
+
+    // Fallback: if dried_yield_g is logged, we can estimate trays even without dry fraction.
+    const driedSamples = entries
+      .map((e) => Number(e.dried_yield_g ?? 0))
+      .filter((n) => Number.isFinite(n) && n > 0);
+    const avgDriedDirect = avg(driedSamples);
+    if (avgDriedDirect && avgDriedDirect > 0) {
+      result.push({
+        microgreenId,
+        driedRequiredG,
+        avgFreshGPerTray: avgFresh,
+        avgDriedGPerTray: avgDriedDirect,
+        dryMatterFractionUsed: null,
+        freshRequiredG: null,
+        traysNeeded: Math.ceil(driedRequiredG / avgDriedDirect),
+        warning:
+          "Dry matter fraction is missing; trays were estimated directly from logged dried yield per tray.",
       });
       continue;
     }
@@ -186,10 +213,13 @@ export function estimateTraysNeededForDriedDemand(
     result.push({
       microgreenId,
       driedRequiredG,
+      avgFreshGPerTray: avgFresh,
       avgDriedGPerTray: null,
+      dryMatterFractionUsed: dryFraction,
+      freshRequiredG: null,
       traysNeeded: 0,
       warning:
-        "Missing yield data for this microgreen; cannot estimate trays needed.",
+        "Missing yield data (fresh yield and dry matter fraction, or dried yield) for this microgreen; cannot estimate trays needed.",
     });
   }
 
