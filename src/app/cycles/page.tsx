@@ -194,29 +194,33 @@ export default function CyclesPage() {
       const cycleTargets = targets.filter(
         (t: any) => t.production_cycle === cycle.id,
       );
-      const rows = cycleTargets
-        .map((t: any) => ({
-          user_id: user.id,
-          production_cycle_id: cycle.id,
-          product_id: t.product,
-          product_variant_id: t.product_variant_id || null,
-          quantity_produced: Number(t.quantity_to_produce ?? t.target_units ?? 0) || 0,
-          production_start_at: cycle.start_date ?? null,
-          production_end_at: new Date().toISOString(),
-          completed_at: new Date().toISOString(),
-        }))
-        .filter((r: any) => r.product_id && r.quantity_produced > 0);
+      const totalQty = cycleTargets.reduce(
+        (sum: number, t: any) =>
+          sum +
+          (Number(t.quantity_to_produce ?? t.target_units ?? 0) || 0),
+        0,
+      );
 
-      if (!rows.length) {
+      if (!totalQty) {
         setError("No production targets with quantity found for this cycle.");
         return;
       }
 
       const { error: upsertErr } = await supabase
         .from("botaniqals_production_batches")
-        .upsert(rows, {
-          onConflict: "production_cycle_id,product_id,product_variant_id",
-        });
+        .upsert(
+          {
+            user_id: user.id,
+            production_cycle_id: cycle.id,
+            quantity_produced: totalQty,
+            production_start_at: cycle.start_date ?? null,
+            production_end_at: new Date().toISOString(),
+            completed_at: new Date().toISOString(),
+          },
+          {
+            onConflict: "production_cycle_id,user_id",
+          },
+        );
       if (upsertErr) throw upsertErr;
 
       const { error: cycleErr } = await supabase
@@ -431,7 +435,7 @@ export default function CyclesPage() {
                         >
                           Open planner
                         </Link>
-                        {isBotaniqals && (
+                        {isBotaniqals && cycleBatches.length === 0 && (
                           <button
                             type="button"
                             disabled={completingCycleId === c.id}

@@ -34,7 +34,6 @@ export default function CyclePlanPage() {
   const [variants, setVariants] = useState<any[]>([]);
   const [machine, setMachine] = useState<any | null>(null);
   const [freezeDryerProfiles, setFreezeDryerProfiles] = useState<any[]>([]);
-  const [batches, setBatches] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
   const [targetForm, setTargetForm] = useState<TargetForm>({
@@ -106,7 +105,6 @@ export default function CyclePlanPage() {
         vRes,
         machineRes,
         profilesRes,
-        batchesRes,
       ] = await Promise.all([
         supabase
           .from("production_cycles")
@@ -158,7 +156,6 @@ export default function CyclePlanPage() {
       setVariants(vRes.data || []);
       setMachine(machineRes.data || null);
       setFreezeDryerProfiles(profilesRes.data || []);
-      setBatches(batchesRes.data || []);
       setIsLoading(false);
     };
     load();
@@ -712,52 +709,6 @@ export default function CyclePlanPage() {
             </p>
           )}
         </header>
-
-        {!isLoading && !isMiniLeaf && batches.length > 0 && (
-          <section className="rounded-md border border-zinc-200 bg-white p-4 text-xs">
-            <h2 className="mb-2 text-sm font-semibold text-zinc-900">
-              Batch traceability
-            </h2>
-            <div className="overflow-x-auto">
-              <table className="min-w-full border-collapse text-left">
-                <thead className="bg-zinc-50 text-[11px] text-black">
-                  <tr>
-                    <th className="px-2 py-1 font-medium">Batch</th>
-                    <th className="px-2 py-1 font-medium">Product</th>
-                    <th className="px-2 py-1 font-medium">Qty</th>
-                    <th className="px-2 py-1 font-medium">Start</th>
-                    <th className="px-2 py-1 font-medium">End</th>
-                    <th className="px-2 py-1 font-medium">Completed</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {batches.map((b: any) => (
-                    <tr key={b.id} className="border-b text-[11px] text-black">
-                      <td className="px-2 py-1 font-mono">{b.batch_id}</td>
-                      <td className="px-2 py-1">{b.products?.name ?? "—"}</td>
-                      <td className="px-2 py-1">
-                        {Number(b.quantity_produced || 0).toString()}
-                      </td>
-                      <td className="px-2 py-1">
-                        {b.production_start_at
-                          ? formatDate(b.production_start_at)
-                          : "—"}
-                      </td>
-                      <td className="px-2 py-1">
-                        {b.production_end_at
-                          ? formatDate(b.production_end_at)
-                          : "—"}
-                      </td>
-                      <td className="px-2 py-1">
-                        {b.completed_at ? formatDate(b.completed_at) : "—"}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </section>
-        )}
 
         <section className="grid gap-4 lg:grid-cols-3">
           <div className="space-y-4 lg:col-span-1">
