@@ -55,48 +55,22 @@ export default function CalibrationPage() {
   );
   const [profileSaving, setProfileSaving] = useState(false);
   const [profileError, setProfileError] = useState<string | null>(null);
-  const [profileListWarning, setProfileListWarning] = useState<string | null>(
-    null,
-  );
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
     if (!user) return;
     const load = async () => {
       setIsLoading(true);
-      setProfileListWarning(null);
       const [mRes, pRes, mgRes] = await Promise.all([
         supabase
           .from("freeze_dryer_machine_settings")
           .select("*")
           .maybeSingle(),
-        (async () => {
-          // Prefer user-owned + shared/global profiles (user_id null).
-          // If the schema doesn't support user_id (or the filter is rejected),
-          // fall back to loading all profiles so nothing "disappears".
-          const filtered = await supabase
-            .from("freeze_dryer_profiles")
-            .select("*")
-            .or(`user_id.eq.${user.id},user_id.is.null`)
-            .order("name", { ascending: true });
-          if (!filtered.error && (filtered.data || []).length > 0) return filtered;
-
-          const unfiltered = await supabase
-            .from("freeze_dryer_profiles")
-            .select("*")
-            .order("name", { ascending: true });
-          if (!filtered.error && (filtered.data || []).length === 0) {
-            setProfileListWarning(
-              "No profiles matched your account filter; showing all profiles instead.",
-            );
-          }
-          if (filtered.error) {
-            setProfileListWarning(
-              `Profile filtering is not supported (${filtered.error.message}); showing all profiles instead.`,
-            );
-          }
-          return unfiltered;
-        })(),
+        // Profiles are shared/global: all authenticated users see all profiles.
+        supabase
+          .from("freeze_dryer_profiles")
+          .select("*")
+          .order("name", { ascending: true }),
         supabase
           .from("microgreens")
           .select("*")
@@ -282,21 +256,11 @@ export default function CalibrationPage() {
         }
       }
 
-      // Refresh list using the same filtered→unfiltered fallback used on initial load.
-      const filtered = await supabase
+      const { data: refreshed, error: refreshErr } = await supabase
         .from("freeze_dryer_profiles")
         .select("*")
-        .or(`user_id.eq.${user.id},user_id.is.null`)
         .order("name", { ascending: true });
-      const refreshed =
-        !filtered.error && (filtered.data || []).length > 0
-          ? filtered.data
-          : (
-              await supabase
-                .from("freeze_dryer_profiles")
-                .select("*")
-                .order("name", { ascending: true })
-            ).data;
+      if (refreshErr) throw refreshErr;
       setProfiles((refreshed || []) as ProfileRow[]);
       setProfileEditing(null);
     } catch (err: any) {
@@ -313,8 +277,7 @@ export default function CalibrationPage() {
       const { error } = await supabase
         .from("freeze_dryer_profiles")
         .delete()
-        .eq("id", id)
-        .eq("user_id", user.id);
+        .eq("id", id);
       if (error) throw error;
       setProfiles((prev) => prev.filter((p) => p.id !== id));
       if (selectedProfileId === id) {
@@ -437,11 +400,6 @@ export default function CalibrationPage() {
 
           <div className="grid gap-4 lg:grid-cols-3">
             <div className="lg:col-span-2">
-              {profileListWarning && (
-                <p className="mb-2 text-[11px] text-amber-700" role="status">
-                  {profileListWarning}
-                </p>
-              )}
               <div className="max-h-64 overflow-y-auto rounded-md border border-zinc-200">
                 <table className="min-w-full border-collapse text-left">
                   <thead className="bg-zinc-50 text-[11px] text-black">
