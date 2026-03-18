@@ -21,6 +21,9 @@ export default function CyclesPage() {
   const [cycles, setCycles] = useState<any[]>([]);
   const [targets, setTargets] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [completingCycleId, setCompletingCycleId] = useState<string | null>(
+    null,
+  );
 
   const today = new Date().toISOString().slice(0, 10);
   const [form, setForm] = useState<CycleForm>({
@@ -174,6 +177,58 @@ export default function CyclesPage() {
     }
   };
 
+  const handleCompleteProduction = async (cycle: any) => {
+    if (!user) return;
+    setError(null);
+    setCompletingCycleId(cycle.id);
+    try {
+      const cycleTargets = targets.filter(
+        (t: any) => t.production_cycle === cycle.id,
+      );
+      const rows = cycleTargets
+        .map((t: any) => ({
+          user_id: user.id,
+          production_cycle_id: cycle.id,
+          product_id: t.product,
+          product_variant_id: t.product_variant_id || null,
+          quantity_produced: Number(t.quantity_to_produce ?? t.target_units ?? 0) || 0,
+          production_start_at: cycle.start_date ?? null,
+          production_end_at: new Date().toISOString(),
+          completed_at: new Date().toISOString(),
+        }))
+        .filter((r: any) => r.product_id && r.quantity_produced > 0);
+
+      if (!rows.length) {
+        setError("No production targets with quantity found for this cycle.");
+        return;
+      }
+
+      const { error: upsertErr } = await supabase
+        .from("botaniqals_production_batches")
+        .upsert(rows, {
+          onConflict: "production_cycle_id,product_id,product_variant_id",
+        });
+      if (upsertErr) throw upsertErr;
+
+      const { error: cycleErr } = await supabase
+        .from("production_cycles")
+        .update({ status: "completed", updated_at: new Date().toISOString() })
+        .eq("id", cycle.id)
+        .eq("user_id", user.id);
+      if (cycleErr) throw cycleErr;
+
+      setCycles((prev) =>
+        prev.map((c) => (c.id === cycle.id ? { ...c, status: "completed" } : c)),
+      );
+    } catch (err: unknown) {
+      setError(
+        err instanceof Error ? err.message : "Failed to complete production.",
+      );
+    } finally {
+      setCompletingCycleId(null);
+    }
+  };
+
   return (
     <AuthGuard>
       <div className="mx-auto max-w-5xl space-y-6">
@@ -316,6 +371,7 @@ export default function CyclesPage() {
                     (t: any) => t.production_cycle === c.id
                   );
                   const businessLabel = displayBusinessType(c);
+                  const isBotaniqals = businessLabel === "BotanIQals";
                   return (
                     <div
                       key={c.id}
@@ -339,6 +395,18 @@ export default function CyclesPage() {
                         >
                           Open planner
                         </Link>
+                        {isBotaniqals && (
+                          <button
+                            type="button"
+                            disabled={completingCycleId === c.id}
+                            className="text-[11px] font-medium text-emerald-700 underline disabled:cursor-not-allowed disabled:opacity-60"
+                            onClick={() => handleCompleteProduction(c)}
+                          >
+                            {completingCycleId === c.id
+                              ? "Completing…"
+                              : "Complete production"}
+                          </button>
+                        )}
                         <button
                           type="button"
                           className="text-[11px] font-medium text-red-600 underline"
