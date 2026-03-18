@@ -60,3 +60,7 @@ DROP POLICY IF EXISTS botaniqals_batches_user_policy ON public.botaniqals_produc
 CREATE POLICY botaniqals_batches_user_policy ON public.botaniqals_production_batches
   FOR ALL USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
 
+-- 5) Grants (required for inserts that use nextval on the sequence)
+GRANT USAGE, SELECT ON SEQUENCE public.botaniqals_batch_seq TO authenticated;
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.botaniqals_production_batches TO authenticated;
+

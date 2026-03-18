@@ -212,7 +212,8 @@ export default function CyclesPage() {
 
       const { error: cycleErr } = await supabase
         .from("production_cycles")
-        .update({ status: "completed", updated_at: new Date().toISOString() })
+        // Some schemas may not include updated_at on production_cycles; status is enough.
+        .update({ status: "completed" })
         .eq("id", cycle.id)
         .eq("user_id", user.id);
       if (cycleErr) throw cycleErr;
@@ -221,9 +222,12 @@ export default function CyclesPage() {
         prev.map((c) => (c.id === cycle.id ? { ...c, status: "completed" } : c)),
       );
     } catch (err: unknown) {
-      setError(
-        err instanceof Error ? err.message : "Failed to complete production.",
-      );
+      const msg =
+        (err as any)?.message ||
+        (err as any)?.error_description ||
+        (err as any)?.details ||
+        "Failed to complete production.";
+      setError(String(msg));
     } finally {
       setCompletingCycleId(null);
     }
