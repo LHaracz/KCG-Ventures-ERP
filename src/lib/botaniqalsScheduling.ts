@@ -243,7 +243,8 @@ export function getProfileForMicrogreen(
   profiles: FreezeDryerProfileRow[],
 ): FreezeDryerProfileRow | null {
   if (explicitProfileId) {
-    return profiles.find((p) => p.id === explicitProfileId) || null;
+    const explicit = profiles.find((p) => p.id === explicitProfileId) || null;
+    if (explicit) return explicit;
   }
   return profiles.find((p) => p.linked_microgreen_id === microgreenId) || null;
 }

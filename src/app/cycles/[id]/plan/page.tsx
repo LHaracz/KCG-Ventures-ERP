@@ -18,11 +18,52 @@ type TargetForm = {
   target_units: number | "";
 };
 
-function filterScopedRows<T extends { user_id?: string | null }>(
-  rows: T[],
+function isMissingUserIdColumnError(err: { message?: string } | null): boolean {
+  const message = (err?.message || "").toLowerCase();
+  return message.includes("user_id") && message.includes("column");
+}
+
+async function selectScopedRows<T>(
+  supabase: any,
+  table: string,
   userId: string,
-): T[] {
-  return rows.filter((row) => row.user_id == null || row.user_id === userId);
+  options?: { orderBy?: string; ascending?: boolean },
+): Promise<{ data: T[] | null; error: any }> {
+  let query = supabase
+    .from(table)
+    .select("*")
+    .or(`user_id.eq.${userId},user_id.is.null`);
+  if (options?.orderBy) {
+    query = query.order(options.orderBy, {
+      ascending: options.ascending ?? true,
+    });
+  }
+  const scopedRes = await query;
+  if (!isMissingUserIdColumnError(scopedRes.error)) return scopedRes;
+
+  let fallback = supabase.from(table).select("*");
+  if (options?.orderBy) {
+    fallback = fallback.order(options.orderBy, {
+      ascending: options.ascending ?? true,
+    });
+  }
+  return fallback;
+}
+
+async function selectScopedSingle<T>(
+  supabase: any,
+  table: string,
+  userId: string,
+): Promise<{ data: T | null; error: any }> {
+  const scopedRes = await supabase
+    .from(table)
+    .select("*")
+    .or(`user_id.eq.${userId},user_id.is.null`)
+    .limit(1)
+    .maybeSingle();
+  if (!isMissingUserIdColumnError(scopedRes.error)) return scopedRes;
+
+  return supabase.from(table).select("*").limit(1).maybeSingle();
 }
 
 export default function CyclePlanPage() {
@@ -87,7 +128,7 @@ export default function CyclePlanPage() {
   const productOptionsBotanIQals = useMemo(
     () =>
       products
-        .filter((p: any) => !p.is_microgreen)
+        .filter((p: any) => p.is_microgreen !== true)
         .map((p: any) => ({ value: p.id, label: p.name, product: p })),
     [products]
   );
@@ -127,23 +168,20 @@ export default function CyclePlanPage() {
           .select("*")
           .eq("production_cycle", cycleId)
           .eq("user_id", user.id),
-        supabase.from("products").select("*"),
-        supabase.from("microgreens").select("*"),
-        supabase.from("bom_lines").select("*"),
-        supabase.from("inventory_items").select("*"),
-        supabase.from("calibration").select("*").limit(1).maybeSingle(),
+        selectScopedRows(supabase, "products", user.id),
+        selectScopedRows(supabase, "microgreens", user.id),
+        selectScopedRows(supabase, "bom_lines", user.id),
+        selectScopedRows(supabase, "inventory_items", user.id),
+        selectScopedSingle(supabase, "calibration", user.id),
         supabase
           .from("production_plan_lines")
           .select("*")
           .eq("production_cycle", cycleId)
           .eq("user_id", user.id),
-        supabase.from("yield_entries").select("*"),
-        supabase.from("product_variants").select("*"),
-        supabase
-          .from("freeze_dryer_machine_settings")
-          .select("*")
-          .maybeSingle(),
-        supabase.from("freeze_dryer_profiles").select("*"),
+        selectScopedRows(supabase, "yield_entries", user.id),
+        selectScopedRows(supabase, "product_variants", user.id),
+        selectScopedSingle(supabase, "freeze_dryer_machine_settings", user.id),
+        selectScopedRows(supabase, "freeze_dryer_profiles", user.id),
         supabase
           .from("botaniqals_production_batches")
           .select(
@@ -156,26 +194,16 @@ export default function CyclePlanPage() {
 
       if (cRes.data) setCycle(cRes.data);
       setTargets(tRes.data || []);
-      setProducts(filterScopedRows(pRes.data || [], user.id));
-      setMicrogreens(filterScopedRows(mRes.data || [], user.id));
-      setBomLines(filterScopedRows(bRes.data || [], user.id));
-      setItems(filterScopedRows(iRes.data || [], user.id));
-      const calibrationRow = calRes.data as { user_id?: string | null } | null;
-      setCalibration(
-        calibrationRow && calibrationRow.user_id && calibrationRow.user_id !== user.id
-          ? null
-          : calibrationRow,
-      );
+      setProducts(pRes.data || []);
+      setMicrogreens(mRes.data || []);
+      setBomLines(bRes.data || []);
+      setItems(iRes.data || []);
+      setCalibration(calRes.data || null);
       setPlanLines(planRes.data || []);
-      setYieldEntries(filterScopedRows(yRes.data || [], user.id));
-      setVariants(filterScopedRows(vRes.data || [], user.id));
-      const machineRow = machineRes.data as { user_id?: string | null } | null;
-      setMachine(
-        machineRow && machineRow.user_id && machineRow.user_id !== user.id
-          ? null
-          : machineRow,
-      );
-      setFreezeDryerProfiles(filterScopedRows(profilesRes.data || [], user.id));
+      setYieldEntries(yRes.data || []);
+      setVariants(vRes.data || []);
+      setMachine(machineRes.data || null);
+      setFreezeDryerProfiles(profilesRes.data || []);
       setIsLoading(false);
     };
     load();
