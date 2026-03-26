@@ -160,7 +160,6 @@ export async function GET(request: Request) {
   const activeCycles = cycleRows.filter((c) => !!c.user_id);
   const activeCycleIds = activeCycles.map((c) => c.id);
 
-  const [targetsRes, productsRes, bomRes, mgRes, yieldRes, profilesRes, machineRes] =
   const [targetsRes, productsRes, bomRes, mgRes, yieldRes, profilesRes, machineRes, planLinesRes] =
     await Promise.all([
       admin.from("production_targets").select("*").in("production_cycle", activeCycleIds),
