@@ -161,6 +161,7 @@ export async function GET(request: Request) {
   const activeCycleIds = activeCycles.map((c) => c.id);
 
   const [targetsRes, productsRes, bomRes, mgRes, yieldRes, profilesRes, machineRes] =
+  const [targetsRes, productsRes, bomRes, mgRes, yieldRes, profilesRes, machineRes, planLinesRes] =
     await Promise.all([
       admin.from("production_targets").select("*").in("production_cycle", activeCycleIds),
       admin.from("products").select("*"),
@@ -169,17 +170,13 @@ export async function GET(request: Request) {
       admin.from("yield_entries").select("*"),
       admin.from("freeze_dryer_profiles").select("*"),
       admin.from("freeze_dryer_machine_settings").select("*").maybeSingle(),
+      admin
+        .from("production_plan_lines")
+        .select(
+          "id, user_id, production_cycle, business_type, microgreen, run_number, trays_this_run, soak_date, drain_date, sow_date, light_date, harvest_date",
+        )
+        .in("production_cycle", activeCycleIds),
     ]);
-
-  const taskTypes = ["soak", "drain", "sow", "move_to_light", "harvest"];
-  const { data: miniLeafEvents, error: miniLeafEventsErr } = await admin
-    .from("schedule_events")
-    .select("id, user_id, production_cycle_id, title, event_type, start_at, trays, quantity, quantity_unit, business_type")
-    .in("production_cycle_id", activeCycleIds)
-    .in("event_type", taskTypes)
-    .gte("start_at", start)
-    .lte("start_at", end)
-    .order("start_at", { ascending: true });
 
   const dependencyError =
     targetsRes.error ||
@@ -189,7 +186,7 @@ export async function GET(request: Request) {
     yieldRes.error ||
     profilesRes.error ||
     machineRes.error ||
-    miniLeafEventsErr;
+    planLinesRes.error;
   if (dependencyError) {
     return NextResponse.json(
       { error: "Failed to load digest dependencies", detail: dependencyError.message },
@@ -204,18 +201,21 @@ export async function GET(request: Request) {
   const yieldEntries = (yieldRes.data || []) as YieldEntryRow[];
   const profiles = (profilesRes.data || []) as FreezeDryerProfileRow[];
   const machine = (machineRes.data || null) as FreezeDryerMachineSettingsRow | null;
-  const miniEvents = (miniLeafEvents || []) as Array<{
+  const planLines = (planLinesRes.data || []) as Array<{
     id: string;
     user_id: string;
-    production_cycle_id: string;
-    title: string;
-    event_type: string;
-    start_at: string;
-    trays?: number | null;
-    quantity?: number | null;
-    quantity_unit?: string | null;
+    production_cycle: string;
     business_type?: string | null;
+    microgreen?: string | null;
+    run_number?: number | null;
+    trays_this_run?: number | null;
+    soak_date?: string | null;
+    drain_date?: string | null;
+    sow_date?: string | null;
+    light_date?: string | null;
+    harvest_date?: string | null;
   }>;
+  const cycleById = new Map(activeCycles.map((c) => [c.id, c]));
 
   const targetsByCycleId = new Map<string, ProductionTargetRow[]>();
   for (const t of targets) {
@@ -232,19 +232,42 @@ export async function GET(request: Request) {
 
   const rawTasks: AgendaTask[] = [];
 
-  // MiniLeaf from persisted events, constrained to active/planned cycles.
-  for (const ev of miniEvents) {
-    if (normalizeBusinessType({ business_type: ev.business_type }) !== "MiniLeaf") continue;
-    if (toDateKeyInTimezone(ev.start_at, timezone) !== todayKey) continue;
-    rawTasks.push({
-      userId: ev.user_id,
-      startAt: ev.start_at,
-      title: ev.title || ev.event_type,
-      trays: ev.trays ?? null,
-      quantity: ev.quantity ?? null,
-      quantityUnit: ev.quantity_unit ?? null,
-      sortWeight: 1,
-    });
+  // MiniLeaf from production_plan_lines (source-of-truth for generated plan rows),
+  // constrained to active/planned cycles and today's timezone date.
+  const miniLeafTaskDefs: Array<{
+    key: "soak_date" | "drain_date" | "sow_date" | "light_date" | "harvest_date";
+    label: string;
+  }> = [
+    { key: "soak_date", label: "soak" },
+    { key: "drain_date", label: "drain" },
+    { key: "sow_date", label: "sow" },
+    { key: "light_date", label: "move_to_light" },
+    { key: "harvest_date", label: "harvest" },
+  ];
+  for (const line of planLines) {
+    const cycle = cycleById.get(line.production_cycle);
+    if (!cycle) continue;
+    const isMiniLeafLine =
+      normalizeBusinessType({
+        business_type: line.business_type || cycle.business_type,
+        brand: cycle.brand,
+      }) === "MiniLeaf";
+    if (!isMiniLeafLine) continue;
+    const mg = microgreens.find((m) => m.id === line.microgreen);
+    for (const def of miniLeafTaskDefs) {
+      const eventAt = line[def.key];
+      if (!eventAt) continue;
+      if (toDateKeyInTimezone(eventAt, timezone) !== todayKey) continue;
+      rawTasks.push({
+        userId: line.user_id || cycle.user_id,
+        startAt: eventAt,
+        title: `${def.label} ${mg?.name ?? line.microgreen ?? ""}`.trim(),
+        trays: line.trays_this_run ?? null,
+        quantity: null,
+        quantityUnit: null,
+        sortWeight: 1,
+      });
+    }
   }
 
   // BotanIQals recompute from live schedule inputs (same logic as Schedule page).
