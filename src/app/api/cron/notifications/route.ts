@@ -3,6 +3,24 @@ import { toZonedTime, fromZonedTime } from "date-fns-tz";
 import { format } from "date-fns";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { sendNotificationEmail } from "@/lib/sendNotificationEmail";
+import {
+  BomLineRow,
+  FreezeDryerMachineSettingsRow,
+  FreezeDryerProfileRow,
+  MicrogreenRow,
+  ProductionCycleRow,
+  ProductionTargetRow,
+  ProductRow,
+  YieldEntryRow,
+  buildRunsForMicrogreen,
+  computeDriedMicrogreenDemand,
+  deriveGrowTasksFromRuns,
+  estimateTraysNeededForDriedDemand,
+  getProfileForMicrogreen,
+  isBotanIQalsCycle,
+  scheduleRunsWithTwoDayBuffer,
+} from "@/lib/botaniqalsScheduling";
+import { normalizeBusinessType } from "@/lib/businessType";
 
 const CONFIG_ID = "a0000000-0000-0000-0000-000000000001";
 
@@ -31,6 +49,26 @@ function getTodayStartEndUtc(timezone: string): {
     todayLabel: format(zoned, "EEEE, MMM d, yyyy"),
     todayKey: format(zoned, "yyyy-MM-dd"),
   };
+}
+
+type CycleWithUser = ProductionCycleRow & {
+  user_id: string;
+  status?: string | null;
+};
+
+type AgendaTask = {
+  userId: string;
+  startAt: string;
+  title: string;
+  trays?: number | null;
+  quantity?: number | null;
+  quantityUnit?: string | null;
+  sortWeight: number;
+};
+
+function toDateKeyInTimezone(input: Date | string, timezone: string): string {
+  const zoned = toZonedTime(typeof input === "string" ? new Date(input) : input, timezone);
+  return format(zoned, "yyyy-MM-dd");
 }
 
 export async function GET(request: Request) {
@@ -105,32 +143,211 @@ export async function GET(request: Request) {
   const sections: string[] = [];
   const title = `KCG Ventures ERP – Daily Digest (${todayLabel})`;
 
-  // Section 1: Today's production tasks (all accounts, grouped by account)
-  const taskTypes = [
-    "soak",
-    "drain",
-    "sow",
-    "move_to_light",
-    "harvest",
-    "freeze_dry_start",
-    "freeze_dry_end",
-  ];
-  const { data: events } = await admin
+  // Section 1: Today's production tasks (all accounts, grouped by account).
+  // BotanIQals tasks are recomputed to match Schedule page logic; MiniLeaf uses schedule_events.
+  const activeStatuses = ["draft", "planned"];
+  const { data: cycles, error: cyclesErr } = await admin
+    .from("production_cycles")
+    .select("id, user_id, start_date, end_date, business_type, brand, status")
+    .in("status", activeStatuses);
+  if (cyclesErr) {
+    return NextResponse.json(
+      { error: "Failed to load production cycles", detail: cyclesErr.message },
+      { status: 500 },
+    );
+  }
+  const cycleRows = (cycles || []) as CycleWithUser[];
+  const activeCycles = cycleRows.filter((c) => !!c.user_id);
+  const activeCycleIds = activeCycles.map((c) => c.id);
+
+  const [targetsRes, productsRes, bomRes, mgRes, yieldRes, profilesRes, machineRes] =
+    await Promise.all([
+      admin.from("production_targets").select("*").in("production_cycle", activeCycleIds),
+      admin.from("products").select("*"),
+      admin.from("bom_lines").select("*"),
+      admin.from("microgreens").select("*"),
+      admin.from("yield_entries").select("*"),
+      admin.from("freeze_dryer_profiles").select("*"),
+      admin.from("freeze_dryer_machine_settings").select("*").maybeSingle(),
+    ]);
+
+  const taskTypes = ["soak", "drain", "sow", "move_to_light", "harvest"];
+  const { data: miniLeafEvents, error: miniLeafEventsErr } = await admin
     .from("schedule_events")
-    .select(
-      "id, user_id, title, event_type, start_at, trays, quantity, quantity_unit, run_number, machine_number",
-    )
+    .select("id, user_id, production_cycle_id, title, event_type, start_at, trays, quantity, quantity_unit, business_type")
+    .in("production_cycle_id", activeCycleIds)
     .in("event_type", taskTypes)
     .gte("start_at", start)
     .lte("start_at", end)
     .order("start_at", { ascending: true });
 
-  const byUser = new Map<string, typeof events>();
-  for (const ev of events || []) {
-    const uid = (ev as { user_id: string }).user_id;
-    if (!uid) continue;
-    if (!byUser.has(uid)) byUser.set(uid, []);
-    byUser.get(uid)!.push(ev);
+  const dependencyError =
+    targetsRes.error ||
+    productsRes.error ||
+    bomRes.error ||
+    mgRes.error ||
+    yieldRes.error ||
+    profilesRes.error ||
+    machineRes.error ||
+    miniLeafEventsErr;
+  if (dependencyError) {
+    return NextResponse.json(
+      { error: "Failed to load digest dependencies", detail: dependencyError.message },
+      { status: 500 },
+    );
+  }
+
+  const targets = (targetsRes.data || []) as ProductionTargetRow[];
+  const products = (productsRes.data || []) as ProductRow[];
+  const bomLines = (bomRes.data || []) as BomLineRow[];
+  const microgreens = (mgRes.data || []) as MicrogreenRow[];
+  const yieldEntries = (yieldRes.data || []) as YieldEntryRow[];
+  const profiles = (profilesRes.data || []) as FreezeDryerProfileRow[];
+  const machine = (machineRes.data || null) as FreezeDryerMachineSettingsRow | null;
+  const miniEvents = (miniLeafEvents || []) as Array<{
+    id: string;
+    user_id: string;
+    production_cycle_id: string;
+    title: string;
+    event_type: string;
+    start_at: string;
+    trays?: number | null;
+    quantity?: number | null;
+    quantity_unit?: string | null;
+    business_type?: string | null;
+  }>;
+
+  const targetsByCycleId = new Map<string, ProductionTargetRow[]>();
+  for (const t of targets) {
+    const current = targetsByCycleId.get(t.production_cycle) || [];
+    current.push(t);
+    targetsByCycleId.set(t.production_cycle, current);
+  }
+
+  const dryFractionByMicrogreen: Record<string, number | null> = {};
+  for (const mg of microgreens) {
+    const profile = profiles.find((p) => p.linked_microgreen_id === mg.id) || null;
+    dryFractionByMicrogreen[mg.id] = profile?.dry_matter_fraction ?? null;
+  }
+
+  const rawTasks: AgendaTask[] = [];
+
+  // MiniLeaf from persisted events, constrained to active/planned cycles.
+  for (const ev of miniEvents) {
+    if (normalizeBusinessType({ business_type: ev.business_type }) !== "MiniLeaf") continue;
+    if (toDateKeyInTimezone(ev.start_at, timezone) !== todayKey) continue;
+    rawTasks.push({
+      userId: ev.user_id,
+      startAt: ev.start_at,
+      title: ev.title || ev.event_type,
+      trays: ev.trays ?? null,
+      quantity: ev.quantity ?? null,
+      quantityUnit: ev.quantity_unit ?? null,
+      sortWeight: 1,
+    });
+  }
+
+  // BotanIQals recompute from live schedule inputs (same logic as Schedule page).
+  const botaniqalsCycles = activeCycles.filter(isBotanIQalsCycle);
+  for (const cycle of botaniqalsCycles) {
+    const cycleTargets = targetsByCycleId.get(cycle.id) || [];
+    const demand = computeDriedMicrogreenDemand(cycleTargets, products, bomLines);
+    const trayEst = estimateTraysNeededForDriedDemand(
+      demand,
+      yieldEntries,
+      dryFractionByMicrogreen,
+    );
+
+    const numMachines = Number(machine?.number_of_freeze_dryers ?? 1);
+    const defaultProfileFreshCapacityG = Number(
+      machine?.default_fresh_load_per_tray_g ?? 0,
+    );
+    const allRuns = trayEst.flatMap((t) => {
+      const prof = getProfileForMicrogreen(
+        t.microgreenId,
+        demand[t.microgreenId]?.explicitProfileId ?? null,
+        profiles,
+      );
+      const profileFreshCapacityG = Number(
+        prof?.fresh_load_per_tray_g_override ?? defaultProfileFreshCapacityG,
+      );
+      const avgFreshGPerTray = Number(t.avgFreshGPerTray ?? 0);
+      const traysPerMachineThisProfile =
+        profileFreshCapacityG > 0 && avgFreshGPerTray > 0
+          ? Math.max(1, Math.floor(profileFreshCapacityG / avgFreshGPerTray))
+          : 1;
+      const capacityTraysPerRun = traysPerMachineThisProfile * numMachines;
+      return buildRunsForMicrogreen(
+        t.microgreenId,
+        t.traysNeeded,
+        capacityTraysPerRun,
+        prof?.id ?? null,
+      );
+    });
+
+    const { scheduled } = scheduleRunsWithTwoDayBuffer(
+      cycle,
+      allRuns,
+      profiles,
+      machine,
+      2,
+    );
+    const growTasks = deriveGrowTasksFromRuns(scheduled, microgreens);
+
+    for (const task of growTasks) {
+      if (toDateKeyInTimezone(task.date, timezone) !== todayKey) continue;
+      const mg = microgreens.find((m) => m.id === task.microgreenId);
+      rawTasks.push({
+        userId: cycle.user_id,
+        startAt: task.date.toISOString(),
+        title: `${task.taskType} ${mg?.name ?? task.microgreenId}`,
+        trays: task.trays,
+        quantity: null,
+        quantityUnit: null,
+        sortWeight: 1,
+      });
+    }
+    for (const run of scheduled) {
+      if (toDateKeyInTimezone(run.runStart, timezone) !== todayKey) continue;
+      const mg = microgreens.find((m) => m.id === run.microgreenId);
+      rawTasks.push({
+        userId: cycle.user_id,
+        startAt: run.runStart.toISOString(),
+        title: `Freeze-dry run #${run.runIndex} ${mg?.name ?? run.microgreenId}`,
+        trays: run.trays,
+        quantity: null,
+        quantityUnit: null,
+        sortWeight: 2,
+      });
+    }
+  }
+
+  // Dedupe and group by user.
+  const deduped = new Map<string, AgendaTask>();
+  for (const task of rawTasks) {
+    const taskKey = [
+      task.userId,
+      task.title.toLowerCase(),
+      toDateKeyInTimezone(task.startAt, timezone),
+      task.trays ?? "",
+      task.quantity ?? "",
+      task.quantityUnit ?? "",
+      new Date(task.startAt).toISOString().slice(0, 16),
+    ].join("|");
+    if (!deduped.has(taskKey)) deduped.set(taskKey, task);
+  }
+
+  const byUser = new Map<string, AgendaTask[]>();
+  for (const task of deduped.values()) {
+    const current = byUser.get(task.userId) || [];
+    current.push(task);
+    byUser.set(task.userId, current);
+  }
+  for (const list of byUser.values()) {
+    list.sort((a, b) => {
+      if (a.sortWeight !== b.sortWeight) return a.sortWeight - b.sortWeight;
+      return new Date(a.startAt).getTime() - new Date(b.startAt).getTime();
+    });
   }
 
   const { data: usersData } = await admin.auth.admin.listUsers();
@@ -143,17 +360,17 @@ export async function GET(request: Request) {
   if (byUser.size === 0) {
     agendaParts.push("<p>No microgreen-grow or freeze-dryer tasks scheduled for today.</p>");
   } else {
-    for (const [userId, userEvents] of byUser) {
+      for (const [userId, userEvents] of byUser) {
       const email = userEmails.get(userId) ?? userId.slice(0, 8);
       agendaParts.push(`<h3>Account (${escapeHtml(email)})</h3><ul>`);
-      for (const ev of userEvents as Array<{ title: string; event_type: string; start_at: string; trays?: number; quantity?: number; quantity_unit?: string }>) {
-        const zonedTime = toZonedTime(new Date(ev.start_at), timezone);
+      for (const ev of userEvents) {
+        const zonedTime = toZonedTime(new Date(ev.startAt), timezone);
         const time = format(zonedTime, "h:mm a");
-        let line = escapeHtml(ev.title || ev.event_type || "Event");
+        let line = escapeHtml(ev.title || "Event");
         line = `[${time}] ${line}`;
         if (ev.trays != null) line += ` – ${ev.trays} trays`;
-        if (ev.quantity != null && ev.quantity_unit) {
-          line += ` – ${ev.quantity} ${escapeHtml(ev.quantity_unit)}`;
+        if (ev.quantity != null && ev.quantityUnit) {
+          line += ` – ${ev.quantity} ${escapeHtml(ev.quantityUnit)}`;
         }
         agendaParts.push(`<li>${line}</li>`);
       }
