@@ -6,6 +6,7 @@ import { AuthGuard } from "@/components/AuthGuard";
 import { addDays, formatDate, msPerDay, toMidnight } from "@/lib/date";
 import { toGrams, gramsToOz } from "@/lib/units";
 import { useSupabase } from "@/components/InstantProvider";
+import { normalizeBusinessType } from "@/lib/businessType";
 
 type TargetForm = {
   id?: string;
@@ -16,6 +17,13 @@ type TargetForm = {
   selection: string;
   target_units: number | "";
 };
+
+function filterScopedRows<T extends { user_id?: string | null }>(
+  rows: T[],
+  userId: string,
+): T[] {
+  return rows.filter((row) => row.user_id == null || row.user_id === userId);
+}
 
 export default function CyclePlanPage() {
   const params = useParams<{ id: string }>();
@@ -45,8 +53,10 @@ export default function CyclePlanPage() {
     target_units: "",
   });
 
-  const isMiniLeaf =
-    cycle?.business_type === "MiniLeaf" || cycle?.brand === "minileaf";
+  const businessType = normalizeBusinessType(cycle || {}, {
+    defaultType: "BotanIQals",
+  });
+  const isMiniLeaf = businessType === "MiniLeaf";
 
   const microgreenProducts = useMemo(
     () => products.filter((p: any) => p.is_microgreen === true),
@@ -146,16 +156,26 @@ export default function CyclePlanPage() {
 
       if (cRes.data) setCycle(cRes.data);
       setTargets(tRes.data || []);
-      setProducts(pRes.data || []);
-      setMicrogreens(mRes.data || []);
-      setBomLines(bRes.data || []);
-      setItems(iRes.data || []);
-      setCalibration(calRes.data || null);
+      setProducts(filterScopedRows(pRes.data || [], user.id));
+      setMicrogreens(filterScopedRows(mRes.data || [], user.id));
+      setBomLines(filterScopedRows(bRes.data || [], user.id));
+      setItems(filterScopedRows(iRes.data || [], user.id));
+      const calibrationRow = calRes.data as { user_id?: string | null } | null;
+      setCalibration(
+        calibrationRow && calibrationRow.user_id && calibrationRow.user_id !== user.id
+          ? null
+          : calibrationRow,
+      );
       setPlanLines(planRes.data || []);
-      setYieldEntries(yRes.data || []);
-      setVariants(vRes.data || []);
-      setMachine(machineRes.data || null);
-      setFreezeDryerProfiles(profilesRes.data || []);
+      setYieldEntries(filterScopedRows(yRes.data || [], user.id));
+      setVariants(filterScopedRows(vRes.data || [], user.id));
+      const machineRow = machineRes.data as { user_id?: string | null } | null;
+      setMachine(
+        machineRow && machineRow.user_id && machineRow.user_id !== user.id
+          ? null
+          : machineRow,
+      );
+      setFreezeDryerProfiles(filterScopedRows(profilesRes.data || [], user.id));
       setIsLoading(false);
     };
     load();
@@ -520,8 +540,6 @@ export default function CyclePlanPage() {
         .eq("production_cycle", cycle.id)
         .eq("user_id", user.id);
       if (delPlanError) throw delPlanError;
-
-      const businessType = cycle.business_type || (cycle.brand === "minileaf" ? "MiniLeaf" : "BotanIQals");
 
       if (isMiniLeaf && minileafAggregate && minileafAggregate.length > 0) {
         const harvestDate = toMidnight(cycle.harvest_date);

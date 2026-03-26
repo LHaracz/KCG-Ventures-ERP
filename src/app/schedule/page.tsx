@@ -31,12 +31,32 @@ import {
   isBotanIQalsCycle,
   scheduleRunsWithTwoDayBuffer,
 } from "@/lib/botaniqalsScheduling";
+import { normalizeBusinessType } from "@/lib/businessType";
 
 type InventoryItemRow = {
   id: string;
   name: string;
   unit: string;
 };
+
+type ScheduleEventRow = {
+  id: string;
+  production_cycle_id: string;
+  business_type?: string | null;
+  microgreen_id?: string | null;
+  event_type: string;
+  title: string;
+  start_at: string;
+  trays?: number | null;
+  run_number?: number | null;
+};
+
+function filterScopedRows<T extends { user_id?: string | null }>(
+  rows: T[],
+  userId: string,
+): T[] {
+  return rows.filter((row) => row.user_id == null || row.user_id === userId);
+}
 
 export default function SchedulePage() {
   const { user, supabase } = useSupabase();
@@ -53,6 +73,7 @@ export default function SchedulePage() {
   const [microgreens, setMicrogreens] = useState<MicrogreenRow[]>([]);
   const [yieldEntries, setYieldEntries] = useState<YieldEntryRow[]>([]);
   const [profiles, setProfiles] = useState<FreezeDryerProfileRow[]>([]);
+  const [scheduleEvents, setScheduleEvents] = useState<ScheduleEventRow[]>([]);
   const [machine, setMachine] = useState<FreezeDryerMachineSettingsRow | null>(
     null,
   );
@@ -74,6 +95,7 @@ export default function SchedulePage() {
         mgRes,
         yieldRes,
         profilesRes,
+        scheduleEventsRes,
         machineRes,
       ] = await Promise.all([
         supabase
@@ -100,6 +122,7 @@ export default function SchedulePage() {
           .from("freeze_dryer_profiles")
           .select("*")
           ,
+        supabase.from("schedule_events").select("*").eq("user_id", user.id),
         supabase
           .from("freeze_dryer_machine_settings")
           .select("*")
@@ -115,6 +138,7 @@ export default function SchedulePage() {
         mgRes.error ||
         yieldRes.error ||
         profilesRes.error ||
+        scheduleEventsRes.error ||
         machineRes.error;
       if (anyError) {
         setError(
@@ -127,13 +151,57 @@ export default function SchedulePage() {
 
       setCycles((cyclesRes.data || []) as ProductionCycleRow[]);
       setTargets((targetsRes.data || []) as ProductionTargetRow[]);
-      setProducts((productsRes.data || []) as ProductRow[]);
-      setBomLines((bomRes.data || []) as BomLineRow[]);
-      setItems((itemsRes.data || []) as InventoryItemRow[]);
-      setMicrogreens((mgRes.data || []) as MicrogreenRow[]);
-      setYieldEntries((yieldRes.data || []) as YieldEntryRow[]);
-      setProfiles((profilesRes.data || []) as FreezeDryerProfileRow[]);
-      setMachine((machineRes.data || null) as any);
+      setProducts(
+        filterScopedRows(
+          ((productsRes.data || []) as (ProductRow & { user_id?: string | null })[]),
+          user.id,
+        ),
+      );
+      setBomLines(
+        filterScopedRows(
+          ((bomRes.data || []) as (BomLineRow & { user_id?: string | null })[]),
+          user.id,
+        ),
+      );
+      setItems(
+        filterScopedRows(
+          ((itemsRes.data || []) as (InventoryItemRow & {
+            user_id?: string | null;
+          })[]),
+          user.id,
+        ),
+      );
+      setMicrogreens(
+        filterScopedRows(
+          ((mgRes.data || []) as (MicrogreenRow & { user_id?: string | null })[]),
+          user.id,
+        ),
+      );
+      setYieldEntries(
+        filterScopedRows(
+          ((yieldRes.data || []) as (YieldEntryRow & {
+            user_id?: string | null;
+          })[]),
+          user.id,
+        ),
+      );
+      setProfiles(
+        filterScopedRows(
+          ((profilesRes.data || []) as (FreezeDryerProfileRow & {
+            user_id?: string | null;
+          })[]),
+          user.id,
+        ),
+      );
+      setScheduleEvents((scheduleEventsRes.data || []) as ScheduleEventRow[]);
+      const machineData = (machineRes.data || null) as
+        | (FreezeDryerMachineSettingsRow & { user_id?: string | null })
+        | null;
+      setMachine(
+        machineData && machineData.user_id && machineData.user_id !== user.id
+          ? null
+          : machineData,
+      );
       setIsLoading(false);
     };
     load();
@@ -141,6 +209,11 @@ export default function SchedulePage() {
 
   const botaniqalsCycles = useMemo(
     () => cycles.filter(isBotanIQalsCycle),
+    [cycles],
+  );
+
+  const minileafCycles = useMemo(
+    () => cycles.filter((c) => normalizeBusinessType(c) === "MiniLeaf"),
     [cycles],
   );
 
@@ -272,6 +345,42 @@ export default function SchedulePage() {
     machine,
     microgreens,
   ]);
+
+  const minileafGrowEntries = useMemo(() => {
+    const allowedTypes = new Set([
+      "soak",
+      "drain",
+      "sow",
+      "move_to_light",
+      "harvest",
+    ]);
+
+    return scheduleEvents
+      .filter((e) => normalizeBusinessType(e) === "MiniLeaf")
+      .filter((e) => allowedTypes.has(e.event_type))
+      .map((e) => {
+        const mg = microgreens.find((m) => m.id === e.microgreen_id);
+        return {
+          cycleId: e.production_cycle_id,
+          dateKey: toMidnight(e.start_at).toISOString().slice(0, 10),
+          microgreenId: e.microgreen_id || "",
+          microgreenName:
+            mg?.name ??
+            e.title.replace(/^(Soak|Drain|Sow|Move to light|Harvest)\s+/i, ""),
+          trays: Number(e.trays ?? 0),
+          runNumber: Number(e.run_number ?? 1),
+          taskType: e.event_type,
+        };
+      });
+  }, [scheduleEvents, microgreens]);
+
+  const allGrowEntries = useMemo(
+    () =>
+      [...growSchedule.entries, ...minileafGrowEntries].sort((a, b) =>
+        a.dateKey.localeCompare(b.dateKey),
+      ),
+    [growSchedule.entries, minileafGrowEntries],
+  );
 
   const freezeDryerSchedule = useMemo(() => {
     const rows: {
@@ -495,8 +604,12 @@ export default function SchedulePage() {
             Production Schedule
           </h1>
           <p className="text-sm text-zinc-600">
-            View BotanIQals microgreen grow tasks, freeze-dryer runs, and
-            supplement manufacturing batches derived from your production cycles.
+            View MiniLeaf and BotanIQals grow tasks, plus BotanIQals freeze-dryer
+            runs and manufacturing batches.
+          </p>
+          <p className="mt-1 text-[11px] text-zinc-500">
+            Active cycles: {minileafCycles.length} MiniLeaf,{" "}
+            {botaniqalsCycles.length} BotanIQals
           </p>
         </header>
 
@@ -544,8 +657,8 @@ export default function SchedulePage() {
           </p>
         ) : activeTab === "microgreen_grow" ? (
           <MicrogreenGrowTab
-            cycles={botaniqalsCycles}
-            entries={growSchedule.entries}
+            cycles={cycles}
+            entries={allGrowEntries}
             warnings={growSchedule.warnings}
           />
         ) : activeTab === "freeze_dryer" ? (
@@ -591,7 +704,7 @@ function MicrogreenGrowTab({
   return (
     <section className="space-y-4 rounded-md border border-zinc-200 bg-white p-4 text-xs">
       <h2 className="text-sm font-semibold text-zinc-900">
-        Microgreen grow schedule (BotanIQals inputs)
+        Microgreen grow schedule (MiniLeaf + BotanIQals)
       </h2>
       {warnings.length > 0 && (
         <div className="rounded border border-amber-200 bg-amber-50 p-2 text-[11px] text-amber-800">
@@ -606,8 +719,8 @@ function MicrogreenGrowTab({
 
       {entries.length === 0 ? (
         <p className="text-xs text-black">
-          No BotanIQals microgreen grow tasks found. Add BotanIQals cycle targets
-          with dried microgreen BOM lines and yield data to generate schedules.
+          No grow tasks found. Generate a cycle plan for MiniLeaf or BotanIQals
+          to populate this schedule.
         </p>
       ) : (
         <div className="max-h-[36rem] space-y-4 overflow-y-auto">

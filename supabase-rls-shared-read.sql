@@ -50,10 +50,9 @@ DROP POLICY IF EXISTS "allow_authenticated_read" ON public.freeze_dryer_profiles
 CREATE POLICY "allow_authenticated_read" ON public.freeze_dryer_profiles
   FOR SELECT TO authenticated USING (true);
 
--- Freeze dryer profiles: shared write access for authenticated users
+-- Freeze dryer profiles: remove global write access to avoid cross-account edits.
+-- Keep reads shared for now; writes should be managed by stricter per-user/per-role policies.
 DROP POLICY IF EXISTS "allow_authenticated_write" ON public.freeze_dryer_profiles;
-CREATE POLICY "allow_authenticated_write" ON public.freeze_dryer_profiles
-  FOR ALL TO authenticated USING (true) WITH CHECK (true);
 
 -- Calibration (if table is named calibration)
 DROP POLICY IF EXISTS "allow_authenticated_read" ON public.calibration;

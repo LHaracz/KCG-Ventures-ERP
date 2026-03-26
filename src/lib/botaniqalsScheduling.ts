@@ -1,5 +1,6 @@
 import { addDays, toMidnight } from "@/lib/date";
 import { toGrams } from "@/lib/units";
+import { normalizeBusinessType } from "@/lib/businessType";
 
 export type ProductionCycleRow = {
   id: string;
@@ -81,10 +82,7 @@ export type DriedDemandByMicrogreen = Record<
 >;
 
 export function isBotanIQalsCycle(cycle: ProductionCycleRow): boolean {
-  const bt = (cycle.business_type || "").toLowerCase();
-  const brand = (cycle.brand || "").toLowerCase();
-  if (bt === "minileaf" || brand === "minileaf") return false;
-  return true;
+  return normalizeBusinessType(cycle) === "BotanIQals";
 }
 
 export function getTargetPlannedQty(target: ProductionTargetRow): number {

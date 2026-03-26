@@ -5,6 +5,7 @@ import Link from "next/link";
 import { AuthGuard } from "@/components/AuthGuard";
 import { formatDate } from "@/lib/date";
 import { useSupabase } from "@/components/InstantProvider";
+import { normalizeBusinessType } from "@/lib/businessType";
 
 type BusinessType = "MiniLeaf" | "BotanIQals";
 
@@ -15,6 +16,13 @@ type CycleForm = {
   end_date: string;
   status: "draft" | "planned" | "completed";
 };
+
+function filterScopedRows<T extends { user_id?: string | null }>(
+  rows: T[],
+  userId: string,
+): T[] {
+  return rows.filter((row) => row.user_id == null || row.user_id === userId);
+}
 
 export default function CyclesPage() {
   const { user, supabase } = useSupabase();
@@ -64,7 +72,7 @@ export default function CyclesPage() {
       setCycles(c.data || []);
       setTargets(t.data || []);
       setBatches(b.data || []);
-      setProducts(p.data || []);
+      setProducts(filterScopedRows(p.data || [], user.id));
       setIsLoading(false);
     };
     load();
@@ -139,9 +147,7 @@ export default function CyclesPage() {
   };
 
   const displayBusinessType = (c: { business_type?: string; brand?: string }) =>
-    c.business_type === "MiniLeaf" || c.brand === "minileaf"
-      ? "MiniLeaf"
-      : "BotanIQals";
+    normalizeBusinessType(c, { defaultType: "BotanIQals" });
 
   const handleDeleteCycle = async (id: string) => {
     if (!user) return;
