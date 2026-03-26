@@ -76,7 +76,8 @@ export default function NotificationSettingsPage() {
             Notification Settings
           </h1>
           <p className="text-sm text-zinc-600">
-            One combined email is sent to all recipients: low-stock digest (once per day) and production agenda by account (at 8 AM, 12 PM, 4 PM, 8 PM in your timezone).
+            One combined email is sent once per day to all recipients: today&apos;s
+            production tasks by account plus low-stock digest.
           </p>
         </header>
 
@@ -111,12 +112,13 @@ export default function NotificationSettingsPage() {
                 className="w-full rounded-md border border-zinc-300 px-2 py-1.5 text-black shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
               />
               <p className="mt-1 text-[11px] text-zinc-600">
-                Used for production reminder times (e.g. America/New_York).
+                Used to calculate &quot;today&quot; and send time (e.g.
+                America/New_York).
               </p>
             </div>
             <div>
               <label className="mb-1 block font-medium text-zinc-800">
-                Production reminder hours (comma-separated, 0–23)
+                Production reminder hours (legacy; kept for compatibility)
               </label>
               <input
                 type="text"
@@ -128,7 +130,7 @@ export default function NotificationSettingsPage() {
             </div>
             <div>
               <label className="mb-1 block font-medium text-zinc-800">
-                Low-stock digest hour (0–23, e.g. 7 for 7 AM)
+                Daily digest send hour (0–23, e.g. 7 for 7 AM)
               </label>
               <input
                 type="number"
