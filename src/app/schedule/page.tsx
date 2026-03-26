@@ -51,54 +51,6 @@ type ScheduleEventRow = {
   run_number?: number | null;
 };
 
-function isMissingUserIdColumnError(err: { message?: string } | null): boolean {
-  const message = (err?.message || "").toLowerCase();
-  return message.includes("user_id") && message.includes("column");
-}
-
-async function selectScopedRows<T>(
-  supabase: any,
-  table: string,
-  userId: string,
-  options?: { orderBy?: string; ascending?: boolean },
-): Promise<{ data: T[] | null; error: any }> {
-  let query = supabase
-    .from(table)
-    .select("*")
-    .or(`user_id.eq.${userId},user_id.is.null`);
-  if (options?.orderBy) {
-    query = query.order(options.orderBy, {
-      ascending: options.ascending ?? true,
-    });
-  }
-  const scopedRes = await query;
-  if (!isMissingUserIdColumnError(scopedRes.error)) return scopedRes;
-
-  let fallback = supabase.from(table).select("*");
-  if (options?.orderBy) {
-    fallback = fallback.order(options.orderBy, {
-      ascending: options.ascending ?? true,
-    });
-  }
-  return fallback;
-}
-
-async function selectScopedSingle<T>(
-  supabase: any,
-  table: string,
-  userId: string,
-): Promise<{ data: T | null; error: any }> {
-  const scopedRes = await supabase
-    .from(table)
-    .select("*")
-    .or(`user_id.eq.${userId},user_id.is.null`)
-    .limit(1)
-    .maybeSingle();
-  if (!isMissingUserIdColumnError(scopedRes.error)) return scopedRes;
-
-  return supabase.from(table).select("*").limit(1).maybeSingle();
-}
-
 export default function SchedulePage() {
   const { user, supabase } = useSupabase();
 
@@ -148,28 +100,25 @@ export default function SchedulePage() {
           .from("production_targets")
           .select("*")
           .eq("user_id", user.id),
-        selectScopedRows<ProductRow>(supabase, "products", user.id, {
-          orderBy: "name",
-        }),
-        selectScopedRows<BomLineRow>(supabase, "bom_lines", user.id),
-        selectScopedRows<InventoryItemRow>(supabase, "inventory_items", user.id, {
-          orderBy: "name",
-        }),
-        selectScopedRows<MicrogreenRow>(supabase, "microgreens", user.id, {
-          orderBy: "name",
-        }),
-        selectScopedRows<YieldEntryRow>(supabase, "yield_entries", user.id),
-        selectScopedRows<FreezeDryerProfileRow>(
-          supabase,
-          "freeze_dryer_profiles",
-          user.id,
-        ),
+        supabase.from("products").select("*").order("name", { ascending: true }),
+        supabase.from("bom_lines").select("*"),
+        supabase
+          .from("inventory_items")
+          .select("*")
+          .order("name", { ascending: true }),
+        supabase
+          .from("microgreens")
+          .select("*")
+          .order("name", { ascending: true }),
+        supabase.from("yield_entries").select("*"),
+        supabase
+          .from("freeze_dryer_profiles")
+          .select("*"),
         supabase.from("schedule_events").select("*").eq("user_id", user.id),
-        selectScopedSingle<FreezeDryerMachineSettingsRow>(
-          supabase,
-          "freeze_dryer_machine_settings",
-          user.id,
-        ),
+        supabase
+          .from("freeze_dryer_machine_settings")
+          .select("*")
+          .maybeSingle(),
       ]);
 
       const anyError =
