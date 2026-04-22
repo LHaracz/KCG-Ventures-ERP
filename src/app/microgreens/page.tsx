@@ -3,7 +3,6 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { AuthGuard } from "@/components/AuthGuard";
 import { useSupabase } from "@/components/InstantProvider";
-import { logSupabaseMutationError } from "@/lib/supabaseMutationDebug";
 
 type MicrogreenForm = {
   id?: string;
@@ -33,7 +32,6 @@ export default function MicrogreensPage() {
       const { data, error } = await supabase
         .from("microgreens")
         .select("*")
-        .eq("user_id", user.id)
         .order("name", { ascending: true });
       if (error) {
         setError(error.message);
@@ -119,32 +117,12 @@ export default function MicrogreensPage() {
       };
 
       if (editing.id) {
-        const { data: updated, error } = await supabase
+        const { error } = await supabase
           .from("microgreens")
           .update(payload)
           .eq("id", editing.id)
-          .eq("user_id", user.id)
-          .select("id")
-          .maybeSingle();
-        if (error) {
-          throw new Error(
-            logSupabaseMutationError(
-              {
-                table: "microgreens",
-                operation: "update",
-                userId: user.id,
-                payload,
-                match: { id: editing.id, user_id: user.id },
-              },
-              error,
-            ),
-          );
-        }
-        if (!updated) {
-          throw new Error(
-            "Save did not update any rows. Verify this record belongs to your account and that RLS allows updates.",
-          );
-        }
+          .eq("user_id", user.id);
+        if (error) throw error;
       } else {
         const { data, error } = await supabase
           .from("microgreens")
@@ -152,44 +130,17 @@ export default function MicrogreensPage() {
             ...payload,
             user_id: user.id,
           })
-          .select("id")
-          .maybeSingle();
-        if (error) {
-          throw new Error(
-            logSupabaseMutationError(
-              {
-                table: "microgreens",
-                operation: "insert",
-                userId: user.id,
-                payload: { ...payload, user_id: user.id },
-              },
-              error,
-            ),
-          );
-        }
+          .select("*");
+        if (error) throw error;
         if (data) {
-          setRows((prev) => [...prev, data]);
+          setRows((prev) => [...prev, ...data]);
         }
       }
       // reload list
-      const { data: refreshed, error: refreshError } = await supabase
+      const { data: refreshed } = await supabase
         .from("microgreens")
         .select("*")
-        .eq("user_id", user.id)
         .order("name", { ascending: true });
-      if (refreshError) {
-        throw new Error(
-          logSupabaseMutationError(
-            {
-              table: "microgreens",
-              operation: "select",
-              userId: user.id,
-              match: { user_id: user.id },
-            },
-            refreshError,
-          ),
-        );
-      }
       setRows(refreshed || []);
       setEditing(null);
     } catch (err: any) {

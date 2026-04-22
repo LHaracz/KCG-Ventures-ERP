@@ -3,7 +3,6 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { AuthGuard } from "@/components/AuthGuard";
 import { useSupabase } from "@/components/InstantProvider";
-import { logSupabaseMutationError } from "@/lib/supabaseMutationDebug";
 
 type ProductForm = {
   id?: string;
@@ -69,46 +68,26 @@ export default function ProductsPage() {
         supabase
           .from("products")
           .select("*")
-          .eq("user_id", user.id)
           .order("name", { ascending: true }),
         supabase
           .from("microgreens")
           .select("*")
-          .eq("user_id", user.id)
           .order("name", { ascending: true }),
         supabase
           .from("inventory_items")
           .select("*")
-          .eq("user_id", user.id)
           .order("name", { ascending: true }),
         supabase
           .from("bom_lines")
-          .select("*")
-          .eq("user_id", user.id),
+          .select("*"),
         supabase
           .from("freeze_dryer_profiles")
           .select("*")
-          .eq("user_id", user.id)
           .order("name", { ascending: true }),
         supabase
           .from("product_variants")
-          .select("*")
-          .eq("user_id", user.id),
+          .select("*"),
       ]);
-      if (p.error || m.error || i.error || b.error || fdp.error || v.error) {
-        setProductError(
-          [
-            p.error?.message,
-            m.error?.message,
-            i.error?.message,
-            b.error?.message,
-            fdp.error?.message,
-            v.error?.message,
-          ]
-            .filter(Boolean)
-            .join(" | "),
-        );
-      }
       setProducts(p.data || []);
       setMicrogreens(m.data || []);
       setItems(i.data || []);
@@ -260,23 +239,9 @@ export default function ProductsPage() {
           .from("products")
           .update(payload)
           .eq("id", editing.id)
-          .eq("user_id", user.id)
           .select("id, target_batch_size, target_batch_unit")
           .maybeSingle();
-        if (error) {
-          throw new Error(
-            logSupabaseMutationError(
-              {
-                table: "products",
-                operation: "update",
-                userId: user.id,
-                payload,
-                match: { id: editing.id, user_id: user.id },
-              },
-              error,
-            ),
-          );
-        }
+        if (error) throw error;
         if (!updated) {
           throw new Error(
             "Save did not update any rows. This usually means the product row was not matched (user_id/id mismatch) or an RLS policy blocked the update.",
@@ -289,43 +254,17 @@ export default function ProductsPage() {
             ...payload,
             user_id: user.id,
           })
-          .select("id")
-          .maybeSingle();
-        if (error) {
-          throw new Error(
-            logSupabaseMutationError(
-              {
-                table: "products",
-                operation: "insert",
-                userId: user.id,
-                payload: { ...payload, user_id: user.id },
-              },
-              error,
-            ),
-          );
-        }
-        if (data) {
-          setSelectedProductId(data.id);
+          .select("*");
+        if (error) throw error;
+        if (data && data[0]) {
+          setSelectedProductId(data[0].id);
         }
       }
-      const { data: refreshed, error: refreshError } = await supabase
+      const { data: refreshed } = await supabase
         .from("products")
         .select("*")
         .eq("user_id", user.id)
         .order("name", { ascending: true });
-      if (refreshError) {
-        throw new Error(
-          logSupabaseMutationError(
-            {
-              table: "products",
-              operation: "select",
-              userId: user.id,
-              match: { user_id: user.id },
-            },
-            refreshError,
-          ),
-        );
-      }
       setProducts(refreshed || []);
       setEditing(null);
     } catch (err: any) {
@@ -472,80 +411,30 @@ export default function ProductsPage() {
         sale_price: isVariantLine
           ? Number(bomEditing.sale_price || 0)
           : null,
-        material_name_snapshot:
-          item?.name ||
-          microgreens.find((m: any) => m.id === bomEditing.microgreen_id)?.name ||
-          null,
+        material_name_snapshot: bomEditing.notes
+          ? undefined
+          : undefined,
         notes: bomEditing.notes || null,
       };
 
       if (bomEditing.id) {
-        const { data: updated, error } = await supabase
+        const { error } = await supabase
           .from("bom_lines")
           .update(payload)
           .eq("id", bomEditing.id)
-          .eq("user_id", user.id)
-          .select("id")
-          .maybeSingle();
-        if (error) {
-          throw new Error(
-            logSupabaseMutationError(
-              {
-                table: "bom_lines",
-                operation: "update",
-                userId: user.id,
-                payload,
-                match: { id: bomEditing.id, user_id: user.id },
-              },
-              error,
-            ),
-          );
-        }
-        if (!updated) {
-          throw new Error(
-            "Save did not update any BOM rows. Verify ownership and RLS write policies.",
-          );
-        }
+          .eq("user_id", user.id);
+        if (error) throw error;
       } else {
-        const { error } = await supabase
-          .from("bom_lines")
-          .insert({
-            ...payload,
-            user_id: user.id,
-          })
-          .select("id")
-          .maybeSingle();
-        if (error) {
-          throw new Error(
-            logSupabaseMutationError(
-              {
-                table: "bom_lines",
-                operation: "insert",
-                userId: user.id,
-                payload: { ...payload, user_id: user.id },
-              },
-              error,
-            ),
-          );
-        }
+        const { error } = await supabase.from("bom_lines").insert({
+          ...payload,
+          user_id: user.id,
+        });
+        if (error) throw error;
       }
-      const { data: refreshed, error: refreshError } = await supabase
+      const { data: refreshed } = await supabase
         .from("bom_lines")
         .select("*")
         .eq("user_id", user.id);
-      if (refreshError) {
-        throw new Error(
-          logSupabaseMutationError(
-            {
-              table: "bom_lines",
-              operation: "select",
-              userId: user.id,
-              match: { user_id: user.id },
-            },
-            refreshError,
-          ),
-        );
-      }
       setBomLines(refreshed || []);
       setBomEditing(null);
     } catch (err: any) {
@@ -620,7 +509,7 @@ export default function ProductsPage() {
         user_id: user.id,
       };
       if (variantEditing.id) {
-        const { data: updated, error } = await supabase
+        const { error } = await supabase
           .from("product_variants")
           .update({
             name: payload.name,
@@ -631,65 +520,18 @@ export default function ProductsPage() {
             is_active: payload.is_active,
           })
           .eq("id", variantEditing.id)
-          .eq("user_id", user.id)
-          .select("id")
-          .maybeSingle();
-        if (error) {
-          throw new Error(
-            logSupabaseMutationError(
-              {
-                table: "product_variants",
-                operation: "update",
-                userId: user.id,
-                payload,
-                match: { id: variantEditing.id, user_id: user.id },
-              },
-              error,
-            ),
-          );
-        }
-        if (!updated) {
-          throw new Error(
-            "Save did not update any variant rows. Verify ownership and RLS write policies.",
-          );
-        }
+          .eq("user_id", user.id);
+        if (error) throw error;
       } else {
         const { error } = await supabase
           .from("product_variants")
-          .insert(payload)
-          .select("id")
-          .maybeSingle();
-        if (error) {
-          throw new Error(
-            logSupabaseMutationError(
-              {
-                table: "product_variants",
-                operation: "insert",
-                userId: user.id,
-                payload,
-              },
-              error,
-            ),
-          );
-        }
+          .insert(payload);
+        if (error) throw error;
       }
-      const { data: refreshed, error: refreshError } = await supabase
+      const { data: refreshed } = await supabase
         .from("product_variants")
         .select("*")
         .eq("user_id", user.id);
-      if (refreshError) {
-        throw new Error(
-          logSupabaseMutationError(
-            {
-              table: "product_variants",
-              operation: "select",
-              userId: user.id,
-              match: { user_id: user.id },
-            },
-            refreshError,
-          ),
-        );
-      }
       setVariants(refreshed || []);
       setVariantEditing(null);
     } catch (err: any) {
