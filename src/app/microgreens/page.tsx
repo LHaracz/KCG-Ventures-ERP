@@ -33,7 +33,6 @@ export default function MicrogreensPage() {
       const { data, error } = await supabase
         .from("microgreens")
         .select("*")
-        .eq("user_id", user.id)
         .order("name", { ascending: true });
       if (error) {
         setError(error.message);
@@ -91,7 +90,7 @@ export default function MicrogreensPage() {
       );
       if (duplicate) {
         setError(
-          "A microgreen with this name already exists for your account."
+          "A microgreen with this name already exists."
         );
         setSaving(false);
         return;
@@ -123,7 +122,6 @@ export default function MicrogreensPage() {
           .from("microgreens")
           .update(payload)
           .eq("id", editing.id)
-          .eq("user_id", user.id)
           .select("id")
           .maybeSingle();
         if (error) {
@@ -134,7 +132,7 @@ export default function MicrogreensPage() {
                 operation: "update",
                 userId: user.id,
                 payload,
-                match: { id: editing.id, user_id: user.id },
+                match: { id: editing.id },
               },
               error,
             ),
@@ -150,7 +148,6 @@ export default function MicrogreensPage() {
           .from("microgreens")
           .insert({
             ...payload,
-            user_id: user.id,
           })
           .select("id")
           .maybeSingle();
@@ -161,7 +158,7 @@ export default function MicrogreensPage() {
                 table: "microgreens",
                 operation: "insert",
                 userId: user.id,
-                payload: { ...payload, user_id: user.id },
+                payload,
               },
               error,
             ),
@@ -175,7 +172,6 @@ export default function MicrogreensPage() {
       const { data: refreshed, error: refreshError } = await supabase
         .from("microgreens")
         .select("*")
-        .eq("user_id", user.id)
         .order("name", { ascending: true });
       if (refreshError) {
         throw new Error(
@@ -184,7 +180,7 @@ export default function MicrogreensPage() {
               table: "microgreens",
               operation: "select",
               userId: user.id,
-              match: { user_id: user.id },
+              match: {},
             },
             refreshError,
           ),
@@ -205,8 +201,7 @@ export default function MicrogreensPage() {
       const { error } = await supabase
         .from("microgreens")
         .delete()
-        .eq("id", id)
-        .eq("user_id", user?.id || "");
+        .eq("id", id);
       if (error) throw error;
       setRows((prev) => prev.filter((m) => m.id !== id));
     } catch (err: any) {

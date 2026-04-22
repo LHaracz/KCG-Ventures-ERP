@@ -69,31 +69,25 @@ export default function ProductsPage() {
         supabase
           .from("products")
           .select("*")
-          .eq("user_id", user.id)
           .order("name", { ascending: true }),
         supabase
           .from("microgreens")
           .select("*")
-          .eq("user_id", user.id)
           .order("name", { ascending: true }),
         supabase
           .from("inventory_items")
           .select("*")
-          .eq("user_id", user.id)
           .order("name", { ascending: true }),
         supabase
           .from("bom_lines")
-          .select("*")
-          .eq("user_id", user.id),
+          .select("*"),
         supabase
           .from("freeze_dryer_profiles")
           .select("*")
-          .eq("user_id", user.id)
           .order("name", { ascending: true }),
         supabase
           .from("product_variants")
-          .select("*")
-          .eq("user_id", user.id),
+          .select("*"),
       ]);
       if (p.error || m.error || i.error || b.error || fdp.error || v.error) {
         setProductError(
@@ -224,7 +218,7 @@ export default function ProductsPage() {
       );
       if (duplicate) {
         setProductError(
-          "A product with this name already exists for your account."
+          "A product with this name already exists."
         );
         setProductSaving(false);
         return;
@@ -260,7 +254,6 @@ export default function ProductsPage() {
           .from("products")
           .update(payload)
           .eq("id", editing.id)
-          .eq("user_id", user.id)
           .select("id, target_batch_size, target_batch_unit")
           .maybeSingle();
         if (error) {
@@ -271,7 +264,7 @@ export default function ProductsPage() {
                 operation: "update",
                 userId: user.id,
                 payload,
-                match: { id: editing.id, user_id: user.id },
+                match: { id: editing.id },
               },
               error,
             ),
@@ -287,7 +280,6 @@ export default function ProductsPage() {
           .from("products")
           .insert({
             ...payload,
-            user_id: user.id,
           })
           .select("id")
           .maybeSingle();
@@ -298,7 +290,7 @@ export default function ProductsPage() {
                 table: "products",
                 operation: "insert",
                 userId: user.id,
-                payload: { ...payload, user_id: user.id },
+                payload,
               },
               error,
             ),
@@ -311,7 +303,6 @@ export default function ProductsPage() {
       const { data: refreshed, error: refreshError } = await supabase
         .from("products")
         .select("*")
-        .eq("user_id", user.id)
         .order("name", { ascending: true });
       if (refreshError) {
         throw new Error(
@@ -320,7 +311,7 @@ export default function ProductsPage() {
               table: "products",
               operation: "select",
               userId: user.id,
-              match: { user_id: user.id },
+              match: {},
             },
             refreshError,
           ),
@@ -484,7 +475,6 @@ export default function ProductsPage() {
           .from("bom_lines")
           .update(payload)
           .eq("id", bomEditing.id)
-          .eq("user_id", user.id)
           .select("id")
           .maybeSingle();
         if (error) {
@@ -495,7 +485,7 @@ export default function ProductsPage() {
                 operation: "update",
                 userId: user.id,
                 payload,
-                match: { id: bomEditing.id, user_id: user.id },
+                match: { id: bomEditing.id },
               },
               error,
             ),
@@ -511,7 +501,6 @@ export default function ProductsPage() {
           .from("bom_lines")
           .insert({
             ...payload,
-            user_id: user.id,
           })
           .select("id")
           .maybeSingle();
@@ -522,7 +511,7 @@ export default function ProductsPage() {
                 table: "bom_lines",
                 operation: "insert",
                 userId: user.id,
-                payload: { ...payload, user_id: user.id },
+                payload,
               },
               error,
             ),
@@ -531,8 +520,7 @@ export default function ProductsPage() {
       }
       const { data: refreshed, error: refreshError } = await supabase
         .from("bom_lines")
-        .select("*")
-        .eq("user_id", user.id);
+        .select("*");
       if (refreshError) {
         throw new Error(
           logSupabaseMutationError(
@@ -540,7 +528,7 @@ export default function ProductsPage() {
               table: "bom_lines",
               operation: "select",
               userId: user.id,
-              match: { user_id: user.id },
+              match: {},
             },
             refreshError,
           ),
@@ -561,8 +549,7 @@ export default function ProductsPage() {
       const { error } = await supabase
         .from("bom_lines")
         .delete()
-        .eq("id", id)
-        .eq("user_id", user?.id || "");
+        .eq("id", id);
       if (error) throw error;
       setBomLines((prev) => prev.filter((b) => b.id !== id));
     } catch (err: any) {
@@ -617,7 +604,6 @@ export default function ProductsPage() {
         sale_price: salePrice,
         unit_cost: unitCost,
         is_active: variantEditing.is_active,
-        user_id: user.id,
       };
       if (variantEditing.id) {
         const { data: updated, error } = await supabase
@@ -631,7 +617,6 @@ export default function ProductsPage() {
             is_active: payload.is_active,
           })
           .eq("id", variantEditing.id)
-          .eq("user_id", user.id)
           .select("id")
           .maybeSingle();
         if (error) {
@@ -642,7 +627,7 @@ export default function ProductsPage() {
                 operation: "update",
                 userId: user.id,
                 payload,
-                match: { id: variantEditing.id, user_id: user.id },
+                match: { id: variantEditing.id },
               },
               error,
             ),
@@ -675,8 +660,7 @@ export default function ProductsPage() {
       }
       const { data: refreshed, error: refreshError } = await supabase
         .from("product_variants")
-        .select("*")
-        .eq("user_id", user.id);
+        .select("*");
       if (refreshError) {
         throw new Error(
           logSupabaseMutationError(
@@ -684,7 +668,7 @@ export default function ProductsPage() {
               table: "product_variants",
               operation: "select",
               userId: user.id,
-              match: { user_id: user.id },
+              match: {},
             },
             refreshError,
           ),
@@ -705,8 +689,7 @@ export default function ProductsPage() {
       const { error } = await supabase
         .from("product_variants")
         .delete()
-        .eq("id", id)
-        .eq("user_id", user?.id || "");
+        .eq("id", id);
       if (error) throw error;
       setVariants((prev) => prev.filter((v: any) => v.id !== id));
     } catch (err: any) {

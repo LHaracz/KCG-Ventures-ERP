@@ -66,17 +66,14 @@ export default function CalibrationPage() {
         supabase
           .from("freeze_dryer_machine_settings")
           .select("*")
-          .eq("user_id", user.id)
           .maybeSingle(),
         supabase
           .from("freeze_dryer_profiles")
           .select("*")
-          .eq("user_id", user.id)
           .order("name", { ascending: true }),
         supabase
           .from("microgreens")
           .select("*")
-          .eq("user_id", user.id)
           .order("name", { ascending: true }),
       ]);
 
@@ -122,7 +119,6 @@ export default function CalibrationPage() {
             updated_at: new Date().toISOString(),
           })
           .eq("id", machine.id)
-          .eq("user_id", user.id)
           .select("id")
           .maybeSingle();
         if (error) {
@@ -133,7 +129,7 @@ export default function CalibrationPage() {
                 operation: "update",
                 userId: user.id,
                 payload: machineForm as Record<string, unknown>,
-                match: { id: machine.id, user_id: user.id },
+                match: { id: machine.id },
               },
               error,
             ),
@@ -150,7 +146,6 @@ export default function CalibrationPage() {
           .from("freeze_dryer_machine_settings")
           .insert({
             ...machineForm,
-            user_id: user.id,
           })
           .select("*")
           .maybeSingle();
@@ -161,7 +156,7 @@ export default function CalibrationPage() {
                 table: "freeze_dryer_machine_settings",
                 operation: "insert",
                 userId: user.id,
-                payload: { ...(machineForm as Record<string, unknown>), user_id: user.id },
+                payload: machineForm as Record<string, unknown>,
               },
               error,
             ),
@@ -237,7 +232,7 @@ export default function CalibrationPage() {
       );
       if (duplicate) {
         setProfileError(
-          "A freeze dryer profile with this name already exists for your account.",
+          "A freeze dryer profile with this name already exists.",
         );
         setProfileSaving(false);
         return;
@@ -275,7 +270,6 @@ export default function CalibrationPage() {
           .from("freeze_dryer_profiles")
           .update(payload)
           .eq("id", profileEditing.id)
-          .eq("user_id", user.id)
           .select("id")
           .maybeSingle();
         if (error) {
@@ -286,7 +280,7 @@ export default function CalibrationPage() {
                 operation: "update",
                 userId: user.id,
                 payload,
-                match: { id: profileEditing.id, user_id: user.id },
+                match: { id: profileEditing.id },
               },
               error,
             ),
@@ -302,7 +296,6 @@ export default function CalibrationPage() {
           .from("freeze_dryer_profiles")
           .insert({
             ...payload,
-            user_id: user.id,
           })
           .select("id")
           .maybeSingle();
@@ -313,7 +306,7 @@ export default function CalibrationPage() {
                 table: "freeze_dryer_profiles",
                 operation: "insert",
                 userId: user.id,
-                payload: { ...payload, user_id: user.id },
+                payload,
               },
               error,
             ),
@@ -327,7 +320,6 @@ export default function CalibrationPage() {
       const { data: refreshed, error: refreshErr } = await supabase
         .from("freeze_dryer_profiles")
         .select("*")
-        .eq("user_id", user.id)
         .order("name", { ascending: true });
       if (refreshErr) {
         throw new Error(
@@ -336,7 +328,7 @@ export default function CalibrationPage() {
               table: "freeze_dryer_profiles",
               operation: "select",
               userId: user.id,
-              match: { user_id: user.id },
+              match: {},
             },
             refreshErr,
           ),
@@ -358,8 +350,7 @@ export default function CalibrationPage() {
       const { error } = await supabase
         .from("freeze_dryer_profiles")
         .delete()
-        .eq("id", id)
-        .eq("user_id", user.id);
+        .eq("id", id);
       if (error) throw error;
       setProfiles((prev) => prev.filter((p) => p.id !== id));
       if (selectedProfileId === id) {

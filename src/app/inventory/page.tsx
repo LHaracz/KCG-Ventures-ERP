@@ -94,22 +94,19 @@ export default function InventoryPage() {
       const { error: bomError } = await supabase
         .from("bom_lines")
         .delete()
-        .eq("inventory_item", item.id)
-        .eq("user_id", user.id);
+        .eq("inventory_item", item.id);
       if (bomError) throw bomError;
 
       const { error: adjError } = await supabase
         .from("inventory_adjustments")
         .delete()
-        .eq("inventory_item", item.id)
-        .eq("user_id", user.id);
+        .eq("inventory_item", item.id);
       if (adjError) throw adjError;
 
       const { error } = await supabase
         .from("inventory_items")
         .delete()
-        .eq("id", item.id)
-        .eq("user_id", user.id);
+        .eq("id", item.id);
       if (error) throw error;
 
       setItems((prev) => prev.filter((it: any) => it.id !== item.id));
@@ -138,7 +135,7 @@ export default function InventoryPage() {
       );
       if (duplicate) {
         setItemError(
-          "An inventory item with this name already exists for your account."
+          "An inventory item with this name already exists."
         );
         setItemSaving(false);
         return;
@@ -157,14 +154,12 @@ export default function InventoryPage() {
         const { error } = await supabase
           .from("inventory_items")
           .update(payload)
-          .eq("id", editing.id)
-          .eq("user_id", user.id);
+          .eq("id", editing.id);
         if (error) throw error;
       } else {
         const { error } = await supabase.from("inventory_items").insert({
           ...payload,
           last_count_date: null,
-          user_id: user.id,
         });
         if (error) throw error;
       }
@@ -229,7 +224,6 @@ export default function InventoryPage() {
           quantity_delta,
           note: note || null,
           created_at: now,
-          user_id: user.id,
         });
       if (error) throw error;
 
@@ -239,8 +233,7 @@ export default function InventoryPage() {
           quantity_on_hand: newOnHand,
           last_count_date,
         })
-        .eq("id", item.id)
-        .eq("user_id", user.id);
+        .eq("id", item.id);
       if (updateError) throw updateError;
 
       const [{ data: refreshedItems }, { data: refreshedAdjustments }] =
