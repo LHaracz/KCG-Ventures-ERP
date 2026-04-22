@@ -3,6 +3,7 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { AuthGuard } from "@/components/AuthGuard";
 import { useSupabase } from "@/components/InstantProvider";
+import { logSupabaseMutationError } from "@/lib/supabaseMutationDebug";
 
 type MachineSettings = {
   id: string;
@@ -65,15 +66,17 @@ export default function CalibrationPage() {
         supabase
           .from("freeze_dryer_machine_settings")
           .select("*")
+          .eq("user_id", user.id)
           .maybeSingle(),
-        // Profiles are shared/global: all authenticated users see all profiles.
         supabase
           .from("freeze_dryer_profiles")
           .select("*")
+          .eq("user_id", user.id)
           .order("name", { ascending: true }),
         supabase
           .from("microgreens")
           .select("*")
+          .eq("user_id", user.id)
           .order("name", { ascending: true }),
       ]);
 
@@ -112,15 +115,35 @@ export default function CalibrationPage() {
     setMachineMessage(null);
     try {
       if (machine) {
-        const { error } = await supabase
+        const { data: updated, error } = await supabase
           .from("freeze_dryer_machine_settings")
           .update({
             ...machineForm,
             updated_at: new Date().toISOString(),
           })
           .eq("id", machine.id)
-          .eq("user_id", user.id);
-        if (error) throw error;
+          .eq("user_id", user.id)
+          .select("id")
+          .maybeSingle();
+        if (error) {
+          throw new Error(
+            logSupabaseMutationError(
+              {
+                table: "freeze_dryer_machine_settings",
+                operation: "update",
+                userId: user.id,
+                payload: machineForm as Record<string, unknown>,
+                match: { id: machine.id, user_id: user.id },
+              },
+              error,
+            ),
+          );
+        }
+        if (!updated) {
+          throw new Error(
+            "Save did not update any machine settings rows. Verify ownership and RLS write policies.",
+          );
+        }
         setMachine({ ...(machine as MachineSettings), ...(machineForm as any) });
       } else {
         const { data, error } = await supabase
@@ -131,7 +154,19 @@ export default function CalibrationPage() {
           })
           .select("*")
           .maybeSingle();
-        if (error) throw error;
+        if (error) {
+          throw new Error(
+            logSupabaseMutationError(
+              {
+                table: "freeze_dryer_machine_settings",
+                operation: "insert",
+                userId: user.id,
+                payload: { ...(machineForm as Record<string, unknown>), user_id: user.id },
+              },
+              error,
+            ),
+          );
+        }
         if (data) {
           setMachine(data as MachineSettings);
           setMachineForm(data as MachineSettings);
@@ -236,12 +271,32 @@ export default function CalibrationPage() {
       };
 
       if (profileEditing.id) {
-        const { error } = await supabase
+        const { data: updated, error } = await supabase
           .from("freeze_dryer_profiles")
           .update(payload)
           .eq("id", profileEditing.id)
-          .select("id");
-        if (error) throw error;
+          .eq("user_id", user.id)
+          .select("id")
+          .maybeSingle();
+        if (error) {
+          throw new Error(
+            logSupabaseMutationError(
+              {
+                table: "freeze_dryer_profiles",
+                operation: "update",
+                userId: user.id,
+                payload,
+                match: { id: profileEditing.id, user_id: user.id },
+              },
+              error,
+            ),
+          );
+        }
+        if (!updated) {
+          throw new Error(
+            "Save did not update any profile rows. Verify ownership and RLS write policies.",
+          );
+        }
       } else {
         const { data, error } = await supabase
           .from("freeze_dryer_profiles")
@@ -249,18 +304,44 @@ export default function CalibrationPage() {
             ...payload,
             user_id: user.id,
           })
-          .select("*");
-        if (error) throw error;
-        if (data && data[0]) {
-          setSelectedProfileId(data[0].id);
+          .select("id")
+          .maybeSingle();
+        if (error) {
+          throw new Error(
+            logSupabaseMutationError(
+              {
+                table: "freeze_dryer_profiles",
+                operation: "insert",
+                userId: user.id,
+                payload: { ...payload, user_id: user.id },
+              },
+              error,
+            ),
+          );
+        }
+        if (data) {
+          setSelectedProfileId(data.id);
         }
       }
 
       const { data: refreshed, error: refreshErr } = await supabase
         .from("freeze_dryer_profiles")
         .select("*")
+        .eq("user_id", user.id)
         .order("name", { ascending: true });
-      if (refreshErr) throw refreshErr;
+      if (refreshErr) {
+        throw new Error(
+          logSupabaseMutationError(
+            {
+              table: "freeze_dryer_profiles",
+              operation: "select",
+              userId: user.id,
+              match: { user_id: user.id },
+            },
+            refreshErr,
+          ),
+        );
+      }
       setProfiles((refreshed || []) as ProfileRow[]);
       setProfileEditing(null);
     } catch (err: any) {
@@ -277,7 +358,8 @@ export default function CalibrationPage() {
       const { error } = await supabase
         .from("freeze_dryer_profiles")
         .delete()
-        .eq("id", id);
+        .eq("id", id)
+        .eq("user_id", user.id);
       if (error) throw error;
       setProfiles((prev) => prev.filter((p) => p.id !== id));
       if (selectedProfileId === id) {
