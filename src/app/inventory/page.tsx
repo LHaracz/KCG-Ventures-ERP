@@ -160,6 +160,7 @@ export default function InventoryPage() {
         const { error } = await supabase.from("inventory_items").insert({
           ...payload,
           last_count_date: null,
+          user_id: user.id,
         });
         if (error) throw error;
       }
@@ -224,6 +225,7 @@ export default function InventoryPage() {
           quantity_delta,
           note: note || null,
           created_at: now,
+          user_id: user.id,
         });
       if (error) throw error;
 

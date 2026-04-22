@@ -280,6 +280,7 @@ export default function ProductsPage() {
           .from("products")
           .insert({
             ...payload,
+            user_id: user.id,
           })
           .select("id")
           .maybeSingle();
@@ -290,7 +291,7 @@ export default function ProductsPage() {
                 table: "products",
                 operation: "insert",
                 userId: user.id,
-                payload,
+                payload: { ...payload, user_id: user.id },
               },
               error,
             ),
@@ -501,6 +502,7 @@ export default function ProductsPage() {
           .from("bom_lines")
           .insert({
             ...payload,
+            user_id: user.id,
           })
           .select("id")
           .maybeSingle();
@@ -511,7 +513,7 @@ export default function ProductsPage() {
                 table: "bom_lines",
                 operation: "insert",
                 userId: user.id,
-                payload,
+                payload: { ...payload, user_id: user.id },
               },
               error,
             ),
@@ -604,6 +606,7 @@ export default function ProductsPage() {
         sale_price: salePrice,
         unit_cost: unitCost,
         is_active: variantEditing.is_active,
+        user_id: user.id,
       };
       if (variantEditing.id) {
         const { data: updated, error } = await supabase

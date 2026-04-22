@@ -148,6 +148,7 @@ export default function MicrogreensPage() {
           .from("microgreens")
           .insert({
             ...payload,
+            user_id: user.id,
           })
           .select("id")
           .maybeSingle();
@@ -158,7 +159,7 @@ export default function MicrogreensPage() {
                 table: "microgreens",
                 operation: "insert",
                 userId: user.id,
-                payload,
+                payload: { ...payload, user_id: user.id },
               },
               error,
             ),

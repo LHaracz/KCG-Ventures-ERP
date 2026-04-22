@@ -146,6 +146,7 @@ export default function CalibrationPage() {
           .from("freeze_dryer_machine_settings")
           .insert({
             ...machineForm,
+            user_id: user.id,
           })
           .select("*")
           .maybeSingle();
@@ -156,7 +157,10 @@ export default function CalibrationPage() {
                 table: "freeze_dryer_machine_settings",
                 operation: "insert",
                 userId: user.id,
-                payload: machineForm as Record<string, unknown>,
+                payload: {
+                  ...(machineForm as Record<string, unknown>),
+                  user_id: user.id,
+                },
               },
               error,
             ),
@@ -296,6 +300,7 @@ export default function CalibrationPage() {
           .from("freeze_dryer_profiles")
           .insert({
             ...payload,
+            user_id: user.id,
           })
           .select("id")
           .maybeSingle();
@@ -306,7 +311,7 @@ export default function CalibrationPage() {
                 table: "freeze_dryer_profiles",
                 operation: "insert",
                 userId: user.id,
-                payload,
+                payload: { ...payload, user_id: user.id },
               },
               error,
             ),
