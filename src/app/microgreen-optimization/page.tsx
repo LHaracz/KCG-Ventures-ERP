@@ -549,7 +549,7 @@ export default function MicrogreenOptimizationPage() {
               value={newMixName}
               onChange={(e) => setNewMixName(e.target.value)}
               placeholder="Type mix name and press Enter"
-              className="min-w-64 flex-1 rounded-md border border-zinc-300 px-2 py-1.5"
+              className="min-w-64 flex-1 rounded-md border border-zinc-300 px-2 py-1.5 text-black placeholder:text-gray-400"
             />
             <button
               type="submit"
@@ -695,14 +695,14 @@ export default function MicrogreenOptimizationPage() {
                 placeholder="Mix name"
                 value={mixEditing.name}
                 onChange={(e) => setMixEditing({ ...mixEditing, name: e.target.value })}
-                className="rounded-md border border-zinc-300 px-2 py-1.5"
+                className="rounded-md border border-zinc-300 px-2 py-1.5 text-black placeholder:text-gray-400"
               />
               <select
                 value={mixEditing.is_active ? "active" : "inactive"}
                 onChange={(e) =>
                   setMixEditing({ ...mixEditing, is_active: e.target.value === "active" })
                 }
-                className="rounded-md border border-zinc-300 px-2 py-1.5"
+                className="rounded-md border border-zinc-300 px-2 py-1.5 text-black"
               >
                 <option value="active">Active</option>
                 <option value="inactive">Inactive</option>
@@ -737,7 +737,7 @@ export default function MicrogreenOptimizationPage() {
                 onChange={(e) =>
                   setComponentEditing({ ...componentEditing, mix_id: e.target.value })
                 }
-                className="rounded-md border border-zinc-300 px-2 py-1.5"
+                className="rounded-md border border-zinc-300 px-2 py-1.5 text-black"
               >
                 <option value="">Select mix…</option>
                 {mixes.map((mix: any) => (
@@ -755,7 +755,7 @@ export default function MicrogreenOptimizationPage() {
                     microgreen_id: e.target.value,
                   })
                 }
-                className="rounded-md border border-zinc-300 px-2 py-1.5"
+                className="rounded-md border border-zinc-300 px-2 py-1.5 text-black"
               >
                 <option value="">Select microgreen…</option>
                 {microgreens.map((mg: any) => (
@@ -778,7 +778,7 @@ export default function MicrogreenOptimizationPage() {
                   })
                 }
                 placeholder="Percentage (0-100)"
-                className="rounded-md border border-zinc-300 px-2 py-1.5"
+                className="rounded-md border border-zinc-300 px-2 py-1.5 text-black placeholder:text-gray-400"
               />
               <div className="flex items-center gap-2">
                 <button
