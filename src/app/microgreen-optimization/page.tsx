@@ -18,8 +18,6 @@ type YieldForm = {
 type MixForm = {
   id?: string;
   name: string;
-  unit_size_oz: number | "";
-  sale_price: number | "";
   is_active: boolean;
 };
 
@@ -27,7 +25,7 @@ type ComponentForm = {
   id?: string;
   mix_id: string;
   microgreen_id: string;
-  ratio: number | "";
+  percentage: number | "";
 };
 
 const DEFAULT_MIX_TEMPLATES: Array<{
@@ -105,6 +103,7 @@ export default function MicrogreenOptimizationPage() {
   const [optimizationDate, setOptimizationDate] = useState(
     new Date().toISOString().slice(0, 10),
   );
+  const [newMixName, setNewMixName] = useState("");
   const [mixEditing, setMixEditing] = useState<MixForm | null>(null);
   const [componentEditing, setComponentEditing] = useState<ComponentForm | null>(null);
   const [savingMix, setSavingMix] = useState(false);
@@ -217,8 +216,8 @@ export default function MicrogreenOptimizationPage() {
     try {
       const payload = {
         name: mixEditing.name.trim(),
-        unit_size_oz: Number(mixEditing.unit_size_oz || 2),
-        sale_price: Number(mixEditing.sale_price || 8),
+        unit_size_oz: 2,
+        sale_price: 8,
         is_active: mixEditing.is_active,
         updated_at: new Date().toISOString(),
       };
@@ -240,6 +239,29 @@ export default function MicrogreenOptimizationPage() {
       setMixEditing(null);
     } catch (err: any) {
       setError(err.message || "Failed to save mix.");
+    } finally {
+      setSavingMix(false);
+    }
+  };
+
+  const handleQuickCreateMix = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!user || !newMixName.trim()) return;
+    setSavingMix(true);
+    setError(null);
+    try {
+      const { error: insertError } = await supabase.from("microgreen_mixes").insert({
+        user_id: user.id,
+        name: newMixName.trim(),
+        unit_size_oz: 2,
+        sale_price: 8,
+        is_active: true,
+      });
+      if (insertError) throw insertError;
+      setNewMixName("");
+      await loadData();
+    } catch (err: any) {
+      setError(err.message || "Failed to create mix.");
     } finally {
       setSavingMix(false);
     }
@@ -268,9 +290,12 @@ export default function MicrogreenOptimizationPage() {
       const payload = {
         mix_id: componentEditing.mix_id,
         microgreen_id: componentEditing.microgreen_id,
-        ratio: Number(componentEditing.ratio || 0),
+        ratio: Number(componentEditing.percentage || 0) / 100,
         updated_at: new Date().toISOString(),
       };
+      if (payload.ratio <= 0 || payload.ratio > 1) {
+        throw new Error("Percentage must be greater than 0 and at most 100.");
+      }
       if (componentEditing.id) {
         const { error: updateError } = await supabase
           .from("microgreen_mix_components")
@@ -510,22 +535,30 @@ export default function MicrogreenOptimizationPage() {
               >
                 {loadingDefaults ? "Loading defaults…" : "Load MiniLeaf defaults"}
               </button>
-              <button
-                type="button"
-                className="rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-700"
-                onClick={() =>
-                  setMixEditing({
-                    name: "",
-                    unit_size_oz: 2,
-                    sale_price: 8,
-                    is_active: true,
-                  })
-                }
-              >
-                New mix
-              </button>
             </div>
           </div>
+          <form
+            onSubmit={handleQuickCreateMix}
+            className="mb-3 flex flex-wrap items-center gap-2 rounded-md bg-zinc-50 p-3"
+          >
+            <label className="text-[11px] font-medium text-zinc-800">
+              Mix name (fixed 2oz):
+            </label>
+            <input
+              required
+              value={newMixName}
+              onChange={(e) => setNewMixName(e.target.value)}
+              placeholder="Type mix name and press Enter"
+              className="min-w-64 flex-1 rounded-md border border-zinc-300 px-2 py-1.5"
+            />
+            <button
+              type="submit"
+              disabled={savingMix}
+              className="rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-700 disabled:opacity-70"
+            >
+              {savingMix ? "Adding…" : "Add mix"}
+            </button>
+          </form>
           {isLoading ? (
             <p className="text-xs text-black">Loading mix data…</p>
           ) : (
@@ -548,9 +581,9 @@ export default function MicrogreenOptimizationPage() {
                       <div>
                         <div className="font-medium text-zinc-900">{mix.name}</div>
                         <div className="text-[11px] text-black">
-                          {mix.unit_size_oz} oz · ${Number(mix.sale_price || 0).toFixed(2)} ·{" "}
-                          {mix.is_active !== false ? "Active" : "Inactive"} · Ratio total:{" "}
-                          {ratioTotal.toFixed(3)}
+                          {mix.unit_size_oz} oz fixed · ${Number(mix.sale_price || 0).toFixed(2)} ·{" "}
+                          {mix.is_active !== false ? "Active" : "Inactive"} · Total:{" "}
+                          {(ratioTotal * 100).toFixed(1)}%
                         </div>
                       </div>
                       <div className="flex gap-2">
@@ -561,8 +594,6 @@ export default function MicrogreenOptimizationPage() {
                             setMixEditing({
                               id: mix.id,
                               name: mix.name,
-                              unit_size_oz: Number(mix.unit_size_oz || 2),
-                              sale_price: Number(mix.sale_price || 8),
                               is_active: mix.is_active !== false,
                             })
                           }
@@ -583,7 +614,7 @@ export default function MicrogreenOptimizationPage() {
                             setComponentEditing({
                               mix_id: mix.id,
                               microgreen_id: "",
-                              ratio: "",
+                              percentage: "",
                             })
                           }
                         >
@@ -592,48 +623,64 @@ export default function MicrogreenOptimizationPage() {
                       </div>
                     </div>
                     {mixComponents.length > 0 && (
-                      <table className="min-w-full border-collapse text-left text-[11px]">
-                        <thead className="bg-zinc-50 text-black">
-                          <tr>
-                            <th className="px-2 py-1 font-medium">Microgreen</th>
-                            <th className="px-2 py-1 font-medium">Ratio</th>
-                            <th className="px-2 py-1 font-medium">Actions</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {mixComponents.map((component: any) => (
-                            <tr key={component.id} className="border-b text-black">
-                              <td className="px-2 py-1">
-                                {microgreenNameById[component.microgreen_id] ?? "Unknown"}
-                              </td>
-                              <td className="px-2 py-1">{Number(component.ratio).toFixed(3)}</td>
-                              <td className="px-2 py-1">
-                                <button
-                                  type="button"
-                                  className="mr-2 text-emerald-700 underline"
-                                  onClick={() =>
-                                    setComponentEditing({
-                                      id: component.id,
-                                      mix_id: component.mix_id,
-                                      microgreen_id: component.microgreen_id,
-                                      ratio: Number(component.ratio),
-                                    })
-                                  }
-                                >
-                                  Edit
-                                </button>
-                                <button
-                                  type="button"
-                                  className="text-red-600 underline"
-                                  onClick={() => handleDeleteComponent(component.id)}
-                                >
-                                  Delete
-                                </button>
-                              </td>
+                      <>
+                        <table className="min-w-full border-collapse text-left text-[11px]">
+                          <thead className="bg-zinc-50 text-black">
+                            <tr>
+                              <th className="px-2 py-1 font-medium">Microgreen</th>
+                              <th className="px-2 py-1 font-medium">Percentage</th>
+                              <th className="px-2 py-1 font-medium">Actions</th>
                             </tr>
-                          ))}
-                        </tbody>
-                      </table>
+                          </thead>
+                          <tbody>
+                            {mixComponents.map((component: any) => (
+                              <tr key={component.id} className="border-b text-black">
+                                <td className="px-2 py-1">
+                                  {microgreenNameById[component.microgreen_id] ?? "Unknown"}
+                                </td>
+                                <td className="px-2 py-1">
+                                  {(Number(component.ratio) * 100).toFixed(1)}%
+                                </td>
+                                <td className="px-2 py-1">
+                                  <button
+                                    type="button"
+                                    className="mr-2 text-emerald-700 underline"
+                                    onClick={() =>
+                                      setComponentEditing({
+                                        id: component.id,
+                                        mix_id: component.mix_id,
+                                        microgreen_id: component.microgreen_id,
+                                        percentage: Number(component.ratio) * 100,
+                                      })
+                                    }
+                                  >
+                                    Edit
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="text-red-600 underline"
+                                    onClick={() => handleDeleteComponent(component.id)}
+                                  >
+                                    Delete
+                                  </button>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                        <p className="mt-2 text-[11px] text-zinc-700">
+                          2oz breakdown:{" "}
+                          {mixComponents
+                            .map((component: any) => {
+                              const percentage = Number(component.ratio) * 100;
+                              const ounces = 2 * Number(component.ratio);
+                              const mgName =
+                                microgreenNameById[component.microgreen_id] ?? "Unknown";
+                              return `${mgName} ${percentage.toFixed(1)}% = ${ounces.toFixed(2)} oz`;
+                            })
+                            .join(" | ")}
+                        </p>
+                      </>
                     )}
                   </div>
                 );
@@ -642,41 +689,13 @@ export default function MicrogreenOptimizationPage() {
           )}
 
           {mixEditing && (
-            <form onSubmit={handleSaveMix} className="mt-3 grid gap-2 rounded-md bg-zinc-50 p-3 sm:grid-cols-5">
+            <form onSubmit={handleSaveMix} className="mt-3 grid gap-2 rounded-md bg-zinc-50 p-3 sm:grid-cols-3">
               <input
                 required
                 placeholder="Mix name"
                 value={mixEditing.name}
                 onChange={(e) => setMixEditing({ ...mixEditing, name: e.target.value })}
                 className="rounded-md border border-zinc-300 px-2 py-1.5"
-              />
-              <input
-                type="number"
-                min={0.01}
-                step={0.01}
-                value={mixEditing.unit_size_oz}
-                onChange={(e) =>
-                  setMixEditing({
-                    ...mixEditing,
-                    unit_size_oz: e.target.value === "" ? "" : Number(e.target.value),
-                  })
-                }
-                className="rounded-md border border-zinc-300 px-2 py-1.5"
-                placeholder="Unit oz"
-              />
-              <input
-                type="number"
-                min={0}
-                step={0.01}
-                value={mixEditing.sale_price}
-                onChange={(e) =>
-                  setMixEditing({
-                    ...mixEditing,
-                    sale_price: e.target.value === "" ? "" : Number(e.target.value),
-                  })
-                }
-                className="rounded-md border border-zinc-300 px-2 py-1.5"
-                placeholder="Sale price"
               />
               <select
                 value={mixEditing.is_active ? "active" : "inactive"}
@@ -747,18 +766,18 @@ export default function MicrogreenOptimizationPage() {
               </select>
               <input
                 type="number"
-                min={0.001}
-                max={1}
-                step={0.001}
+                min={0.1}
+                max={100}
+                step={0.1}
                 required
-                value={componentEditing.ratio}
+                value={componentEditing.percentage}
                 onChange={(e) =>
                   setComponentEditing({
                     ...componentEditing,
-                    ratio: e.target.value === "" ? "" : Number(e.target.value),
+                    percentage: e.target.value === "" ? "" : Number(e.target.value),
                   })
                 }
-                placeholder="Ratio (0-1)"
+                placeholder="Percentage (0-100)"
                 className="rounded-md border border-zinc-300 px-2 py-1.5"
               />
               <div className="flex items-center gap-2">
