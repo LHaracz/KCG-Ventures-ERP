@@ -35,6 +35,14 @@ const perms = {
     read: { user: ["==", ["$user.id"]] },
     write: { user: ["==", ["$user.id"]] },
   },
+  microgreen_mixes: {
+    read: { user: ["==", ["$user.id"]] },
+    write: { user: ["==", ["$user.id"]] },
+  },
+  microgreen_mix_components: {
+    read: { user: ["==", ["$user.id"]] },
+    write: { user: ["==", ["$user.id"]] },
+  },
   production_targets: {
     read: { user: ["==", ["$user.id"]] },
     write: { user: ["==", ["$user.id"]] },

@@ -10,6 +10,7 @@ const navItems = [
   { href: "/calibration", label: "Freeze Dryer Calibration" },
   { href: "/microgreens", label: "Microgreen Guide" },
   { href: "/yield", label: "Yield Logging" },
+  { href: "/microgreen-optimization", label: "Microgreen Optimization" },
   { href: "/inventory", label: "Inventory & Cycle Count" },
   { href: "/products", label: "Products & BOM" },
   { href: "/cycles", label: "Production Cycles & Planner" },
