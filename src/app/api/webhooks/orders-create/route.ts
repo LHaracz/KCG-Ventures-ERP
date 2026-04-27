@@ -365,6 +365,20 @@ export async function POST(request: Request) {
     skippedVariantIds,
   });
 
+  const erpUpdated = processedLines.length > 0;
+  const hint =
+    erpUpdated
+      ? undefined
+      : skippedLines.some((s) => s.reason === "variant_not_mapped_in_inventory")
+        ? "No line items matched inventory.shopify_variant_id — ERP quantities unchanged. Shopify's Send test notification uses a fixed sample order whose variant IDs usually do not exist in your ERP; use a real checkout or ensure each selling variant has a row in inventory with the correct shopify_variant_id."
+        : skippedLines.length > 0
+          ? "No inventory rows were updated; all line items were skipped for other reasons (see skippedLines)."
+          : "Order had no line items to process.";
+
+  if (!erpUpdated && hint) {
+    ordersCreateWebhookLog("webhook completed: ERP not updated", { runId, orderId, hint });
+  }
+
   return NextResponse.json({
     ok: true,
     runId,
@@ -373,6 +387,7 @@ export async function POST(request: Request) {
     hmacVerified: true,
     duplicate: false,
     mode: "shopify_to_erp_full_override",
+    erpUpdated,
     processedItems: processedLines.length,
     skippedItems: skippedLines.length,
     processedLines,
@@ -380,5 +395,6 @@ export async function POST(request: Request) {
     matchedVariantIds,
     skippedVariantIds,
     settleMs,
+    ...(hint ? { hint } : {}),
   });
 }
