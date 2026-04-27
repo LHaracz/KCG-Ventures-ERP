@@ -1,7 +1,7 @@
 import crypto from "crypto";
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
-import { subtractInventory } from "@/lib/inventorySync";
+import { overrideErpFromShopifyForInventoryRow } from "@/lib/inventorySync";
 import { ordersCreateWebhookLog } from "./log";
 
 type ShopifyOrderLineItem = {
@@ -23,9 +23,9 @@ type SkippedLine = {
 type ProcessedLine = {
   variantId: string;
   inventoryRowId: string;
-  lineQuantity: number;
-  unitsPerVariant: number;
-  totalUnitsSubtracted: number;
+  previousQtyOnHand: number;
+  newQtyOnHand: number;
+  shopifyAvailable: number;
 };
 
 function verifyShopifyWebhook(rawBody: string, headerHmac: string, secret: string): boolean {
@@ -34,6 +34,24 @@ function verifyShopifyWebhook(rawBody: string, headerHmac: string, secret: strin
   const provided = Buffer.from(headerHmac, "utf8");
   if (expected.length !== provided.length) return false;
   return crypto.timingSafeEqual(expected, provided);
+}
+
+function webhookSettleMs(): number {
+  const raw = process.env.WEBHOOK_SHOPIFY_INVENTORY_SETTLE_MS;
+  if (raw == null || String(raw).trim() === "") {
+    return 750;
+  }
+  const n = Number.parseInt(String(raw), 10);
+  if (!Number.isFinite(n) || n < 0) {
+    return 750;
+  }
+  return Math.min(n, 10_000);
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
 }
 
 export async function POST(request: Request) {
@@ -172,7 +190,7 @@ export async function POST(request: Request) {
         topic,
         orderId,
         message:
-          "This Shopify order was already recorded in inventory_webhook_events; inventory was not decremented again.",
+          "This Shopify order was already recorded in inventory_webhook_events; ERP was not re-synced from Shopify.",
       });
     }
     ordersCreateWebhookLog("failure: idempotency insert", {
@@ -197,9 +215,16 @@ export async function POST(request: Request) {
 
   ordersCreateWebhookLog("recorded webhook event for idempotency", { runId, topic, orderId });
 
+  const settleMs = webhookSettleMs();
+  if (settleMs > 0) {
+    ordersCreateWebhookLog("waiting before Shopify inventory read", { runId, settleMs });
+    await sleep(settleMs);
+  }
+
   const lineItems = payload.line_items ?? [];
-  const processedLines: ProcessedLine[] = [];
   const skippedLines: SkippedLine[] = [];
+  /** One refresh per variant (dedupe lines). */
+  const variantToInventoryRowId = new Map<string, string>();
 
   for (const item of lineItems) {
     const variantIdRaw = item.variant_id;
@@ -225,7 +250,7 @@ export async function POST(request: Request) {
 
     const { data: inventoryRow, error: lookupError } = await admin
       .from("inventory")
-      .select("id, units_per_variant")
+      .select("id")
       .eq("shopify_variant_id", variantId)
       .maybeSingle();
 
@@ -237,6 +262,7 @@ export async function POST(request: Request) {
         variantId,
         error: lookupError.message,
       });
+      await admin.from("inventory_webhook_events").delete().eq("shopify_order_id", orderId);
       return NextResponse.json(
         {
           ok: false,
@@ -247,8 +273,8 @@ export async function POST(request: Request) {
           hmacVerified: true,
           variantId,
           error: lookupError.message,
-          processedLines,
           skippedLines,
+          idempotencyReleased: true,
         },
         { status: 500 },
       );
@@ -268,76 +294,59 @@ export async function POST(request: Request) {
       continue;
     }
 
-    const unitsPerVariant = Math.trunc(Number(inventoryRow.units_per_variant ?? 1));
-    if (!Number.isFinite(unitsPerVariant) || unitsPerVariant < 1) {
-      ordersCreateWebhookLog("failure: invalid units_per_variant", {
-        runId,
-        variantId,
-        unitsPerVariant: inventoryRow.units_per_variant,
-      });
-      return NextResponse.json(
-        {
-          ok: false,
-          step: "units_per_variant",
-          runId,
-          topic,
-          orderId,
-          variantId,
-          error: `Invalid units_per_variant for variant ${variantId}`,
-          processedLines,
-          skippedLines,
-        },
-        { status: 500 },
-      );
+    if (!variantToInventoryRowId.has(variantId)) {
+      variantToInventoryRowId.set(variantId, String(inventoryRow.id));
     }
+  }
 
-    const totalUnits = quantityRaw * unitsPerVariant;
+  const processedLines: ProcessedLine[] = [];
+
+  for (const [variantId, inventoryRowId] of variantToInventoryRowId) {
     try {
-      await subtractInventory(inventoryRow.id, totalUnits);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "Unknown error";
-      ordersCreateWebhookLog("failure: subtractInventory", {
+      const result = await overrideErpFromShopifyForInventoryRow(inventoryRowId);
+      processedLines.push({
+        variantId,
+        inventoryRowId,
+        previousQtyOnHand: result.previousQtyOnHand,
+        newQtyOnHand: result.newQtyOnHand,
+        shopifyAvailable: result.shopifyAvailable,
+      });
+      ordersCreateWebhookLog("ERP overridden from Shopify", {
         runId,
         orderId,
         variantId,
-        inventoryRowId: inventoryRow.id,
-        totalUnits,
+        inventoryRowId,
+        previousQtyOnHand: result.previousQtyOnHand,
+        newQtyOnHand: result.newQtyOnHand,
+        shopifyAvailable: result.shopifyAvailable,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Unknown error";
+      ordersCreateWebhookLog("failure: overrideErpFromShopifyForInventoryRow", {
+        runId,
+        orderId,
+        variantId,
+        inventoryRowId,
         error: message,
       });
+      await admin.from("inventory_webhook_events").delete().eq("shopify_order_id", orderId);
       return NextResponse.json(
         {
           ok: false,
-          step: "subtract_inventory",
+          step: "override_erp_from_shopify",
           runId,
           topic,
           orderId,
           variantId,
-          inventoryRowId: inventoryRow.id,
-          totalUnitsAttempted: totalUnits,
+          inventoryRowId,
           error: message,
           processedLines,
           skippedLines,
+          idempotencyReleased: true,
         },
         { status: 500 },
       );
     }
-
-    processedLines.push({
-      variantId,
-      inventoryRowId: inventoryRow.id,
-      lineQuantity: quantityRaw,
-      unitsPerVariant,
-      totalUnitsSubtracted: totalUnits,
-    });
-    ordersCreateWebhookLog("inventory decremented", {
-      runId,
-      orderId,
-      variantId,
-      inventoryRowId: inventoryRow.id,
-      lineQuantity: quantityRaw,
-      unitsPerVariant,
-      totalUnitsSubtracted: totalUnits,
-    });
   }
 
   const matchedVariantIds = processedLines.map((p) => p.variantId);
@@ -349,6 +358,7 @@ export async function POST(request: Request) {
     runId,
     topic,
     orderId,
+    mode: "shopify_to_erp_full_override",
     processedCount: processedLines.length,
     skippedCount: skippedLines.length,
     matchedVariantIds,
@@ -362,11 +372,13 @@ export async function POST(request: Request) {
     orderId,
     hmacVerified: true,
     duplicate: false,
+    mode: "shopify_to_erp_full_override",
     processedItems: processedLines.length,
     skippedItems: skippedLines.length,
     processedLines,
     skippedLines,
     matchedVariantIds,
     skippedVariantIds,
+    settleMs,
   });
 }

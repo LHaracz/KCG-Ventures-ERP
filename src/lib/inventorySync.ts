@@ -1,5 +1,6 @@
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import {
+  fetchShopifyAvailableQuantity,
   syncShopifyAvailableQuantity,
 } from "@/lib/shopifyInventorySync";
 
@@ -270,6 +271,107 @@ export async function subtractInventory(productId: string, qty: number): Promise
     throw new Error("subtractInventory requires a positive quantity.");
   }
   return mutateInventory(productId, -safeQty, "order");
+}
+
+/**
+ * Sets ERP `inventory` for this product group to match Shopify's current **available** quantity
+ * (plus existing `reserved_qty` → `qty_on_hand`). Does not call Shopify; Shopify is the source
+ * for this operation.
+ */
+export async function overrideErpFromShopifyForInventoryRow(inventoryRowId: string): Promise<{
+  row: InventoryRow;
+  groupRows: InventoryRow[];
+  previousQtyOnHand: number;
+  newQtyOnHand: number;
+  shopifyAvailable: number;
+}> {
+  const admin = requireAdminClient();
+
+  const { data: existing, error: fetchError } = await admin
+    .from("inventory")
+    .select("*")
+    .eq("id", inventoryRowId)
+    .single();
+
+  if (fetchError || !existing) {
+    throw new Error(fetchError?.message || `Inventory product ${inventoryRowId} not found.`);
+  }
+
+  const existingRow = existing as InventoryRow;
+  const productGroupId = existingRow.product_id;
+  if (!productGroupId) {
+    throw new Error(`Inventory row ${inventoryRowId} is missing product_id.`);
+  }
+
+  const groupRows = await loadInventoryGroupByProductId(productGroupId);
+  const syncableRows = groupRows.filter(hasRealShopifyMapping);
+  if (syncableRows.length === 0) {
+    throw new Error(`No valid Shopify mapping for inventory group ${productGroupId}.`);
+  }
+
+  const source = syncableRows[0];
+  const shopifyAvailableRaw = await fetchShopifyAvailableQuantity(
+    String(source.shopify_inventory_item_id),
+    String(source.shopify_location_id),
+  );
+  const shopifyAvailable = Math.trunc(Number(shopifyAvailableRaw));
+  if (!Number.isFinite(shopifyAvailable) || shopifyAvailable < 0) {
+    throw new Error(`Invalid Shopify available quantity for inventory row ${inventoryRowId}.`);
+  }
+
+  const anchor = groupRows[0];
+  const reservedQty = Math.trunc(Number(anchor.reserved_qty ?? 0));
+  if (!Number.isFinite(reservedQty) || reservedQty < 0) {
+    throw new Error("Invalid reserved_qty on inventory anchor row.");
+  }
+
+  const previousQtyOnHand = Math.trunc(Number(anchor.qty_on_hand));
+  if (!Number.isFinite(previousQtyOnHand) || previousQtyOnHand < 0) {
+    throw new Error("Invalid qty_on_hand on inventory anchor row.");
+  }
+
+  const nextQtyOnHand = Math.max(0, shopifyAvailable + reservedQty);
+  const nextAvailableQty = computeAvailableQty(nextQtyOnHand, reservedQty);
+  const nowIso = new Date().toISOString();
+  const rowIds = groupRows.map((row) => row.id);
+
+  const { data: updatedRows, error: updateError } = await admin
+    .from("inventory")
+    .update({
+      qty_on_hand: nextQtyOnHand,
+      available_qty: nextAvailableQty,
+      updated_at: nowIso,
+    })
+    .in("id", rowIds)
+    .select("*");
+
+  if (updateError || !updatedRows?.length) {
+    throw new Error(updateError?.message || `Failed to override inventory row ${inventoryRowId}.`);
+  }
+
+  const change = nextQtyOnHand - previousQtyOnHand;
+  const { error: logError } = await admin.from("inventory_logs").insert({
+    product_id: inventoryRowId,
+    change,
+    reason: "shopify_override",
+    created_at: nowIso,
+  });
+
+  if (logError) {
+    throw new Error(logError.message);
+  }
+
+  const updatedGroupRows = (updatedRows ?? []) as InventoryRow[];
+  const row =
+    updatedGroupRows.find((item) => item.id === inventoryRowId) ?? updatedGroupRows[0];
+
+  return {
+    row,
+    groupRows: updatedGroupRows,
+    previousQtyOnHand,
+    newQtyOnHand: nextQtyOnHand,
+    shopifyAvailable,
+  };
 }
 
 export async function getInventory(): Promise<InventoryRow[]> {

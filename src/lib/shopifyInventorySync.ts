@@ -129,7 +129,8 @@ export async function adjustShopifyInventoryQuantity(
   return { ok: userErrors.length === 0, userErrors };
 }
 
-async function getShopifyAvailableQuantity(
+/** Current Shopify "available" quantity at the given inventory item + location (REST/GraphQL IDs, not GIDs). */
+export async function fetchShopifyAvailableQuantity(
   inventoryItemId: string,
   locationId: string,
 ): Promise<number> {
@@ -221,7 +222,7 @@ export async function syncShopifyAvailableQuantity(params: {
   locationId: string;
   targetAvailableQty: number;
 }): Promise<{ ok: boolean; delta: number; userErrors?: Array<{ field?: string[] | null; message: string }> }> {
-  const currentAvailableQty = await getShopifyAvailableQuantity(params.inventoryItemId, params.locationId);
+  const currentAvailableQty = await fetchShopifyAvailableQuantity(params.inventoryItemId, params.locationId);
   const delta = Math.trunc(params.targetAvailableQty - currentAvailableQty);
   if (delta === 0) {
     return { ok: true, delta: 0 };

@@ -132,7 +132,8 @@ export default function FinishedProductsPage() {
           <div>
             <h1 className="text-2xl font-semibold text-zinc-900">Finished Products Inventory</h1>
             <p className="text-sm text-black">
-              BotanIQals inventory source of truth. Shopify inventory mirrors these values.
+              BotanIQals finished-product quantities: production updates here and push to Shopify; new
+              Shopify orders pull Shopify stock into this table so both stay aligned.
             </p>
           </div>
           <div className="flex items-center gap-2">
