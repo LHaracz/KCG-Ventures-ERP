@@ -22,6 +22,14 @@ export async function POST(request: Request) {
   try {
     await requireApiUserFromBearerToken(request);
     const result = await syncAllInventoryToShopify();
+    if (result.failed.length > 0) {
+      // #region agent log
+      console.error("[inventory-sync-debug] sync failures", {
+        runId,
+        failed: result.failed,
+      });
+      // #endregion
+    }
     // #region agent log
     fetch("http://127.0.0.1:7579/ingest/75023274-b317-4510-8d56-7dafb38622b5", {
       method: "POST",
@@ -41,6 +49,7 @@ export async function POST(request: Request) {
       ok: result.failed.length === 0,
       synced: result.synced,
       failed: result.failed,
+      debugRunId: runId,
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unexpected server error.";
