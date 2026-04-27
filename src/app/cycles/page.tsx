@@ -383,6 +383,16 @@ export default function CyclesPage() {
       }
 
       if (displayBusinessType(cycle) === "BotanIQals") {
+        type BotaniqalsBatchRow = {
+          user_id: string;
+          production_cycle_id: string;
+          product_id: string;
+          quantity_produced: number;
+          production_start_at: string | null;
+          production_end_at: string;
+          completed_at: string;
+        };
+
         const batchRows = cycleTargets
           .map((target: any) => {
             const qty =
@@ -398,7 +408,7 @@ export default function CyclesPage() {
               completed_at: new Date().toISOString(),
             };
           })
-          .filter(Boolean);
+          .filter((row): row is BotaniqalsBatchRow => row !== null);
 
         if (batchRows.length > 0) {
           for (const batchRow of batchRows) {
