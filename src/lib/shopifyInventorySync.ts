@@ -66,10 +66,11 @@ export async function adjustShopifyInventoryQuantity(
   change: InventoryAdjustmentChange,
 ): Promise<ShopifyInventorySyncResult> {
   const { endpoint, accessToken } = getShopifyConfig();
+  const idempotencyKey = `inv-${change.inventoryItemId}-${change.locationId}-${change.changeFromQuantity}-${change.delta}-${Date.now()}`;
 
   const query = `
-    mutation InventoryAdjustQuantities($input: InventoryAdjustQuantitiesInput!) @idempotent {
-      inventoryAdjustQuantities(input: $input) {
+    mutation InventoryAdjustQuantities($input: InventoryAdjustQuantitiesInput!, $idempotencyKey: String!) {
+      inventoryAdjustQuantities(input: $input) @idempotent(key: $idempotencyKey) {
         userErrors {
           field
           message
@@ -81,6 +82,7 @@ export async function adjustShopifyInventoryQuantity(
   const payload = {
     query,
     variables: {
+      idempotencyKey,
       input: {
         reason: "correction",
         name: "available",
