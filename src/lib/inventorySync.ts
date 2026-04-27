@@ -75,6 +75,26 @@ async function syncShopifyGroupToAvailableQty(groupRows: InventoryRow[]): Promis
   const first = groupRows[0];
   const targetAvailableQty = first.available_qty;
   const syncableRows = groupRows.filter(hasRealShopifyMapping);
+  // #region agent log
+  fetch("http://127.0.0.1:7579/ingest/75023274-b317-4510-8d56-7dafb38622b5", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "ea9524" },
+    body: JSON.stringify({
+      sessionId: "ea9524",
+      runId: "manual-sync-debug",
+      hypothesisId: "H2",
+      location: "src/lib/inventorySync.ts:80",
+      message: "sync group rows prepared",
+      data: {
+        productId: first.product_id,
+        groupSize: groupRows.length,
+        syncableSize: syncableRows.length,
+        targetAvailableQty,
+      },
+      timestamp: Date.now(),
+    }),
+  }).catch(() => {});
+  // #endregion
   if (syncableRows.length === 0) {
     return { ok: false, error: "No valid Shopify mapping rows found for this product group." };
   }
@@ -90,9 +110,43 @@ async function syncShopifyGroupToAvailableQty(groupRows: InventoryRow[]): Promis
         const message =
           syncResult.userErrors?.map((error) => error.message).join("; ") ||
           "Unknown Shopify user error";
+        // #region agent log
+        fetch("http://127.0.0.1:7579/ingest/75023274-b317-4510-8d56-7dafb38622b5", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "ea9524" },
+          body: JSON.stringify({
+            sessionId: "ea9524",
+            runId: "manual-sync-debug",
+            hypothesisId: "H3",
+            location: "src/lib/inventorySync.ts:107",
+            message: "sync result user error",
+            data: { productId: row.product_id, variantId: row.shopify_variant_id, message },
+            timestamp: Date.now(),
+          }),
+        }).catch(() => {});
+        // #endregion
         return { ok: false, error: message };
       }
     } catch (error) {
+      // #region agent log
+      fetch("http://127.0.0.1:7579/ingest/75023274-b317-4510-8d56-7dafb38622b5", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "ea9524" },
+        body: JSON.stringify({
+          sessionId: "ea9524",
+          runId: "manual-sync-debug",
+          hypothesisId: "H3",
+          location: "src/lib/inventorySync.ts:122",
+          message: "sync group exception",
+          data: {
+            productId: row.product_id,
+            variantId: row.shopify_variant_id,
+            error: error instanceof Error ? error.message : "Unknown",
+          },
+          timestamp: Date.now(),
+        }),
+      }).catch(() => {});
+      // #endregion
       return {
         ok: false,
         error: error instanceof Error ? error.message : "Unknown Shopify sync failure",
@@ -279,6 +333,22 @@ export async function syncAllInventoryToShopify(): Promise<{
       });
     }
   }
+
+  // #region agent log
+  fetch("http://127.0.0.1:7579/ingest/75023274-b317-4510-8d56-7dafb38622b5", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "ea9524" },
+    body: JSON.stringify({
+      sessionId: "ea9524",
+      runId: "manual-sync-debug",
+      hypothesisId: "H2",
+      location: "src/lib/inventorySync.ts:336",
+      message: "sync all completed",
+      data: { totalRows: rows.length, productGroups: seenProductIds.size, synced, failed },
+      timestamp: Date.now(),
+    }),
+  }).catch(() => {});
+  // #endregion
 
   return { synced, failed };
 }

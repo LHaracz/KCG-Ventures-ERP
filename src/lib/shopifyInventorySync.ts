@@ -25,6 +25,25 @@ function getShopifyConfig() {
   const shopDomain = process.env.SHOPIFY_SHOP_DOMAIN ?? "";
   const accessToken = process.env.SHOPIFY_ACCESS_TOKEN ?? process.env.SHOPIFY_ADMIN_ACCESS_TOKEN ?? "";
   const apiVersion = process.env.SHOPIFY_API_VERSION ?? DEFAULT_SHOPIFY_API_VERSION;
+  // #region agent log
+  fetch("http://127.0.0.1:7579/ingest/75023274-b317-4510-8d56-7dafb38622b5", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "ea9524" },
+    body: JSON.stringify({
+      sessionId: "ea9524",
+      runId: "manual-sync-debug",
+      hypothesisId: "H4",
+      location: "src/lib/shopifyInventorySync.ts:30",
+      message: "shopify config check",
+      data: {
+        hasShopDomain: !!shopDomain,
+        hasAccessToken: !!accessToken,
+        apiVersion,
+      },
+      timestamp: Date.now(),
+    }),
+  }).catch(() => {});
+  // #endregion
 
   if (!shopDomain || !accessToken) {
     throw new Error(
@@ -141,6 +160,21 @@ async function getShopifyAvailableQuantity(
 
   if (!response.ok) {
     const bodyText = await response.text();
+    // #region agent log
+    fetch("http://127.0.0.1:7579/ingest/75023274-b317-4510-8d56-7dafb38622b5", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "ea9524" },
+      body: JSON.stringify({
+        sessionId: "ea9524",
+        runId: "manual-sync-debug",
+        hypothesisId: "H5",
+        location: "src/lib/shopifyInventorySync.ts:170",
+        message: "inventory level request failed",
+        data: { inventoryItemId, locationId, status: response.status, bodyText },
+        timestamp: Date.now(),
+      }),
+    }).catch(() => {});
+    // #endregion
     throw new Error(`Failed to fetch Shopify inventory level (${response.status}): ${bodyText}`);
   }
 
@@ -156,6 +190,21 @@ async function getShopifyAvailableQuantity(
   };
 
   if (body.errors?.length) {
+    // #region agent log
+    fetch("http://127.0.0.1:7579/ingest/75023274-b317-4510-8d56-7dafb38622b5", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "ea9524" },
+      body: JSON.stringify({
+        sessionId: "ea9524",
+        runId: "manual-sync-debug",
+        hypothesisId: "H5",
+        location: "src/lib/shopifyInventorySync.ts:188",
+        message: "inventory level graphql errors",
+        data: { inventoryItemId, locationId, errors: body.errors },
+        timestamp: Date.now(),
+      }),
+    }).catch(() => {});
+    // #endregion
     throw new Error(`Shopify GraphQL error: ${body.errors.map((e) => e.message).join("; ")}`);
   }
 
