@@ -1,12 +1,16 @@
 # Run in Shopify Admin GraphQL (API version e.g. 2026-04).
-# Copy the JSON result and share it — numeric IDs are extracted from GIDs
-# (e.g. gid://shopify/ProductVariant/512828... → 512828...).
+# Shopify caps a single query at cost 1000 — this export uses small page sizes.
+# Paginate with $cursor until products.pageInfo.hasNextPage is false.
+# If you still hit MAX_COST_EXCEEDED, lower productsFirst / variantsFirst further.
+#
+# For very large catalogs, use Bulk Operations instead:
+# https://shopify.dev/docs/api/usage/bulk-operations/queries
 
 # -----------------------------------------------------------------------------
-# Optional: list locations (pick primary `id` → numeric part = shopify_location_id)
+# Locations (cheap). Numeric part of gid://shopify/Location/... = shopify_location_id
 # -----------------------------------------------------------------------------
 query ListLocations {
-  locations(first: 20) {
+  locations(first: 10) {
     edges {
       node {
         id
@@ -19,11 +23,15 @@ query ListLocations {
 }
 
 # -----------------------------------------------------------------------------
-# Paginated catalog: products → variants → inventoryItem → levels per location
-# Run repeatedly with $cursor = endCursor until hasNextPage is false.
+# Paginated catalog (tuned under typical 1000 cost cap)
+# Variables example: { "cursor": null } or { "cursor": null, "productsFirst": 5, "variantsFirst": 10 }
 # -----------------------------------------------------------------------------
-query ExportVariantInventoryMappings($cursor: String) {
-  products(first: 50, after: $cursor) {
+query ExportVariantInventoryMappings(
+  $cursor: String
+  $productsFirst: Int = 8
+  $variantsFirst: Int = 15
+) {
+  products(first: $productsFirst, after: $cursor) {
     pageInfo {
       hasNextPage
       endCursor
@@ -32,9 +40,7 @@ query ExportVariantInventoryMappings($cursor: String) {
       node {
         id
         title
-        handle
-        status
-        variants(first: 100) {
+        variants(first: $variantsFirst) {
           edges {
             node {
               id
@@ -43,12 +49,10 @@ query ExportVariantInventoryMappings($cursor: String) {
               inventoryItem {
                 id
                 tracked
-                inventoryLevels(first: 20) {
+                inventoryLevels(first: 5) {
                   edges {
                     node {
-                      id
-                      quantities(names: ["available", "on_hand"]) {
-                        name
+                      quantities(names: ["available"]) {
                         quantity
                       }
                       location {
@@ -67,7 +71,11 @@ query ExportVariantInventoryMappings($cursor: String) {
   }
 }
 
-# Variables (first page):
+# First page (defaults):
 # { "cursor": null }
+#
+# If cost still too high:
+# { "cursor": null, "productsFirst": 5, "variantsFirst": 10 }
+#
 # Next page:
-# { "cursor": "<paste pageInfo.endCursor>" }
+# { "cursor": "<products.pageInfo.endCursor>" }
