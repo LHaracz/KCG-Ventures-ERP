@@ -6,7 +6,9 @@ import { useSupabase } from "@/components/InstantProvider";
 
 type InventoryRow = {
   id: string;
+  product_id: string | null;
   product_name: string;
+  units_per_variant: number;
   qty_on_hand: number;
   reserved_qty: number;
   available_qty: number;
@@ -148,6 +150,8 @@ export default function FinishedProductsPage() {
             <thead className="bg-zinc-50 text-xs text-zinc-700">
               <tr>
                 <th className="px-3 py-2 font-medium">Product Name</th>
+                <th className="px-3 py-2 font-medium">Mapping</th>
+                <th className="px-3 py-2 font-medium">Units / Variant</th>
                 <th className="px-3 py-2 font-medium">Qty On Hand</th>
                 <th className="px-3 py-2 font-medium">Reserved Qty</th>
                 <th className="px-3 py-2 font-medium">Available Qty</th>
@@ -157,13 +161,13 @@ export default function FinishedProductsPage() {
             <tbody>
               {isLoading ? (
                 <tr>
-                  <td className="px-3 py-4 text-sm text-black" colSpan={5}>
+                  <td className="px-3 py-4 text-sm text-black" colSpan={7}>
                     Loading inventory...
                   </td>
                 </tr>
               ) : sortedRows.length === 0 ? (
                 <tr>
-                  <td className="px-3 py-4 text-sm text-black" colSpan={5}>
+                  <td className="px-3 py-4 text-sm text-black" colSpan={7}>
                     No BotanIQals finished product inventory records found.
                   </td>
                 </tr>
@@ -171,6 +175,14 @@ export default function FinishedProductsPage() {
                 sortedRows.map((row) => (
                   <tr key={row.id} className="border-t text-sm text-zinc-900">
                     <td className="px-3 py-2">{row.product_name}</td>
+                    <td className="px-3 py-2">
+                      {row.product_id ? (
+                        <span className="text-emerald-700">Mapped</span>
+                      ) : (
+                        <span className="font-medium text-red-600">Missing product mapping</span>
+                      )}
+                    </td>
+                    <td className="px-3 py-2">{row.units_per_variant ?? 1}</td>
                     <td className="px-3 py-2">{row.qty_on_hand}</td>
                     <td className="px-3 py-2">{row.reserved_qty}</td>
                     <td className="px-3 py-2">{row.available_qty}</td>

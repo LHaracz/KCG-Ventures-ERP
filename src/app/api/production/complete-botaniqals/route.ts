@@ -10,6 +10,13 @@ type CompletionTargetRow = {
   target_units: number | null;
 };
 
+type CompletionApiResponse = {
+  ok: boolean;
+  updated: number;
+  skipped: number;
+  missingProductIds?: string[];
+};
+
 export async function POST(request: Request) {
   try {
     const user = await requireApiUserFromBearerToken(request);
@@ -80,6 +87,23 @@ export async function POST(request: Request) {
       inventoryIdByProductId.set(String(row.product_id), String(row.id));
     }
 
+    const missingProductIds: string[] = [];
+    for (const [productId] of quantityByProductId) {
+      if (!inventoryIdByProductId.get(productId)) {
+        missingProductIds.push(productId);
+      }
+    }
+    if (missingProductIds.length > 0) {
+      return NextResponse.json(
+        {
+          error:
+            "Missing inventory mapping for one or more produced products. Set inventory.product_id for all BotanIQals finished products before completing production.",
+          missingProductIds,
+        },
+        { status: 400 },
+      );
+    }
+
     let updated = 0;
     let skipped = 0;
 
@@ -110,7 +134,8 @@ export async function POST(request: Request) {
       updated += 1;
     }
 
-    return NextResponse.json({ ok: true, updated, skipped });
+    const response: CompletionApiResponse = { ok: true, updated, skipped };
+    return NextResponse.json(response);
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unexpected server error.";
     const status = message === "Unauthorized." || message.includes("bearer token") ? 401 : 500;

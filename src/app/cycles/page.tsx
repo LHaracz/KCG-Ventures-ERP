@@ -232,9 +232,19 @@ export default function CyclesPage() {
           },
           body: JSON.stringify({ cycleId: cycle.id }),
         });
-        const syncPayload = (await syncResponse.json()) as { error?: string };
+        const syncPayload = (await syncResponse.json()) as {
+          error?: string;
+          updated?: number;
+          skipped?: number;
+          missingProductIds?: string[];
+        };
         if (!syncResponse.ok) {
           throw new Error(syncPayload.error || "Failed to update finished product inventory.");
+        }
+        if ((syncPayload.skipped ?? 0) > 0) {
+          throw new Error(
+            `Finished product inventory update skipped ${syncPayload.skipped} product mapping(s). Populate inventory.product_id for all produced BotanIQals products and retry.`,
+          );
         }
       }
 
@@ -372,22 +382,33 @@ export default function CyclesPage() {
         }
       }
 
-      const { error: upsertErr } = await supabase
-        .from("botaniqals_production_batches")
-        .upsert(
-          {
-            user_id: user.id,
-            production_cycle_id: cycle.id,
-            quantity_produced: totalQty,
-            production_start_at: cycle.start_date ?? null,
-            production_end_at: new Date().toISOString(),
-            completed_at: new Date().toISOString(),
-          },
-          {
-            onConflict: "production_cycle_id,user_id",
-          },
-        );
-      if (upsertErr) throw upsertErr;
+      if (displayBusinessType(cycle) === "BotanIQals") {
+        const batchRows = cycleTargets
+          .map((target: any) => {
+            const qty =
+              Number(target.quantity_to_produce ?? target.target_units ?? 0) || 0;
+            if (!target.product || qty <= 0) return null;
+            return {
+              user_id: user.id,
+              production_cycle_id: cycle.id,
+              product_id: target.product,
+              quantity_produced: qty,
+              production_start_at: cycle.start_date ?? null,
+              production_end_at: new Date().toISOString(),
+              completed_at: new Date().toISOString(),
+            };
+          })
+          .filter(Boolean);
+
+        if (batchRows.length > 0) {
+          const { error: upsertErr } = await supabase
+            .from("botaniqals_production_batches")
+            .upsert(batchRows, {
+              onConflict: "production_cycle_id,product_id,product_variant_id",
+            });
+          if (upsertErr) throw upsertErr;
+        }
+      }
 
       const { error: cycleErr } = await supabase
         .from("production_cycles")
@@ -422,39 +443,30 @@ export default function CyclesPage() {
     }
   };
 
-  const batchDetailRows = cycles
-    .filter((c: any) => displayBusinessType(c) === "BotanIQals")
-    .flatMap((cycle: any) => {
-      const cycleTargets = targets.filter(
-        (t: any) => t.production_cycle === cycle.id,
-      );
-      const cycleBatch = batches.find(
-        (b: any) => b.production_cycle_id === cycle.id,
-      );
-      return cycleTargets
-        .map((t: any) => {
-          const qty =
-            Number(t.quantity_to_produce ?? t.target_units ?? 0) || 0;
-          if (!qty) return null;
-          const product = products.find((p: any) => p.id === t.product);
-          return {
-            cycleId: cycle.id,
-            cycleLabel: cycle.harvest_date
-              ? `Harvest: ${formatDate(cycle.harvest_date)}`
-              : `${formatDate(cycle.start_date)} – ${formatDate(
-                  cycle.end_date,
-                )}`,
-            productName: product?.name ?? "Unknown product",
-            quantity: qty,
-            batchId: cycleBatch?.batch_id ?? "—",
-            start:
-              cycleBatch?.production_start_at ?? cycle.start_date ?? null,
-            end:
-              cycleBatch?.production_end_at ?? cycle.end_date ?? null,
-          };
-        })
-        .filter(Boolean) as any[];
-    });
+  const batchDetailRows = batches
+    .filter((batch: any) => {
+      const cycle = cycles.find((cycleRow: any) => cycleRow.id === batch.production_cycle_id);
+      return cycle && displayBusinessType(cycle) === "BotanIQals";
+    })
+    .map((batch: any) => {
+      const cycle = cycles.find((cycleRow: any) => cycleRow.id === batch.production_cycle_id);
+      const product = products.find((productRow: any) => productRow.id === batch.product_id);
+      return {
+        cycleId: batch.production_cycle_id,
+        cycleLabel: cycle?.harvest_date
+          ? `Harvest: ${formatDate(cycle.harvest_date)}`
+          : `${formatDate(cycle?.start_date)} – ${formatDate(cycle?.end_date)}`,
+        productName:
+          batch.products?.name ??
+          product?.name ??
+          "Unknown product",
+        quantity: Number(batch.quantity_produced ?? 0) || 0,
+        batchId: batch.batch_id ?? "—",
+        start: batch.production_start_at ?? cycle?.start_date ?? null,
+        end: batch.production_end_at ?? cycle?.end_date ?? null,
+      };
+    })
+    .filter((row) => row.quantity > 0);
 
   return (
     <AuthGuard>
