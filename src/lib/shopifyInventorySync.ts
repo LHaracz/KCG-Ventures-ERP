@@ -68,7 +68,7 @@ export async function adjustShopifyInventoryQuantity(
   const { endpoint, accessToken } = getShopifyConfig();
 
   const query = `
-    mutation InventoryAdjustQuantities($input: InventoryAdjustQuantitiesInput!) {
+    mutation InventoryAdjustQuantities($input: InventoryAdjustQuantitiesInput!) @idempotent {
       inventoryAdjustQuantities(input: $input) {
         userErrors {
           field
