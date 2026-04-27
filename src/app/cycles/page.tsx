@@ -216,6 +216,28 @@ export default function CyclesPage() {
         return;
       }
 
+      if (displayBusinessType(cycle) === "BotanIQals") {
+        const {
+          data: { session },
+        } = await supabase.auth.getSession();
+        const token = session?.access_token;
+        if (!token) {
+          throw new Error("Unable to verify your session for BotanIQals inventory sync.");
+        }
+        const syncResponse = await fetch("/api/production/complete-botaniqals", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({ cycleId: cycle.id }),
+        });
+        const syncPayload = (await syncResponse.json()) as { error?: string };
+        if (!syncResponse.ok) {
+          throw new Error(syncPayload.error || "Failed to update finished product inventory.");
+        }
+      }
+
       const { data: existingUsageRows, error: existingUsageErr } = await supabase
         .from("inventory_adjustments")
         .select("id")

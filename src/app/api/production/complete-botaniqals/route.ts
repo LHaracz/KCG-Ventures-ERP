@@ -1,0 +1,119 @@
+import { NextResponse } from "next/server";
+import { requireApiUserFromBearerToken } from "@/lib/apiAuth";
+import { addInventory } from "@/lib/inventorySync";
+import { supabaseAdmin } from "@/lib/supabaseAdmin";
+import { normalizeBusinessType } from "@/lib/businessType";
+
+type CompletionTargetRow = {
+  product: string | null;
+  quantity_to_produce: number | null;
+  target_units: number | null;
+};
+
+export async function POST(request: Request) {
+  try {
+    const user = await requireApiUserFromBearerToken(request);
+    const body = (await request.json()) as { cycleId?: string };
+    const cycleId = body.cycleId?.trim();
+    if (!cycleId) {
+      return NextResponse.json({ error: "Missing cycleId." }, { status: 400 });
+    }
+
+    if (!supabaseAdmin) {
+      return NextResponse.json({ error: "Server misconfiguration." }, { status: 500 });
+    }
+
+    const { data: cycle, error: cycleError } = await supabaseAdmin
+      .from("production_cycles")
+      .select("id, user_id, business_type, brand")
+      .eq("id", cycleId)
+      .eq("user_id", user.id)
+      .single();
+
+    if (cycleError || !cycle) {
+      return NextResponse.json({ error: cycleError?.message || "Cycle not found." }, { status: 404 });
+    }
+
+    const businessType = normalizeBusinessType(cycle);
+    if (businessType !== "BotanIQals") {
+      return NextResponse.json(
+        { error: "Finished product inventory updates only apply to BotanIQals cycles." },
+        { status: 400 },
+      );
+    }
+
+    const { data: targets, error: targetsError } = await supabaseAdmin
+      .from("production_targets")
+      .select("product, quantity_to_produce, target_units")
+      .eq("production_cycle", cycleId)
+      .eq("user_id", user.id);
+
+    if (targetsError) {
+      return NextResponse.json({ error: targetsError.message }, { status: 500 });
+    }
+
+    const quantityByProductId = new Map<string, number>();
+    for (const target of (targets ?? []) as CompletionTargetRow[]) {
+      if (!target.product) continue;
+      const qty = Number(target.quantity_to_produce ?? target.target_units ?? 0) || 0;
+      if (qty <= 0) continue;
+      quantityByProductId.set(target.product, (quantityByProductId.get(target.product) ?? 0) + qty);
+    }
+
+    if (quantityByProductId.size === 0) {
+      return NextResponse.json({ ok: true, updated: 0, skipped: 0 });
+    }
+
+    const productIds = Array.from(quantityByProductId.keys());
+    const { data: inventoryRows, error: inventoryError } = await supabaseAdmin
+      .from("inventory")
+      .select("id, product_id")
+      .in("product_id", productIds);
+
+    if (inventoryError) {
+      return NextResponse.json({ error: inventoryError.message }, { status: 500 });
+    }
+
+    const inventoryIdByProductId = new Map<string, string>();
+    for (const row of inventoryRows ?? []) {
+      if (!row.product_id) continue;
+      inventoryIdByProductId.set(String(row.product_id), String(row.id));
+    }
+
+    let updated = 0;
+    let skipped = 0;
+
+    for (const [productId, qty] of quantityByProductId) {
+      const inventoryProductId = inventoryIdByProductId.get(productId);
+      if (!inventoryProductId) {
+        skipped += 1;
+        continue;
+      }
+
+      const { error: eventError } = await supabaseAdmin
+        .from("inventory_production_events")
+        .insert({
+          production_cycle_id: cycleId,
+          inventory_product_id: inventoryProductId,
+        });
+
+      if (eventError) {
+        const duplicate = eventError.message.toLowerCase().includes("duplicate");
+        if (duplicate) {
+          skipped += 1;
+          continue;
+        }
+        return NextResponse.json({ error: eventError.message }, { status: 500 });
+      }
+
+      await addInventory(inventoryProductId, Math.trunc(qty));
+      updated += 1;
+    }
+
+    return NextResponse.json({ ok: true, updated, skipped });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unexpected server error.";
+    const status = message === "Unauthorized." || message.includes("bearer token") ? 401 : 500;
+    return NextResponse.json({ error: message }, { status });
+  }
+}
