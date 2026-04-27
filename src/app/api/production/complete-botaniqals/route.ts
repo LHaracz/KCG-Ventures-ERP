@@ -17,6 +17,63 @@ type CompletionApiResponse = {
   missingProductIds?: string[];
 };
 
+async function ensureInventoryRowsForProducedProducts(params: {
+  productIds: string[];
+}): Promise<void> {
+  if (!supabaseAdmin || params.productIds.length === 0) return;
+
+  const { data: existingRows, error: existingError } = await supabaseAdmin
+    .from("inventory")
+    .select("product_id")
+    .in("product_id", params.productIds);
+
+  if (existingError) {
+    throw new Error(existingError.message);
+  }
+
+  const existingProductIds = new Set(
+    (existingRows ?? [])
+      .map((row) => (row.product_id ? String(row.product_id) : null))
+      .filter((value): value is string => Boolean(value)),
+  );
+
+  const missingProductIds = params.productIds.filter((id) => !existingProductIds.has(id));
+  if (missingProductIds.length === 0) return;
+
+  const { data: products, error: productsError } = await supabaseAdmin
+    .from("products")
+    .select("id, name")
+    .in("id", missingProductIds);
+
+  if (productsError) {
+    throw new Error(productsError.message);
+  }
+
+  const nowIso = new Date().toISOString();
+  const rowsToInsert = (products ?? []).map((product) => ({
+    product_id: product.id,
+    product_name: product.name,
+    shopify_variant_id: `UNMAPPED_VARIANT_${product.id}`,
+    shopify_inventory_item_id: `UNMAPPED_ITEM_${product.id}`,
+    shopify_location_id: "UNMAPPED_LOCATION",
+    units_per_variant: 1,
+    qty_on_hand: 0,
+    reserved_qty: 0,
+    available_qty: 0,
+    updated_at: nowIso,
+  }));
+
+  if (rowsToInsert.length === 0) return;
+
+  const { error: insertError } = await supabaseAdmin
+    .from("inventory")
+    .insert(rowsToInsert);
+
+  if (insertError) {
+    throw new Error(insertError.message);
+  }
+}
+
 export async function POST(request: Request) {
   try {
     const user = await requireApiUserFromBearerToken(request);
@@ -72,6 +129,8 @@ export async function POST(request: Request) {
     }
 
     const productIds = Array.from(quantityByProductId.keys());
+    await ensureInventoryRowsForProducedProducts({ productIds });
+
     const { data: inventoryRows, error: inventoryError } = await supabaseAdmin
       .from("inventory")
       .select("id, product_id")
