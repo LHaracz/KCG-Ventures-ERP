@@ -401,12 +401,35 @@ export default function CyclesPage() {
           .filter(Boolean);
 
         if (batchRows.length > 0) {
-          const { error: upsertErr } = await supabase
-            .from("botaniqals_production_batches")
-            .upsert(batchRows, {
-              onConflict: "production_cycle_id,product_id,product_variant_id",
-            });
-          if (upsertErr) throw upsertErr;
+          for (const batchRow of batchRows) {
+            const { data: existingBatch, error: existingBatchErr } = await supabase
+              .from("botaniqals_production_batches")
+              .select("id")
+              .eq("user_id", user.id)
+              .eq("production_cycle_id", cycle.id)
+              .eq("product_id", batchRow.product_id)
+              .is("product_variant_id", null)
+              .maybeSingle();
+            if (existingBatchErr) throw existingBatchErr;
+
+            if (existingBatch?.id) {
+              const { error: updateBatchErr } = await supabase
+                .from("botaniqals_production_batches")
+                .update({
+                  quantity_produced: batchRow.quantity_produced,
+                  production_start_at: batchRow.production_start_at,
+                  production_end_at: batchRow.production_end_at,
+                  completed_at: batchRow.completed_at,
+                })
+                .eq("id", existingBatch.id);
+              if (updateBatchErr) throw updateBatchErr;
+            } else {
+              const { error: insertBatchErr } = await supabase
+                .from("botaniqals_production_batches")
+                .insert(batchRow);
+              if (insertBatchErr) throw insertBatchErr;
+            }
+          }
         }
       }
 

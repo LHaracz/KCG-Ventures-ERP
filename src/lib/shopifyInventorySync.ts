@@ -23,11 +23,13 @@ function toLocationGid(value: string): string {
 
 function getShopifyConfig() {
   const shopDomain = process.env.SHOPIFY_SHOP_DOMAIN ?? "";
-  const accessToken = process.env.SHOPIFY_ACCESS_TOKEN ?? "";
+  const accessToken = process.env.SHOPIFY_ACCESS_TOKEN ?? process.env.SHOPIFY_ADMIN_ACCESS_TOKEN ?? "";
   const apiVersion = process.env.SHOPIFY_API_VERSION ?? DEFAULT_SHOPIFY_API_VERSION;
 
   if (!shopDomain || !accessToken) {
-    throw new Error("Missing Shopify configuration: SHOPIFY_SHOP_DOMAIN or SHOPIFY_ACCESS_TOKEN.");
+    throw new Error(
+      "Missing Shopify configuration: SHOPIFY_SHOP_DOMAIN and SHOPIFY_ACCESS_TOKEN (or SHOPIFY_ADMIN_ACCESS_TOKEN).",
+    );
   }
 
   const normalizedDomain = shopDomain.includes(".myshopify.com")

@@ -47,6 +47,23 @@ function computeAvailableQty(qtyOnHand: number, reservedQty: number): number {
   return qtyOnHand - reservedQty;
 }
 
+function hasRealShopifyMapping(row: Pick<InventoryRow, "shopify_variant_id" | "shopify_inventory_item_id" | "shopify_location_id">): boolean {
+  const variantId = String(row.shopify_variant_id ?? "");
+  const inventoryItemId = String(row.shopify_inventory_item_id ?? "");
+  const locationId = String(row.shopify_location_id ?? "");
+  return (
+    !!variantId &&
+    !!inventoryItemId &&
+    !!locationId &&
+    !variantId.startsWith("UNMAPPED_") &&
+    !variantId.startsWith("MISSING_") &&
+    !inventoryItemId.startsWith("UNMAPPED_") &&
+    !inventoryItemId.startsWith("MISSING_") &&
+    !locationId.startsWith("UNMAPPED_") &&
+    !locationId.startsWith("MISSING_")
+  );
+}
+
 async function syncShopifyGroupToAvailableQty(groupRows: InventoryRow[]): Promise<{
   ok: boolean;
   error?: string;
@@ -57,8 +74,12 @@ async function syncShopifyGroupToAvailableQty(groupRows: InventoryRow[]): Promis
 
   const first = groupRows[0];
   const targetAvailableQty = first.available_qty;
+  const syncableRows = groupRows.filter(hasRealShopifyMapping);
+  if (syncableRows.length === 0) {
+    return { ok: false, error: "No valid Shopify mapping rows found for this product group." };
+  }
 
-  for (const row of groupRows) {
+  for (const row of syncableRows) {
     try {
       const syncResult = await syncShopifyAvailableQuantity({
         targetAvailableQty,

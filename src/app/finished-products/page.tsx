@@ -8,12 +8,32 @@ type InventoryRow = {
   id: string;
   product_id: string | null;
   product_name: string;
+  shopify_variant_id?: string | null;
+  shopify_inventory_item_id?: string | null;
+  shopify_location_id?: string | null;
   units_per_variant: number;
   qty_on_hand: number;
   reserved_qty: number;
   available_qty: number;
   updated_at: string;
 };
+
+function hasRealShopifyMapping(row: InventoryRow): boolean {
+  const variantId = String(row.shopify_variant_id ?? "");
+  const inventoryItemId = String(row.shopify_inventory_item_id ?? "");
+  const locationId = String(row.shopify_location_id ?? "");
+  return (
+    !!variantId &&
+    !!inventoryItemId &&
+    !!locationId &&
+    !variantId.startsWith("UNMAPPED_") &&
+    !variantId.startsWith("MISSING_") &&
+    !inventoryItemId.startsWith("UNMAPPED_") &&
+    !inventoryItemId.startsWith("MISSING_") &&
+    !locationId.startsWith("UNMAPPED_") &&
+    !locationId.startsWith("MISSING_")
+  );
+}
 
 export default function FinishedProductsPage() {
   const { user, supabase } = useSupabase();
@@ -176,10 +196,10 @@ export default function FinishedProductsPage() {
                   <tr key={row.id} className="border-t text-sm text-zinc-900">
                     <td className="px-3 py-2">{row.product_name}</td>
                     <td className="px-3 py-2">
-                      {row.product_id ? (
+                      {row.product_id && hasRealShopifyMapping(row) ? (
                         <span className="text-emerald-700">Mapped</span>
                       ) : (
-                        <span className="font-medium text-red-600">Missing product mapping</span>
+                        <span className="font-medium text-red-600">Missing Shopify mapping</span>
                       )}
                     </td>
                     <td className="px-3 py-2">{row.units_per_variant ?? 1}</td>
