@@ -82,7 +82,7 @@ export async function POST(request: Request) {
 
     const { data: inventoryRow, error: lookupError } = await admin
       .from("inventory")
-      .select("id")
+      .select("id, units_per_variant")
       .eq("shopify_variant_id", variantId)
       .maybeSingle();
 
@@ -94,7 +94,15 @@ export async function POST(request: Request) {
       continue;
     }
 
-    await subtractInventory(inventoryRow.id, quantityRaw);
+    const unitsPerVariant = Math.trunc(Number(inventoryRow.units_per_variant ?? 1));
+    if (!Number.isFinite(unitsPerVariant) || unitsPerVariant < 1) {
+      return NextResponse.json(
+        { error: `Invalid units_per_variant for variant ${variantId}` },
+        { status: 500 },
+      );
+    }
+    const totalUnits = quantityRaw * unitsPerVariant;
+    await subtractInventory(inventoryRow.id, totalUnits);
     processedItems += 1;
   }
 

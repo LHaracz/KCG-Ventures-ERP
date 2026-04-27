@@ -1,6 +1,5 @@
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import {
-  adjustShopifyInventoryQuantity,
   syncShopifyAvailableQuantity,
 } from "@/lib/shopifyInventorySync";
 
@@ -11,6 +10,7 @@ export type InventoryRow = {
   shopify_variant_id: string;
   shopify_inventory_item_id: string;
   shopify_location_id: string;
+  units_per_variant: number;
   qty_on_hand: number;
   reserved_qty: number;
   available_qty: number;
@@ -21,6 +21,7 @@ type InventoryChangeReason = "production" | "order";
 
 type InventoryMutationResult = {
   row: InventoryRow;
+  groupRows: InventoryRow[];
   shopifySyncOk: boolean;
   shopifySyncError?: string;
 };
@@ -46,29 +47,58 @@ function computeAvailableQty(qtyOnHand: number, reservedQty: number): number {
   return qtyOnHand - reservedQty;
 }
 
-async function syncShopifyDelta(row: InventoryRow, previousAvailableQty: number): Promise<{
+async function syncShopifyGroupToAvailableQty(groupRows: InventoryRow[]): Promise<{
   ok: boolean;
   error?: string;
 }> {
-  const delta = row.available_qty - previousAvailableQty;
-  if (delta === 0) return { ok: true };
-
-  try {
-    const syncResult = await adjustShopifyInventoryQuantity({
-      delta,
-      inventoryItemId: row.shopify_inventory_item_id,
-      locationId: row.shopify_location_id,
-    });
-    if (!syncResult.ok) {
-      const message =
-        syncResult.userErrors?.map((error) => error.message).join("; ") ||
-        "Unknown Shopify user error";
-      return { ok: false, error: message };
-    }
+  if (groupRows.length === 0) {
     return { ok: true };
-  } catch (error) {
-    return { ok: false, error: error instanceof Error ? error.message : "Unknown Shopify sync failure" };
   }
+
+  const first = groupRows[0];
+  const targetAvailableQty = first.available_qty;
+
+  for (const row of groupRows) {
+    try {
+      const syncResult = await syncShopifyAvailableQuantity({
+        targetAvailableQty,
+        inventoryItemId: String(row.shopify_inventory_item_id),
+        locationId: String(row.shopify_location_id),
+      });
+      if (!syncResult.ok) {
+        const message =
+          syncResult.userErrors?.map((error) => error.message).join("; ") ||
+          "Unknown Shopify user error";
+        return { ok: false, error: message };
+      }
+    } catch (error) {
+      return {
+        ok: false,
+        error: error instanceof Error ? error.message : "Unknown Shopify sync failure",
+      };
+    }
+  }
+
+  return { ok: true };
+}
+
+async function loadInventoryGroupByProductId(productId: string): Promise<InventoryRow[]> {
+  const admin = requireAdminClient();
+  const { data, error } = await admin
+    .from("inventory")
+    .select("*")
+    .eq("product_id", productId)
+    .order("product_name", { ascending: true });
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  const rows = (data ?? []) as InventoryRow[];
+  if (rows.length === 0) {
+    throw new Error(`Inventory product group ${productId} not found.`);
+  }
+  return rows;
 }
 
 async function mutateInventory(
@@ -89,9 +119,17 @@ async function mutateInventory(
     throw new Error(fetchError?.message || `Inventory product ${productId} not found.`);
   }
 
-  const currentQtyOnHand = Number(existing.qty_on_hand);
-  const reservedQty = Number(existing.reserved_qty ?? 0);
-  const previousAvailableQty = Number(existing.available_qty ?? computeAvailableQty(currentQtyOnHand, reservedQty));
+  const existingRow = existing as InventoryRow;
+  const productGroupId = existingRow.product_id;
+  if (!productGroupId) {
+    throw new Error(`Inventory row ${productId} is missing product_id.`);
+  }
+
+  const groupRows = await loadInventoryGroupByProductId(productGroupId);
+  const groupAnchor = groupRows[0];
+
+  const currentQtyOnHand = Number(groupAnchor.qty_on_hand);
+  const reservedQty = Number(groupAnchor.reserved_qty ?? 0);
   const nextQtyOnHand = currentQtyOnHand + safeDelta;
 
   if (nextQtyOnHand < 0) {
@@ -101,18 +139,18 @@ async function mutateInventory(
   const nextAvailableQty = computeAvailableQty(nextQtyOnHand, reservedQty);
   const nowIso = new Date().toISOString();
 
-  const { data: updated, error: updateError } = await admin
+  const rowIds = groupRows.map((row) => row.id);
+  const { data: updatedRows, error: updateError } = await admin
     .from("inventory")
     .update({
       qty_on_hand: nextQtyOnHand,
       available_qty: nextAvailableQty,
       updated_at: nowIso,
     })
-    .eq("id", productId)
-    .select("*")
-    .single();
+    .in("id", rowIds)
+    .select("*");
 
-  if (updateError || !updated) {
+  if (updateError || !updatedRows?.length) {
     throw new Error(updateError?.message || `Failed to update inventory row ${productId}.`);
   }
 
@@ -127,15 +165,17 @@ async function mutateInventory(
     throw new Error(logError.message);
   }
 
-  const row = updated as InventoryRow;
-  const shopifySync = await syncShopifyDelta(row, previousAvailableQty);
+  const updatedGroupRows = (updatedRows ?? []) as InventoryRow[];
+  const row = updatedGroupRows.find((item) => item.id === productId) ?? updatedGroupRows[0];
+  const shopifySync = await syncShopifyGroupToAvailableQty(updatedGroupRows);
 
   if (!shopifySync.ok) {
-    console.error(`Shopify mirror sync failed for inventory row ${row.id}: ${shopifySync.error}`);
+    console.error(`Shopify mirror sync failed for product group ${productGroupId}: ${shopifySync.error}`);
   }
 
   return {
     row,
+    groupRows: updatedGroupRows,
     shopifySyncOk: shopifySync.ok,
     shopifySyncError: shopifySync.error,
   };
@@ -182,17 +222,15 @@ export async function syncInventoryRowToShopify(productId: string): Promise<void
     throw new Error(error?.message || `Inventory product ${productId} not found.`);
   }
 
-  const availableQty = Number(
-    row.available_qty ?? computeAvailableQty(Number(row.qty_on_hand), Number(row.reserved_qty ?? 0)),
-  );
-  const result = await syncShopifyAvailableQuantity({
-    targetAvailableQty: availableQty,
-    inventoryItemId: String(row.shopify_inventory_item_id),
-    locationId: String(row.shopify_location_id),
-  });
+  const typedRow = row as InventoryRow;
+  if (!typedRow.product_id) {
+    throw new Error(`Inventory row ${productId} is missing product_id.`);
+  }
+
+  const groupRows = await loadInventoryGroupByProductId(typedRow.product_id);
+  const result = await syncShopifyGroupToAvailableQty(groupRows);
   if (!result.ok) {
-    const message = result.userErrors?.map((error) => error.message).join("; ") || "Unknown Shopify user error";
-    throw new Error(message);
+    throw new Error(result.error || "Unknown Shopify sync failure");
   }
 }
 
@@ -203,8 +241,13 @@ export async function syncAllInventoryToShopify(): Promise<{
   const rows = await getInventory();
   const failed: Array<{ productId: string; error: string }> = [];
   let synced = 0;
+  const seenProductIds = new Set<string>();
 
   for (const row of rows) {
+    if (!row.product_id || seenProductIds.has(row.product_id)) {
+      continue;
+    }
+    seenProductIds.add(row.product_id);
     try {
       await syncInventoryRowToShopify(row.id);
       synced += 1;

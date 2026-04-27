@@ -6,7 +6,9 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "inventory:backfill-units": "node scripts/backfillUnitsPerVariant.mjs",
+    "inventory:backfill-units:dry-run": "node scripts/backfillUnitsPerVariant.mjs --dry-run"
   },
   "dependencies": {
     "@instantdb/react": "^0.22.151",
