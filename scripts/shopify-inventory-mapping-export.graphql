@@ -1,0 +1,73 @@
+# Run in Shopify Admin GraphQL (API version e.g. 2026-04).
+# Copy the JSON result and share it — numeric IDs are extracted from GIDs
+# (e.g. gid://shopify/ProductVariant/512828... → 512828...).
+
+# -----------------------------------------------------------------------------
+# Optional: list locations (pick primary `id` → numeric part = shopify_location_id)
+# -----------------------------------------------------------------------------
+query ListLocations {
+  locations(first: 20) {
+    edges {
+      node {
+        id
+        name
+        isActive
+        isPrimary
+      }
+    }
+  }
+}
+
+# -----------------------------------------------------------------------------
+# Paginated catalog: products → variants → inventoryItem → levels per location
+# Run repeatedly with $cursor = endCursor until hasNextPage is false.
+# -----------------------------------------------------------------------------
+query ExportVariantInventoryMappings($cursor: String) {
+  products(first: 50, after: $cursor) {
+    pageInfo {
+      hasNextPage
+      endCursor
+    }
+    edges {
+      node {
+        id
+        title
+        handle
+        status
+        variants(first: 100) {
+          edges {
+            node {
+              id
+              title
+              sku
+              inventoryItem {
+                id
+                tracked
+                inventoryLevels(first: 20) {
+                  edges {
+                    node {
+                      id
+                      quantities(names: ["available", "on_hand"]) {
+                        name
+                        quantity
+                      }
+                      location {
+                        id
+                        name
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+# Variables (first page):
+# { "cursor": null }
+# Next page:
+# { "cursor": "<paste pageInfo.endCursor>" }
