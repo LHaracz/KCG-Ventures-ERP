@@ -1,5 +1,6 @@
 type InventoryAdjustmentChange = {
-  delta: number;
+  changeFromQuantity: number;
+  changeToQuantity: number;
   inventoryItemId: string;
   locationId: string;
 };
@@ -85,7 +86,8 @@ export async function adjustShopifyInventoryQuantity(
         name: "available",
         changes: [
           {
-            delta: change.delta,
+            changeFromQuantity: change.changeFromQuantity,
+            changeToQuantity: change.changeToQuantity,
             inventoryItemId: toInventoryItemGid(change.inventoryItemId),
             locationId: toLocationGid(change.locationId),
           },
@@ -224,7 +226,8 @@ export async function syncShopifyAvailableQuantity(params: {
   }
 
   const result = await adjustShopifyInventoryQuantity({
-    delta,
+    changeFromQuantity: currentAvailableQty,
+    changeToQuantity: Math.trunc(params.targetAvailableQty),
     inventoryItemId: params.inventoryItemId,
     locationId: params.locationId,
   });
