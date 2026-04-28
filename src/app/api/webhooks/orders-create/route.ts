@@ -2,6 +2,7 @@ import crypto from "crypto";
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { overrideErpFromShopifyForInventoryRow } from "@/lib/inventorySync";
+import { shopifyVariantIdLookupKeys } from "@/lib/shopifyIds";
 import { ordersCreateWebhookLog } from "./log";
 
 type ShopifyOrderLineItem = {
@@ -248,11 +249,21 @@ export async function POST(request: Request) {
       continue;
     }
 
-    const { data: inventoryRow, error: lookupError } = await admin
+    const lookupKeys = shopifyVariantIdLookupKeys(variantId);
+    if (lookupKeys.length === 0) {
+      skippedLines.push({
+        variantId,
+        quantity: quantityRaw,
+        reason: "variant_not_mapped_in_inventory",
+      });
+      continue;
+    }
+
+    const { data: inventoryRows, error: lookupError } = await admin
       .from("inventory")
       .select("id")
-      .eq("shopify_variant_id", variantId)
-      .maybeSingle();
+      .in("shopify_variant_id", lookupKeys)
+      .limit(2);
 
     if (lookupError) {
       ordersCreateWebhookLog("failure: inventory lookup", {
@@ -260,6 +271,7 @@ export async function POST(request: Request) {
         topic,
         orderId,
         variantId,
+        lookupKeys,
         error: lookupError.message,
       });
       await admin.from("inventory_webhook_events").delete().eq("shopify_order_id", orderId);
@@ -272,6 +284,7 @@ export async function POST(request: Request) {
           orderId,
           hmacVerified: true,
           variantId,
+          lookupKeys,
           error: lookupError.message,
           skippedLines,
           idempotencyReleased: true,
@@ -279,11 +292,39 @@ export async function POST(request: Request) {
         { status: 500 },
       );
     }
+    const matchedRows = inventoryRows ?? [];
+    if (matchedRows.length > 1) {
+      ordersCreateWebhookLog("failure: multiple inventory rows for variant lookup keys", {
+        runId,
+        orderId,
+        variantId,
+        lookupKeys,
+        rowIds: matchedRows.map((r) => r.id),
+      });
+      await admin.from("inventory_webhook_events").delete().eq("shopify_order_id", orderId);
+      return NextResponse.json(
+        {
+          ok: false,
+          step: "inventory_lookup_ambiguous",
+          runId,
+          topic,
+          orderId,
+          variantId,
+          lookupKeys,
+          error: "Multiple inventory rows matched the same Shopify variant id shapes.",
+          skippedLines,
+          idempotencyReleased: true,
+        },
+        { status: 500 },
+      );
+    }
+    const inventoryRow = matchedRows[0];
     if (!inventoryRow?.id) {
       ordersCreateWebhookLog("skipped line: variant not mapped", {
         runId,
         orderId,
         variantId,
+        lookupKeys,
         quantityRaw,
       });
       skippedLines.push({
@@ -370,7 +411,7 @@ export async function POST(request: Request) {
     erpUpdated
       ? undefined
       : skippedLines.some((s) => s.reason === "variant_not_mapped_in_inventory")
-        ? "No line items matched inventory.shopify_variant_id — ERP quantities unchanged. Shopify's Send test notification uses a fixed sample order whose variant IDs usually do not exist in your ERP; use a real checkout or ensure each selling variant has a row in inventory with the correct shopify_variant_id."
+        ? "No line items matched inventory.shopify_variant_id (tried numeric id and gid://shopify/ProductVariant/...) — ERP unchanged. For real orders: ensure a row exists and shopify_variant_id matches Shopify (REST id or full variant GID). Test notifications use unrelated sample variant ids."
         : skippedLines.length > 0
           ? "No inventory rows were updated; all line items were skipped for other reasons (see skippedLines)."
           : "Order had no line items to process.";
