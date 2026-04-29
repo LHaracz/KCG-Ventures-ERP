@@ -18,7 +18,7 @@ export type InventoryRow = {
   updated_at: string;
 };
 
-type InventoryChangeReason = "production" | "order";
+type InventoryChangeReason = "production" | "order" | "cycle_count" | "shopify_override";
 
 type InventoryMutationResult = {
   row: InventoryRow;
@@ -271,6 +271,95 @@ export async function subtractInventory(productId: string, qty: number): Promise
     throw new Error("subtractInventory requires a positive quantity.");
   }
   return mutateInventory(productId, -safeQty, "order");
+}
+
+export async function setInventoryCycleCount(
+  inventoryRowId: string,
+  countedQtyOnHand: number,
+): Promise<{
+  row: InventoryRow;
+  groupRows: InventoryRow[];
+  previousQtyOnHand: number;
+  newQtyOnHand: number;
+}> {
+  const admin = requireAdminClient();
+  const safeCountedQty = toSafeInteger(countedQtyOnHand);
+  if (safeCountedQty < 0) {
+    throw new Error("Cycle count quantity cannot be negative.");
+  }
+
+  const { data: existing, error: fetchError } = await admin
+    .from("inventory")
+    .select("*")
+    .eq("id", inventoryRowId)
+    .single();
+
+  if (fetchError || !existing) {
+    throw new Error(fetchError?.message || `Inventory product ${inventoryRowId} not found.`);
+  }
+
+  const existingRow = existing as InventoryRow;
+  const productGroupId = existingRow.product_id;
+  if (!productGroupId) {
+    throw new Error(`Inventory row ${inventoryRowId} is missing product_id.`);
+  }
+
+  const groupRows = await loadInventoryGroupByProductId(productGroupId);
+  const anchor = groupRows[0];
+  const reservedQty = Number(anchor.reserved_qty ?? 0);
+  if (!Number.isFinite(reservedQty) || reservedQty < 0) {
+    throw new Error("Invalid reserved_qty on inventory anchor row.");
+  }
+
+  const previousQtyOnHand = Number(anchor.qty_on_hand ?? 0);
+  if (!Number.isFinite(previousQtyOnHand) || previousQtyOnHand < 0) {
+    throw new Error("Invalid qty_on_hand on inventory anchor row.");
+  }
+
+  const nextQtyOnHand = safeCountedQty;
+  const nextAvailableQty = computeAvailableQty(nextQtyOnHand, reservedQty);
+  const nowIso = new Date().toISOString();
+  const rowIds = groupRows.map((row) => row.id);
+
+  const { data: updatedRows, error: updateError } = await admin
+    .from("inventory")
+    .update({
+      qty_on_hand: nextQtyOnHand,
+      available_qty: nextAvailableQty,
+      updated_at: nowIso,
+    })
+    .in("id", rowIds)
+    .select("*");
+
+  if (updateError || !updatedRows?.length) {
+    throw new Error(updateError?.message || `Failed to update inventory row ${inventoryRowId}.`);
+  }
+
+  const change = nextQtyOnHand - previousQtyOnHand;
+  const { error: logError } = await admin.from("inventory_logs").insert({
+    product_id: inventoryRowId,
+    change,
+    reason: "cycle_count",
+    created_at: nowIso,
+  });
+  if (logError) {
+    throw new Error(logError.message);
+  }
+
+  const updatedGroupRows = (updatedRows ?? []) as InventoryRow[];
+  const row =
+    updatedGroupRows.find((item) => item.id === inventoryRowId) ?? updatedGroupRows[0];
+  const shopifySync = await syncShopifyGroupToAvailableQty(updatedGroupRows);
+  if (!shopifySync.ok) {
+    throw new Error(shopifySync.error || "Failed to sync updated cycle count to Shopify.");
+  }
+
+  return {
+    row,
+    groupRows: updatedGroupRows,
+    previousQtyOnHand,
+    newQtyOnHand: nextQtyOnHand,
+  };
 }
 
 /**

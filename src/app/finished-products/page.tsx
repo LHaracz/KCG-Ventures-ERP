@@ -42,6 +42,10 @@ export default function FinishedProductsPage() {
   const [isSyncing, setIsSyncing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [syncMessage, setSyncMessage] = useState<string | null>(null);
+  const [cycleCountDraftByRowId, setCycleCountDraftByRowId] = useState<Record<string, string>>(
+    {},
+  );
+  const [countingRowId, setCountingRowId] = useState<string | null>(null);
 
   const fetchInventory = useCallback(async () => {
     if (!user) return;
@@ -120,6 +124,58 @@ export default function FinishedProductsPage() {
     }
   };
 
+  const handleCycleCountSubmit = async (row: InventoryRow) => {
+    if (!user) return;
+    const draftValue = cycleCountDraftByRowId[row.id] ?? String(Math.trunc(row.qty_on_hand ?? 0));
+    if (!/^\d+$/.test(draftValue.trim())) {
+      setError("Cycle count quantity must be a non-negative integer.");
+      return;
+    }
+
+    setCountingRowId(row.id);
+    setError(null);
+    setSyncMessage(null);
+    try {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+      const token = session?.access_token;
+      if (!token) {
+        throw new Error("Unable to fetch session token.");
+      }
+
+      const response = await fetch("/api/inventory/cycle-count", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          inventoryRowId: row.id,
+          countedQtyOnHand: Number(draftValue),
+        }),
+      });
+      const payload = (await response.json()) as {
+        ok?: boolean;
+        previousQtyOnHand?: number;
+        newQtyOnHand?: number;
+        error?: string;
+      };
+      if (!response.ok) {
+        throw new Error(payload.error || "Cycle count failed.");
+      }
+
+      setSyncMessage(
+        `Cycle count saved for ${row.product_name}: ${payload.previousQtyOnHand ?? row.qty_on_hand} -> ${payload.newQtyOnHand ?? Number(draftValue)}. Shopify sync completed.`,
+      );
+      await fetchInventory();
+    } catch (countError) {
+      setError(countError instanceof Error ? countError.message : "Cycle count failed.");
+    } finally {
+      setCountingRowId(null);
+    }
+  };
+
   const sortedRows = useMemo(
     () => [...rows].sort((a, b) => a.product_name.localeCompare(b.product_name)),
     [rows],
@@ -177,18 +233,19 @@ export default function FinishedProductsPage() {
                 <th className="px-3 py-2 font-medium">Reserved Qty</th>
                 <th className="px-3 py-2 font-medium">Available Qty</th>
                 <th className="px-3 py-2 font-medium">Last Updated</th>
+                <th className="px-3 py-2 font-medium">Cycle Count</th>
               </tr>
             </thead>
             <tbody>
               {isLoading ? (
                 <tr>
-                  <td className="px-3 py-4 text-sm text-black" colSpan={7}>
+                  <td className="px-3 py-4 text-sm text-black" colSpan={8}>
                     Loading inventory...
                   </td>
                 </tr>
               ) : sortedRows.length === 0 ? (
                 <tr>
-                  <td className="px-3 py-4 text-sm text-black" colSpan={7}>
+                  <td className="px-3 py-4 text-sm text-black" colSpan={8}>
                     No BotanIQals finished product inventory records found.
                   </td>
                 </tr>
@@ -208,6 +265,31 @@ export default function FinishedProductsPage() {
                     <td className="px-3 py-2">{row.reserved_qty}</td>
                     <td className="px-3 py-2">{row.available_qty}</td>
                     <td className="px-3 py-2">{new Date(row.updated_at).toLocaleString()}</td>
+                    <td className="px-3 py-2">
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="number"
+                          min={0}
+                          step={1}
+                          value={cycleCountDraftByRowId[row.id] ?? String(Math.trunc(row.qty_on_hand ?? 0))}
+                          onChange={(e) =>
+                            setCycleCountDraftByRowId((prev) => ({
+                              ...prev,
+                              [row.id]: e.target.value,
+                            }))
+                          }
+                          className="w-24 rounded-md border border-zinc-300 px-2 py-1 text-xs"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => handleCycleCountSubmit(row)}
+                          disabled={countingRowId === row.id}
+                          className="rounded-md border border-zinc-300 bg-white px-2 py-1 text-xs font-medium text-zinc-800 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-70"
+                        >
+                          {countingRowId === row.id ? "Saving..." : "Save"}
+                        </button>
+                      </div>
+                    </td>
                   </tr>
                 ))
               )}

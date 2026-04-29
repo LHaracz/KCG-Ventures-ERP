@@ -17,6 +17,17 @@ type CycleForm = {
   status: "draft" | "planned" | "completed";
 };
 
+type CompletionActualsDraft = {
+  cycleId: string;
+  cycleLabel: string;
+  productActuals: Array<{
+    productId: string;
+    productName: string;
+    plannedQty: number;
+    actualQty: string;
+  }>;
+};
+
 function filterScopedRows<T extends { user_id?: string | null }>(
   rows: T[],
   userId: string,
@@ -32,6 +43,9 @@ export default function CyclesPage() {
   const [products, setProducts] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [completingCycleId, setCompletingCycleId] = useState<string | null>(
+    null,
+  );
+  const [completionDraft, setCompletionDraft] = useState<CompletionActualsDraft | null>(
     null,
   );
 
@@ -195,15 +209,54 @@ export default function CyclesPage() {
     }
   };
 
-  const handleCompleteProduction = async (cycle: any) => {
+  const beginCompleteProduction = (cycle: any) => {
+    const cycleTargets = targets.filter((t: any) => t.production_cycle === cycle.id);
+    const grouped = new Map<string, { productName: string; plannedQty: number }>();
+    for (const target of cycleTargets) {
+      const productId = String(target.product ?? "").trim();
+      if (!productId) continue;
+      const plannedQty =
+        Number(target.quantity_to_produce ?? target.target_units ?? 0) || 0;
+      if (plannedQty <= 0) continue;
+      const existing = grouped.get(productId) ?? {
+        productName:
+          products.find((productRow: any) => productRow.id === productId)?.name ??
+          "Unknown product",
+        plannedQty: 0,
+      };
+      existing.plannedQty += plannedQty;
+      grouped.set(productId, existing);
+    }
+    const productActuals = Array.from(grouped.entries()).map(([productId, value]) => ({
+      productId,
+      productName: value.productName,
+      plannedQty: value.plannedQty,
+      actualQty: String(Math.trunc(value.plannedQty)),
+    }));
+    if (productActuals.length === 0) {
+      setError("No production targets with quantity found for this cycle.");
+      return;
+    }
+    const cycleLabel = cycle.harvest_date
+      ? `Harvest: ${formatDate(cycle.harvest_date)}`
+      : `${formatDate(cycle.start_date)} – ${formatDate(cycle.end_date)}`;
+    setCompletionDraft({
+      cycleId: cycle.id,
+      cycleLabel,
+      productActuals,
+    });
+  };
+
+  const handleCompleteProduction = async (
+    cycle: any,
+    actualQtyByProductId: Record<string, number>,
+  ) => {
     if (!user) return;
     setError(null);
     setCompletingCycleId(cycle.id);
     try {
       const completionMarker = `cycle:${cycle.id}:completion_usage`;
-      const cycleTargets = targets.filter(
-        (t: any) => t.production_cycle === cycle.id,
-      );
+      const cycleTargets = targets.filter((t: any) => t.production_cycle === cycle.id);
       const totalQty = cycleTargets.reduce(
         (sum: number, t: any) =>
           sum +
@@ -230,7 +283,7 @@ export default function CyclesPage() {
             "Content-Type": "application/json",
             Authorization: `Bearer ${token}`,
           },
-          body: JSON.stringify({ cycleId: cycle.id }),
+          body: JSON.stringify({ cycleId: cycle.id, actualQtyByProductId }),
         });
         const syncPayload = (await syncResponse.json()) as {
           error?: string;
@@ -395,8 +448,7 @@ export default function CyclesPage() {
 
         const batchRows = cycleTargets
           .map((target: any) => {
-            const qty =
-              Number(target.quantity_to_produce ?? target.target_units ?? 0) || 0;
+            const qty = Number(actualQtyByProductId[String(target.product ?? "")] ?? 0) || 0;
             if (!target.product || qty <= 0) return null;
             return {
               user_id: user.id,
@@ -474,6 +526,30 @@ export default function CyclesPage() {
     } finally {
       setCompletingCycleId(null);
     }
+  };
+
+  const submitCompletionDraft = async () => {
+    if (!completionDraft) return;
+    const actualQtyByProductId: Record<string, number> = {};
+    for (const line of completionDraft.productActuals) {
+      const trimmed = line.actualQty.trim();
+      if (!trimmed) {
+        setError(`Actual quantity is required for ${line.productName}.`);
+        return;
+      }
+      if (!/^\d+$/.test(trimmed)) {
+        setError(`Actual quantity for ${line.productName} must be a non-negative integer.`);
+        return;
+      }
+      actualQtyByProductId[line.productId] = Number(trimmed);
+    }
+    const cycle = cycles.find((row: any) => row.id === completionDraft.cycleId);
+    if (!cycle) {
+      setError("Production cycle not found.");
+      return;
+    }
+    setCompletionDraft(null);
+    await handleCompleteProduction(cycle, actualQtyByProductId);
   };
 
   const batchDetailRows = batches
@@ -685,7 +761,7 @@ export default function CyclesPage() {
                             type="button"
                             disabled={completingCycleId === c.id}
                             className="text-[11px] font-medium text-emerald-700 underline disabled:cursor-not-allowed disabled:opacity-60"
-                            onClick={() => handleCompleteProduction(c)}
+                            onClick={() => beginCompleteProduction(c)}
                           >
                             {completingCycleId === c.id
                               ? "Completing…"
@@ -751,6 +827,69 @@ export default function CyclesPage() {
               </table>
             </div>
           </section>
+        )}
+
+        {completionDraft && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+            <div className="w-full max-w-xl rounded-md border border-zinc-200 bg-white p-4">
+              <h2 className="text-sm font-semibold text-zinc-900">
+                Complete production with actual output
+              </h2>
+              <p className="mt-1 text-xs text-zinc-600">
+                {completionDraft.cycleLabel}
+              </p>
+              <div className="mt-3 space-y-2">
+                {completionDraft.productActuals.map((line) => (
+                  <div key={line.productId} className="grid grid-cols-12 items-center gap-2 text-xs">
+                    <div className="col-span-7">
+                      <p className="font-medium text-zinc-900">{line.productName}</p>
+                      <p className="text-zinc-600">Planned: {line.plannedQty}</p>
+                    </div>
+                    <label className="col-span-5">
+                      <span className="mb-1 block text-zinc-700">Actual produced</span>
+                      <input
+                        type="number"
+                        min={0}
+                        step={1}
+                        value={line.actualQty}
+                        onChange={(e) =>
+                          setCompletionDraft((prev) =>
+                            prev
+                              ? {
+                                  ...prev,
+                                  productActuals: prev.productActuals.map((entry) =>
+                                    entry.productId === line.productId
+                                      ? { ...entry, actualQty: e.target.value }
+                                      : entry,
+                                  ),
+                                }
+                              : prev,
+                          )
+                        }
+                        className="w-full rounded-md border border-zinc-300 px-2 py-1.5 shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                      />
+                    </label>
+                  </div>
+                ))}
+              </div>
+              <div className="mt-4 flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setCompletionDraft(null)}
+                  className="rounded-md border border-zinc-300 bg-white px-3 py-1.5 text-xs font-medium text-zinc-800 hover:bg-zinc-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={submitCompletionDraft}
+                  className="rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-700"
+                >
+                  Submit actuals and complete
+                </button>
+              </div>
+            </div>
+          </div>
         )}
       </div>
     </AuthGuard>

@@ -77,7 +77,10 @@ async function ensureInventoryRowsForProducedProducts(params: {
 export async function POST(request: Request) {
   try {
     const user = await requireApiUserFromBearerToken(request);
-    const body = (await request.json()) as { cycleId?: string };
+    const body = (await request.json()) as {
+      cycleId?: string;
+      actualQtyByProductId?: Record<string, number>;
+    };
     const cycleId = body.cycleId?.trim();
     if (!cycleId) {
       return NextResponse.json({ error: "Missing cycleId." }, { status: 400 });
@@ -116,12 +119,39 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: targetsError.message }, { status: 500 });
     }
 
-    const quantityByProductId = new Map<string, number>();
+    const validProductIds = new Set<string>();
     for (const target of (targets ?? []) as CompletionTargetRow[]) {
       if (!target.product) continue;
-      const qty = Number(target.quantity_to_produce ?? target.target_units ?? 0) || 0;
-      if (qty <= 0) continue;
-      quantityByProductId.set(target.product, (quantityByProductId.get(target.product) ?? 0) + qty);
+      validProductIds.add(target.product);
+    }
+
+    const submittedActuals = body.actualQtyByProductId ?? {};
+    const quantityByProductId = new Map<string, number>();
+    for (const [productId, rawQty] of Object.entries(submittedActuals)) {
+      if (!validProductIds.has(productId)) {
+        return NextResponse.json(
+          { error: `Actual quantity submitted for product not in cycle targets: ${productId}` },
+          { status: 400 },
+        );
+      }
+      if (!Number.isFinite(rawQty) || !Number.isInteger(rawQty) || rawQty < 0) {
+        return NextResponse.json(
+          { error: `Actual quantity for product ${productId} must be a non-negative integer.` },
+          { status: 400 },
+        );
+      }
+      if (rawQty === 0) continue;
+      quantityByProductId.set(productId, rawQty);
+    }
+
+    const missingActuals = Array.from(validProductIds).filter(
+      (productId) => !Object.prototype.hasOwnProperty.call(submittedActuals, productId),
+    );
+    if (missingActuals.length > 0) {
+      return NextResponse.json(
+        { error: "Missing actual quantities for one or more target products.", missingProductIds: missingActuals },
+        { status: 400 },
+      );
     }
 
     if (quantityByProductId.size === 0) {
