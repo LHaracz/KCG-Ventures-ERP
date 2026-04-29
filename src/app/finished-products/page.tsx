@@ -106,17 +106,25 @@ export default function FinishedProductsPage() {
         ok?: boolean;
         synced?: number;
         failed?: Array<{ productId: string; error: string }>;
+        failedCount?: number;
         error?: string;
       };
       if (!response.ok) {
         throw new Error(payload.error || "Manual sync failed.");
       }
-      const failedCount = payload.failed?.length ?? 0;
-      setSyncMessage(
-        failedCount
-          ? `Synced ${payload.synced ?? 0} products, ${failedCount} failed.`
-          : `Synced ${payload.synced ?? 0} products to Shopify.`,
-      );
+      const failedCount = payload.failedCount ?? payload.failed?.length ?? 0;
+      if (payload.ok === false || failedCount > 0) {
+        const sampleFailures = (payload.failed ?? [])
+          .slice(0, 3)
+          .map((entry) => `${entry.productId}: ${entry.error}`)
+          .join(" | ");
+        throw new Error(
+          sampleFailures
+            ? `Synced ${payload.synced ?? 0} products, ${failedCount} failed. ${sampleFailures}`
+            : `Synced ${payload.synced ?? 0} products, ${failedCount} failed.`,
+        );
+      }
+      setSyncMessage(`Synced ${payload.synced ?? 0} products to Shopify.`);
     } catch (syncError) {
       setError(syncError instanceof Error ? syncError.message : "Manual sync failed.");
     } finally {

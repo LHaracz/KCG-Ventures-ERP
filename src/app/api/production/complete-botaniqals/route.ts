@@ -15,6 +15,7 @@ type CompletionApiResponse = {
   updated: number;
   skipped: number;
   missingProductIds?: string[];
+  failedSyncProducts?: Array<{ productId: string; error: string }>;
 };
 
 async function ensureInventoryRowsForProducedProducts(params: {
@@ -195,6 +196,7 @@ export async function POST(request: Request) {
 
     let updated = 0;
     let skipped = 0;
+    const failedSyncProducts: Array<{ productId: string; error: string }> = [];
 
     for (const [productId, qty] of quantityByProductId) {
       const inventoryProductId = inventoryIdByProductId.get(productId);
@@ -219,8 +221,30 @@ export async function POST(request: Request) {
         return NextResponse.json({ error: eventError.message }, { status: 500 });
       }
 
-      await addInventory(inventoryProductId, Math.trunc(qty));
-      updated += 1;
+      try {
+        await addInventory(inventoryProductId, Math.trunc(qty), {
+          requireShopifySync: true,
+        });
+        updated += 1;
+      } catch (error) {
+        failedSyncProducts.push({
+          productId,
+          error: error instanceof Error ? error.message : "Unknown Shopify sync failure",
+        });
+      }
+    }
+
+    if (failedSyncProducts.length > 0) {
+      return NextResponse.json(
+        {
+          error:
+            "Finished inventory was updated, but Shopify sync failed for one or more products. Use Sync to Shopify after resolving mapping/config issues.",
+          updated,
+          skipped,
+          failedSyncProducts,
+        },
+        { status: 502 },
+      );
     }
 
     const response: CompletionApiResponse = { ok: true, updated, skipped };

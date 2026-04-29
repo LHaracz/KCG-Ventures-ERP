@@ -27,6 +27,10 @@ type InventoryMutationResult = {
   shopifySyncError?: string;
 };
 
+type InventoryMutationOptions = {
+  requireShopifySync?: boolean;
+};
+
 function requireAdminClient() {
   if (!supabaseAdmin) {
     throw new Error("SUPABASE_SERVICE_ROLE_KEY is not configured.");
@@ -181,6 +185,7 @@ async function mutateInventory(
   productId: string,
   qtyDelta: number,
   reason: InventoryChangeReason,
+  options?: InventoryMutationOptions,
 ): Promise<InventoryMutationResult> {
   const admin = requireAdminClient();
   const safeDelta = toSafeInteger(qtyDelta);
@@ -246,6 +251,9 @@ async function mutateInventory(
   const shopifySync = await syncShopifyGroupToAvailableQty(updatedGroupRows);
 
   if (!shopifySync.ok) {
+    if (options?.requireShopifySync) {
+      throw new Error(shopifySync.error || "Shopify mirror sync failed.");
+    }
     console.error(`Shopify mirror sync failed for product group ${productGroupId}: ${shopifySync.error}`);
   }
 
@@ -257,20 +265,28 @@ async function mutateInventory(
   };
 }
 
-export async function addInventory(productId: string, qty: number): Promise<InventoryMutationResult> {
+export async function addInventory(
+  productId: string,
+  qty: number,
+  options?: InventoryMutationOptions,
+): Promise<InventoryMutationResult> {
   const safeQty = toSafeInteger(qty);
   if (safeQty <= 0) {
     throw new Error("addInventory requires a positive quantity.");
   }
-  return mutateInventory(productId, safeQty, "production");
+  return mutateInventory(productId, safeQty, "production", options);
 }
 
-export async function subtractInventory(productId: string, qty: number): Promise<InventoryMutationResult> {
+export async function subtractInventory(
+  productId: string,
+  qty: number,
+  options?: InventoryMutationOptions,
+): Promise<InventoryMutationResult> {
   const safeQty = toSafeInteger(qty);
   if (safeQty <= 0) {
     throw new Error("subtractInventory requires a positive quantity.");
   }
-  return mutateInventory(productId, -safeQty, "order");
+  return mutateInventory(productId, -safeQty, "order", options);
 }
 
 export async function setInventoryCycleCount(

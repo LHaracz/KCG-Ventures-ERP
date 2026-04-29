@@ -290,9 +290,18 @@ export default function CyclesPage() {
           updated?: number;
           skipped?: number;
           missingProductIds?: string[];
+          failedSyncProducts?: Array<{ productId: string; error: string }>;
         };
         if (!syncResponse.ok) {
-          throw new Error(syncPayload.error || "Failed to update finished product inventory.");
+          const syncFailurePreview = (syncPayload.failedSyncProducts ?? [])
+            .slice(0, 3)
+            .map((entry) => `${entry.productId}: ${entry.error}`)
+            .join(" | ");
+          throw new Error(
+            syncFailurePreview
+              ? `${syncPayload.error || "Failed to update finished product inventory."} ${syncFailurePreview}`
+              : syncPayload.error || "Failed to update finished product inventory.",
+          );
         }
         if ((syncPayload.skipped ?? 0) > 0) {
           throw new Error(

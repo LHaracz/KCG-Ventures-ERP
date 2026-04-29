@@ -49,6 +49,7 @@ export async function POST(request: Request) {
       ok: result.failed.length === 0,
       synced: result.synced,
       failed: result.failed,
+      failedCount: result.failed.length,
       debugRunId: runId,
     });
   } catch (error) {
