@@ -1,3 +1,5 @@
+import { resolveShopifyAccessToken } from "@/lib/shopifyAccessToken";
+
 type InventoryAdjustmentChange = {
   delta: number;
   changeFromQuantity: number;
@@ -22,16 +24,9 @@ function toLocationGid(value: string): string {
   return `gid://shopify/Location/${value}`;
 }
 
-function getShopifyConfig() {
+async function getShopifyConfig() {
   const shopDomain = process.env.SHOPIFY_SHOP_DOMAIN ?? "";
-  const accessTokenFromPrimary = process.env.SHOPIFY_ACCESS_TOKEN ?? "";
-  const accessTokenFromAdmin = process.env.SHOPIFY_ADMIN_ACCESS_TOKEN ?? "";
-  const accessToken = accessTokenFromPrimary || accessTokenFromAdmin;
-  const tokenSource = accessTokenFromPrimary
-    ? "SHOPIFY_ACCESS_TOKEN"
-    : accessTokenFromAdmin
-      ? "SHOPIFY_ADMIN_ACCESS_TOKEN"
-      : "none";
+  const { accessToken, tokenSource } = await resolveShopifyAccessToken();
   const apiVersion = process.env.SHOPIFY_API_VERSION ?? DEFAULT_SHOPIFY_API_VERSION;
   // #region agent log
   fetch("http://127.0.0.1:7579/ingest/75023274-b317-4510-8d56-7dafb38622b5", {
@@ -56,7 +51,7 @@ function getShopifyConfig() {
 
   if (!shopDomain || !accessToken) {
     throw new Error(
-      `Missing Shopify configuration: SHOPIFY_SHOP_DOMAIN and token (source: ${tokenSource}). Expected SHOPIFY_ACCESS_TOKEN or SHOPIFY_ADMIN_ACCESS_TOKEN.`,
+      `Missing Shopify configuration: SHOPIFY_SHOP_DOMAIN and token (source: ${tokenSource}). Expected SHOPIFY_CLIENT_ID + SHOPIFY_CLIENT_SECRET, or SHOPIFY_ACCESS_TOKEN / SHOPIFY_ADMIN_ACCESS_TOKEN.`,
     );
   }
 
@@ -74,7 +69,7 @@ function getShopifyConfig() {
 export async function adjustShopifyInventoryQuantity(
   change: InventoryAdjustmentChange,
 ): Promise<ShopifyInventorySyncResult> {
-  const { endpoint, accessToken, tokenSource } = getShopifyConfig();
+  const { endpoint, accessToken, tokenSource } = await getShopifyConfig();
   const idempotencyKey = `inv-${change.inventoryItemId}-${change.locationId}-${change.changeFromQuantity}-${change.delta}-${Date.now()}`;
 
   const query = `
@@ -145,7 +140,7 @@ export async function fetchShopifyAvailableQuantity(
   inventoryItemId: string,
   locationId: string,
 ): Promise<number> {
-  const { endpoint, accessToken, tokenSource } = getShopifyConfig();
+  const { endpoint, accessToken, tokenSource } = await getShopifyConfig();
 
   const query = `
     query InventoryAvailable($inventoryItemId: ID!, $locationId: ID!) {
