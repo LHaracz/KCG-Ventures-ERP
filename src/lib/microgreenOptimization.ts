@@ -207,10 +207,7 @@ export function optimizeMicrogreenPlan(input: OptimizationInput): OptimizationRe
 
   dfs(0, initialAvailable, 0);
 
-  const winner =
-    best ?? null;
-
-  if (!winner) {
+  if (!best) {
     const emptyLeftovers = Object.entries(initialAvailable)
       .map(([microgreenId, leftoverOz]) => ({
         microgreenId,
@@ -232,6 +229,7 @@ export function optimizeMicrogreenPlan(input: OptimizationInput): OptimizationRe
         "No feasible plan satisfies current mix constraints (mix share cap, all feasible mixes represented, and balance spread).",
     };
   }
+  const winner: Candidate = best;
 
   const mixes = sortedMixes
     .map((mix, idx) => ({
