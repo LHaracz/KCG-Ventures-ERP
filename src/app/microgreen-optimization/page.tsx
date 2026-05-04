@@ -123,6 +123,8 @@ export default function MicrogreenOptimizationPage() {
     typeof optimizeMicrogreenPlan
   > | null>(null);
   const [optimizationError, setOptimizationError] = useState<string | null>(null);
+  const [maxMixSharePercent, setMaxMixSharePercent] = useState(45);
+  const [maxMixSpread, setMaxMixSpread] = useState(5);
   const [loadingDefaults, setLoadingDefaults] = useState(false);
 
   const loadData = async () => {
@@ -481,6 +483,9 @@ export default function MicrogreenOptimizationPage() {
       return;
     }
 
+    const normalizedMixShare = Math.min(100, Math.max(0, Number(maxMixSharePercent) || 0)) / 100;
+    const normalizedMixSpread = Math.max(0, Math.floor(Number(maxMixSpread) || 0));
+
     const modelMixes: OptimizationMix[] = mixes.map((mix: any) => ({
       id: mix.id,
       name: mix.name,
@@ -499,7 +504,14 @@ export default function MicrogreenOptimizationPage() {
       mixes: modelMixes,
       singleUnitSizeOz: 2,
       singleSalePrice: 6,
+      maxMixShare: normalizedMixShare,
+      maxMixSpread: normalizedMixSpread,
     });
+    if (result.infeasibleReason) {
+      setOptimizationError(result.infeasibleReason);
+      setOptimizationResult(null);
+      return;
+    }
     setOptimizationError(null);
     setOptimizationResult(result);
   };
@@ -932,6 +944,29 @@ export default function MicrogreenOptimizationPage() {
                 className="rounded-md border border-zinc-300 px-2 py-1"
               />
             </label>
+            <label className="flex items-center gap-2 text-xs">
+              Max mix share (%)
+              <input
+                type="number"
+                min={0}
+                max={100}
+                step={1}
+                value={maxMixSharePercent}
+                onChange={(e) => setMaxMixSharePercent(Number(e.target.value || 0))}
+                className="w-20 rounded-md border border-zinc-300 px-2 py-1"
+              />
+            </label>
+            <label className="flex items-center gap-2 text-xs">
+              Max mix spread
+              <input
+                type="number"
+                min={0}
+                step={1}
+                value={maxMixSpread}
+                onChange={(e) => setMaxMixSpread(Number(e.target.value || 0))}
+                className="w-20 rounded-md border border-zinc-300 px-2 py-1"
+              />
+            </label>
             <button
               type="button"
               onClick={handleRunOptimization}
@@ -950,6 +985,11 @@ export default function MicrogreenOptimizationPage() {
           {optimizationError && (
             <p className="mb-2 text-xs text-red-600">{optimizationError}</p>
           )}
+          <p className="mb-2 text-[11px] text-zinc-600">
+            Constraint rules: mix containers are capped at {Math.max(0, Math.min(100, maxMixSharePercent))}% of
+            total containers, and all feasible active mixes are produced with counts kept within{" "}
+            {Math.max(0, Math.floor(maxMixSpread))} containers of each other.
+          </p>
 
           <div className="mb-3 grid gap-2 sm:grid-cols-2 md:grid-cols-4">
             {Object.entries(availableOzByMicrogreen)

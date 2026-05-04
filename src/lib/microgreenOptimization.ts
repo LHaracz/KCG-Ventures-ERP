@@ -18,6 +18,8 @@ export type OptimizationInput = {
   mixes: OptimizationMix[];
   singleUnitSizeOz?: number;
   singleSalePrice?: number;
+  maxMixShare?: number;
+  maxMixSpread?: number;
 };
 
 export type OptimizationResult = {
@@ -30,6 +32,7 @@ export type OptimizationResult = {
   mixes: Array<{ mixId: string; mixName: string; containers: number }>;
   singles: Array<{ microgreenId: string; microgreenName: string; containers: number }>;
   leftoversOz: Array<{ microgreenId: string; microgreenName: string; leftoverOz: number }>;
+  infeasibleReason?: string;
 };
 
 type Candidate = {
@@ -103,9 +106,40 @@ function isBetter(a: Candidate, b: Candidate | null): boolean {
   return false;
 }
 
+function isFeasibleCandidate(params: {
+  candidate: Candidate;
+  feasibleMixIndices: Set<number>;
+  maxMixShare: number;
+  maxMixSpread: number;
+}): boolean {
+  const { candidate, feasibleMixIndices, maxMixShare, maxMixSpread } = params;
+  const mixContainers = candidate.mixCounts.reduce((sum, count) => sum + count, 0);
+  const totalContainers = mixContainers + Object.values(candidate.singles).reduce((sum, n) => sum + n, 0);
+  if (totalContainers > 0) {
+    const mixShare = mixContainers / totalContainers;
+    if (mixShare > maxMixShare + EPSILON) return false;
+  }
+
+  const feasibleCounts: number[] = [];
+  for (const mixIdx of feasibleMixIndices) {
+    const count = candidate.mixCounts[mixIdx] ?? 0;
+    if (count < 1) return false;
+    feasibleCounts.push(count);
+  }
+  if (feasibleCounts.length > 1) {
+    const minCount = Math.min(...feasibleCounts);
+    const maxCount = Math.max(...feasibleCounts);
+    if (maxCount - minCount > maxMixSpread + EPSILON) return false;
+  }
+
+  return true;
+}
+
 export function optimizeMicrogreenPlan(input: OptimizationInput): OptimizationResult {
   const singleUnitSizeOz = input.singleUnitSizeOz ?? 2;
   const singleSalePrice = input.singleSalePrice ?? 6;
+  const maxMixShare = input.maxMixShare ?? 0.45;
+  const maxMixSpread = input.maxMixSpread ?? 5;
   const activeMixes = input.mixes.filter((mix) => mix.isActive && mix.components.length > 0);
   const initialAvailable = { ...input.availableOzByMicrogreen };
 
@@ -116,6 +150,12 @@ export function optimizeMicrogreenPlan(input: OptimizationInput): OptimizationRe
     return valueB - valueA;
   });
   const sortedMixes = mixIndices.map((i) => activeMixes[i]);
+  const feasibleMixIndices = new Set<number>();
+  for (let idx = 0; idx < sortedMixes.length; idx += 1) {
+    if (getMaxMixCount(sortedMixes[idx], initialAvailable) > 0) {
+      feasibleMixIndices.add(idx);
+    }
+  }
 
   let best: Candidate | null = null;
   const currentMixCounts = new Array(sortedMixes.length).fill(0);
@@ -139,6 +179,16 @@ export function optimizeMicrogreenPlan(input: OptimizationInput): OptimizationRe
         singleUnitSizeOz,
         singleSalePrice,
       );
+      if (
+        !isFeasibleCandidate({
+          candidate: leaf,
+          feasibleMixIndices,
+          maxMixShare,
+          maxMixSpread,
+        })
+      ) {
+        return;
+      }
       if (isBetter(leaf, best)) {
         best = leaf;
       }
@@ -158,8 +208,30 @@ export function optimizeMicrogreenPlan(input: OptimizationInput): OptimizationRe
   dfs(0, initialAvailable, 0);
 
   const winner =
-    best ??
-    evaluateLeaf(sortedMixes, new Array(sortedMixes.length).fill(0), initialAvailable, singleUnitSizeOz, singleSalePrice);
+    best ?? null;
+
+  if (!winner) {
+    const emptyLeftovers = Object.entries(initialAvailable)
+      .map(([microgreenId, leftoverOz]) => ({
+        microgreenId,
+        microgreenName: input.microgreenNames[microgreenId] ?? "Unknown",
+        leftoverOz: Math.max(0, leftoverOz),
+      }))
+      .sort((a, b) => a.microgreenName.localeCompare(b.microgreenName));
+    return {
+      totals: {
+        profit: 0,
+        containers: 0,
+        mixContainers: 0,
+        singleContainers: 0,
+      },
+      mixes: [],
+      singles: [],
+      leftoversOz: emptyLeftovers,
+      infeasibleReason:
+        "No feasible plan satisfies current mix constraints (mix share cap, all feasible mixes represented, and balance spread).",
+    };
+  }
 
   const mixes = sortedMixes
     .map((mix, idx) => ({
