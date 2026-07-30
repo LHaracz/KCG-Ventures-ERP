@@ -3,6 +3,11 @@ import { requireApiUserFromBearerToken } from "@/lib/apiAuth";
 import { addInventory } from "@/lib/inventorySync";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { normalizeBusinessType } from "@/lib/businessType";
+import {
+  notifySheetsProductionIn,
+  productionDateFromCycleEndDate,
+  type SheetsProductionRecord,
+} from "@/lib/sheetsProductionWebhook";
 
 type CompletionTargetRow = {
   product: string | null;
@@ -93,7 +98,7 @@ export async function POST(request: Request) {
 
     const { data: cycle, error: cycleError } = await supabaseAdmin
       .from("production_cycles")
-      .select("id, user_id, business_type, brand")
+      .select("id, user_id, business_type, brand, end_date")
       .eq("id", cycleId)
       .eq("user_id", user.id)
       .single();
@@ -162,6 +167,25 @@ export async function POST(request: Request) {
     const productIds = Array.from(quantityByProductId.keys());
     await ensureInventoryRowsForProducedProducts({ productIds });
 
+    const { data: productRows, error: productRowsError } = await supabaseAdmin
+      .from("products")
+      .select("id, name")
+      .in("id", productIds);
+
+    if (productRowsError) {
+      return NextResponse.json({ error: productRowsError.message }, { status: 500 });
+    }
+
+    const productNameById = new Map<string, string>();
+    for (const row of productRows ?? []) {
+      if (!row.id || !row.name) continue;
+      productNameById.set(String(row.id), String(row.name));
+    }
+
+    const productionDate = productionDateFromCycleEndDate(
+      (cycle as { end_date?: string | null }).end_date,
+    );
+
     const { data: inventoryRows, error: inventoryError } = await supabaseAdmin
       .from("inventory")
       .select("id, product_id")
@@ -197,6 +221,7 @@ export async function POST(request: Request) {
     let updated = 0;
     let skipped = 0;
     const failedSyncProducts: Array<{ productId: string; error: string }> = [];
+    const sheetsRecords: SheetsProductionRecord[] = [];
 
     for (const [productId, qty] of quantityByProductId) {
       const inventoryProductId = inventoryIdByProductId.get(productId);
@@ -226,6 +251,20 @@ export async function POST(request: Request) {
           requireShopifySync: true,
         });
         updated += 1;
+        const productName = productNameById.get(productId);
+        if (productName) {
+          sheetsRecords.push({
+            cycle_id: `${cycleId}:${productId}`,
+            product: productName,
+            quantity_produced: Math.trunc(qty),
+            production_date: productionDate,
+          });
+        } else {
+          console.error(
+            "[complete-botaniqals] Missing products.name for Sheets webhook record.",
+            { cycleId, productId },
+          );
+        }
       } catch (error) {
         failedSyncProducts.push({
           productId,
@@ -233,6 +272,8 @@ export async function POST(request: Request) {
         });
       }
     }
+
+    await notifySheetsProductionIn(sheetsRecords);
 
     if (failedSyncProducts.length > 0) {
       return NextResponse.json(
