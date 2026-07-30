@@ -275,7 +275,7 @@ export default function CyclesPage() {
         } = await supabase.auth.getSession();
         const token = session?.access_token;
         if (!token) {
-          throw new Error("Unable to verify your session for BotanIQals inventory sync.");
+          throw new Error("Unable to verify your session for Sheets production notify.");
         }
         const syncResponse = await fetch("/api/production/complete-botaniqals", {
           method: "POST",
@@ -287,25 +287,12 @@ export default function CyclesPage() {
         });
         const syncPayload = (await syncResponse.json()) as {
           error?: string;
-          updated?: number;
-          skipped?: number;
+          sent?: number;
           missingProductIds?: string[];
-          failedSyncProducts?: Array<{ productId: string; error: string }>;
         };
         if (!syncResponse.ok) {
-          const syncFailurePreview = (syncPayload.failedSyncProducts ?? [])
-            .slice(0, 3)
-            .map((entry) => `${entry.productId}: ${entry.error}`)
-            .join(" | ");
           throw new Error(
-            syncFailurePreview
-              ? `${syncPayload.error || "Failed to update finished product inventory."} ${syncFailurePreview}`
-              : syncPayload.error || "Failed to update finished product inventory.",
-          );
-        }
-        if ((syncPayload.skipped ?? 0) > 0) {
-          throw new Error(
-            `Finished product inventory update skipped ${syncPayload.skipped} product mapping(s). Populate inventory.product_id for all produced BotanIQals products and retry.`,
+            syncPayload.error || "Failed to notify Google Sheets of production.",
           );
         }
       }
