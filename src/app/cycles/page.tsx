@@ -442,52 +442,41 @@ export default function CyclesPage() {
           completed_at: string;
         };
 
-        const batchRows = cycleTargets
-          .map((target: any) => {
-            const qty = Number(actualQtyByProductId[String(target.product ?? "")] ?? 0) || 0;
-            if (!target.product || qty <= 0) return null;
-            return {
+        const nowIso = new Date().toISOString();
+        const batchByProductId = new Map<string, BotaniqalsBatchRow>();
+        for (const target of cycleTargets) {
+          const productId = target.product ? String(target.product) : "";
+          if (!productId) continue;
+          const qty =
+            Number(actualQtyByProductId[productId] ?? 0) || 0;
+          if (qty <= 0) continue;
+          const existing = batchByProductId.get(productId);
+          if (existing) {
+            existing.quantity_produced += qty;
+          } else {
+            batchByProductId.set(productId, {
               user_id: user.id,
               production_cycle_id: cycle.id,
-              product_id: target.product,
+              product_id: productId,
               quantity_produced: qty,
               production_start_at: cycle.start_date ?? null,
-              production_end_at: new Date().toISOString(),
-              completed_at: new Date().toISOString(),
-            };
-          })
-          .filter((row): row is BotaniqalsBatchRow => row !== null);
-
-        if (batchRows.length > 0) {
-          for (const batchRow of batchRows) {
-            const { data: existingBatch, error: existingBatchErr } = await supabase
-              .from("botaniqals_production_batches")
-              .select("id")
-              .eq("user_id", user.id)
-              .eq("production_cycle_id", cycle.id)
-              .eq("product_id", batchRow.product_id)
-              .is("product_variant_id", null)
-              .maybeSingle();
-            if (existingBatchErr) throw existingBatchErr;
-
-            if (existingBatch?.id) {
-              const { error: updateBatchErr } = await supabase
-                .from("botaniqals_production_batches")
-                .update({
-                  quantity_produced: batchRow.quantity_produced,
-                  production_start_at: batchRow.production_start_at,
-                  production_end_at: batchRow.production_end_at,
-                  completed_at: batchRow.completed_at,
-                })
-                .eq("id", existingBatch.id);
-              if (updateBatchErr) throw updateBatchErr;
-            } else {
-              const { error: insertBatchErr } = await supabase
-                .from("botaniqals_production_batches")
-                .insert(batchRow);
-              if (insertBatchErr) throw insertBatchErr;
-            }
+              production_end_at: nowIso,
+              completed_at: nowIso,
+            });
           }
+        }
+
+        const batchRows = Array.from(batchByProductId.values());
+        if (batchRows.length > 0) {
+          // Conflict target matches uq_botaniqals_batches_cycle_product_null_variant
+          // (product_variant_id omitted / NULL).
+          const { error: upsertBatchErr } = await supabase
+            .from("botaniqals_production_batches")
+            .upsert(batchRows, {
+              onConflict: "production_cycle_id,product_id",
+              ignoreDuplicates: false,
+            });
+          if (upsertBatchErr) throw upsertBatchErr;
         }
       }
 
