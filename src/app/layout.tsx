@@ -30,7 +30,7 @@ export default function RootLayout({
         className={`${geistSans.variable} ${geistMono.variable} antialiased bg-background text-foreground`}
       >
         <SupabaseProvider>
-          <div className="min-h-screen flex flex-col">
+          <div className="min-h-screen md:flex">
             <Navigation />
             <main className="flex-1 bg-zinc-50 px-4 py-6 sm:px-6 lg:px-8">
               {children}
@@ -41,4 +41,3 @@ export default function RootLayout({
     </html>
   );
 }
-
