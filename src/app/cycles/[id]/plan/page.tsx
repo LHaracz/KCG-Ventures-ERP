@@ -9,6 +9,10 @@ import {
   computeFeasibility,
   computeShortages,
 } from "@/lib/feasibility";
+import {
+  deductRawMaterialsForCycle,
+  undoRawMaterialDeductionForCycle,
+} from "@/lib/rawMaterialDeduction";
 import { useSupabase } from "@/components/InstantProvider";
 import { normalizeBusinessType } from "@/lib/businessType";
 
@@ -40,6 +44,9 @@ export default function CyclePlanPage() {
   const [machine, setMachine] = useState<any | null>(null);
   const [freezeDryerProfiles, setFreezeDryerProfiles] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [markingProduced, setMarkingProduced] = useState(false);
+  const [undoingProduced, setUndoingProduced] = useState(false);
+  const [rawMaterialsError, setRawMaterialsError] = useState<string | null>(null);
 
   const [targetForm, setTargetForm] = useState<TargetForm>({
     product_id: "",
@@ -284,6 +291,54 @@ export default function CyclePlanPage() {
       setTargets((prev) => prev.filter((t) => t.id !== id));
     } catch (err: any) {
       setTargetError(err.message || "Failed to delete target.");
+    }
+  };
+
+  const handleMarkAsProduced = async () => {
+    if (!user || !cycle) return;
+    setRawMaterialsError(null);
+    setMarkingProduced(true);
+    try {
+      if (!targets.length) {
+        setRawMaterialsError("No production targets found for this cycle.");
+        return;
+      }
+      const result = await deductRawMaterialsForCycle({
+        supabase,
+        user,
+        cycle,
+        cycleTargets: targets,
+        noteLabel: "production",
+      });
+      if (!result.ok) return;
+      setCycle((prev: any) =>
+        prev ? { ...prev, raw_materials_deducted_at: new Date().toISOString() } : prev,
+      );
+    } catch (err: any) {
+      setRawMaterialsError(err.message || "Failed to mark production as produced.");
+    } finally {
+      setMarkingProduced(false);
+    }
+  };
+
+  const handleUndoRawMaterials = async () => {
+    if (!user || !cycle) return;
+    const confirmed =
+      typeof window === "undefined" ||
+      window.confirm(
+        "Undo this? The raw materials that were deducted will be added back to inventory.",
+      );
+    if (!confirmed) return;
+    setRawMaterialsError(null);
+    setUndoingProduced(true);
+    try {
+      const result = await undoRawMaterialDeductionForCycle({ supabase, user, cycle });
+      if (!result.ok) return;
+      setCycle((prev: any) => (prev ? { ...prev, raw_materials_deducted_at: null } : prev));
+    } catch (err: any) {
+      setRawMaterialsError(err.message || "Failed to undo raw material deduction.");
+    } finally {
+      setUndoingProduced(false);
     }
   };
 
@@ -582,6 +637,39 @@ export default function CyclePlanPage() {
                 ? `Harvest: ${formatDate(cycle.harvest_date)}`
                 : `${formatDate(cycle.start_date)} – ${formatDate(cycle.end_date)}`}{" "}
               · {isMiniLeaf ? "MiniLeaf" : "BotanIQals"} · Status: {cycle.status}
+            </p>
+          )}
+          {cycle && !isMiniLeaf && cycle.status !== "completed" && (
+            <div className="mt-2 flex items-center gap-2 text-xs">
+              {cycle.raw_materials_deducted_at ? (
+                <>
+                  <span className="font-medium text-emerald-700">
+                    Raw materials deducted ✓
+                  </span>
+                  <button
+                    type="button"
+                    disabled={undoingProduced}
+                    onClick={handleUndoRawMaterials}
+                    className="font-medium text-amber-700 underline disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {undoingProduced ? "Undoing…" : "Undo"}
+                  </button>
+                </>
+              ) : (
+                <button
+                  type="button"
+                  disabled={markingProduced}
+                  onClick={handleMarkAsProduced}
+                  className="rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white shadow-sm hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-70"
+                >
+                  {markingProduced ? "Marking…" : "Mark as Produced"}
+                </button>
+              )}
+            </div>
+          )}
+          {rawMaterialsError && (
+            <p className="mt-2 text-xs text-red-600" role="alert">
+              {rawMaterialsError}
             </p>
           )}
         </header>

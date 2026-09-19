@@ -6,6 +6,10 @@ import { AuthGuard } from "@/components/AuthGuard";
 import { formatDate } from "@/lib/date";
 import { useSupabase } from "@/components/InstantProvider";
 import { normalizeBusinessType } from "@/lib/businessType";
+import {
+  deductRawMaterialsForCycle,
+  undoRawMaterialDeductionForCycle,
+} from "@/lib/rawMaterialDeduction";
 
 type BusinessType = "MiniLeaf" | "BotanIQals";
 
@@ -45,6 +49,12 @@ export default function CyclesPage() {
   const [completingCycleId, setCompletingCycleId] = useState<string | null>(
     null,
   );
+  const [markingProducedCycleId, setMarkingProducedCycleId] = useState<
+    string | null
+  >(null);
+  const [undoingProducedCycleId, setUndoingProducedCycleId] = useState<
+    string | null
+  >(null);
   const [completionDraft, setCompletionDraft] = useState<CompletionActualsDraft | null>(
     null,
   );
@@ -255,7 +265,6 @@ export default function CyclesPage() {
     setError(null);
     setCompletingCycleId(cycle.id);
     try {
-      const completionMarker = `cycle:${cycle.id}:completion_usage`;
       const cycleTargets = targets.filter((t: any) => t.production_cycle === cycle.id);
       const totalQty = cycleTargets.reduce(
         (sum: number, t: any) =>
@@ -297,137 +306,16 @@ export default function CyclesPage() {
         }
       }
 
-      const { data: existingUsageRows, error: existingUsageErr } = await supabase
-        .from("inventory_adjustments")
-        .select("id")
-        .eq("adjustment_type", "usage")
-        .like("note", `%${completionMarker}%`)
-        .limit(1);
-      if (existingUsageErr) throw existingUsageErr;
-      const alreadyDeducted = Boolean(existingUsageRows?.length);
-
-      if (!alreadyDeducted) {
-        const productIds = Array.from(
-          new Set(cycleTargets.map((t: any) => t.product).filter(Boolean)),
-        );
-        if (productIds.length) {
-          const [{ data: bomRows, error: bomErr }, { data: itemRows, error: itemsErr }] =
-            await Promise.all([
-              supabase
-                .from("bom_lines")
-                .select("id, product, line_type, inventory_item, qty_per_unit, unit_label")
-                .in("product", productIds),
-              supabase
-                .from("inventory_items")
-                .select("id, name, unit, quantity_on_hand"),
-            ]);
-          if (bomErr) throw bomErr;
-          if (itemsErr) throw itemsErr;
-
-          const bomByProduct = new Map<string, any[]>();
-          for (const row of bomRows || []) {
-            if (!row.inventory_item) continue;
-            if (
-              row.line_type !== "inventory_item" &&
-              row.line_type !== "packaging"
-            ) {
-              continue;
-            }
-            const existing = bomByProduct.get(row.product) || [];
-            existing.push(row);
-            bomByProduct.set(row.product, existing);
-          }
-
-          const requiredByItem = new Map<string, number>();
-          for (const target of cycleTargets) {
-            const qty =
-              Number(target.quantity_to_produce ?? target.target_units ?? 0) || 0;
-            if (qty <= 0) continue;
-            const lines = bomByProduct.get(target.product) || [];
-            for (const line of lines) {
-              const lineQty = qty * Number(line.qty_per_unit || 0);
-              if (!Number.isFinite(lineQty) || lineQty <= 0) continue;
-              requiredByItem.set(
-                line.inventory_item,
-                (requiredByItem.get(line.inventory_item) || 0) + lineQty,
-              );
-            }
-          }
-
-          if (requiredByItem.size) {
-            const itemsById = new Map<string, any>(
-              (itemRows || []).map((item: any) => [item.id, item]),
-            );
-            const shortages = Array.from(requiredByItem.entries())
-              .map(([itemId, required]) => {
-                const item = itemsById.get(itemId);
-                if (!item) return null;
-                const onHand = Number(item.quantity_on_hand || 0);
-                return {
-                  itemId,
-                  name: item.name,
-                  unit: item.unit,
-                  required,
-                  onHand,
-                  shortage: required - onHand,
-                };
-              })
-              .filter((row): row is NonNullable<typeof row> => Boolean(row))
-              .filter((row) => row.shortage > 0);
-
-            if (shortages.length && typeof window !== "undefined") {
-              const preview = shortages
-                .slice(0, 5)
-                .map(
-                  (s) =>
-                    `- ${s.name}: short ${s.shortage.toFixed(2)} ${s.unit} (need ${s.required.toFixed(2)}, on hand ${s.onHand.toFixed(2)})`,
-                )
-                .join("\n");
-              const extraCount =
-                shortages.length > 5 ? `\n...and ${shortages.length - 5} more` : "";
-              const confirmed = window.confirm(
-                `Inventory shortages were detected for this completion:\n\n${preview}${extraCount}\n\nContinue anyway? This will allow negative inventory balances.`,
-              );
-              if (!confirmed) {
-                return;
-              }
-            }
-
-            const adjustmentInserts = Array.from(requiredByItem.entries())
-              .map(([itemId, required]) => {
-                const item = itemsById.get(itemId);
-                if (!item) return null;
-                return {
-                  inventory_item: itemId,
-                  adjustment_type: "usage",
-                  quantity_delta: -required,
-                  note: `Auto-deduct on completion (${completionMarker}) for cycle ${cycle.id}: ${required.toFixed(2)} ${item.unit}`,
-                  created_at: new Date().toISOString(),
-                  user_id: user.id,
-                };
-              })
-              .filter(Boolean);
-
-            if (adjustmentInserts.length) {
-              const { error: adjInsertErr } = await supabase
-                .from("inventory_adjustments")
-                .insert(adjustmentInserts);
-              if (adjInsertErr) throw adjInsertErr;
-            }
-
-            await Promise.all(
-              Array.from(requiredByItem.entries()).map(async ([itemId, required]) => {
-                const item = itemsById.get(itemId);
-                if (!item) return;
-                const nextOnHand = Number(item.quantity_on_hand || 0) - required;
-                const { error: itemUpdateErr } = await supabase
-                  .from("inventory_items")
-                  .update({ quantity_on_hand: nextOnHand })
-                  .eq("id", itemId);
-                if (itemUpdateErr) throw itemUpdateErr;
-              }),
-            );
-          }
+      if (!cycle.raw_materials_deducted_at) {
+        const deductResult = await deductRawMaterialsForCycle({
+          supabase,
+          user,
+          cycle,
+          cycleTargets,
+          noteLabel: "completion",
+        });
+        if (!deductResult.ok) {
+          return;
         }
       }
 
@@ -510,6 +398,71 @@ export default function CyclesPage() {
       setError(String(msg));
     } finally {
       setCompletingCycleId(null);
+    }
+  };
+
+  const handleMarkAsProduced = async (cycle: any) => {
+    if (!user) return;
+    setError(null);
+    setMarkingProducedCycleId(cycle.id);
+    try {
+      const cycleTargets = targets.filter((t: any) => t.production_cycle === cycle.id);
+      if (!cycleTargets.length) {
+        setError("No production targets found for this cycle.");
+        return;
+      }
+      const result = await deductRawMaterialsForCycle({
+        supabase,
+        user,
+        cycle,
+        cycleTargets,
+        noteLabel: "production",
+      });
+      if (!result.ok) return;
+      setCycles((prev) =>
+        prev.map((c) =>
+          c.id === cycle.id
+            ? { ...c, raw_materials_deducted_at: new Date().toISOString() }
+            : c,
+        ),
+      );
+    } catch (err: unknown) {
+      const msg =
+        (err as any)?.message ||
+        (err as any)?.error_description ||
+        (err as any)?.details ||
+        "Failed to mark production as produced.";
+      setError(String(msg));
+    } finally {
+      setMarkingProducedCycleId(null);
+    }
+  };
+
+  const handleUndoRawMaterials = async (cycle: any) => {
+    if (!user) return;
+    const confirmed =
+      typeof window === "undefined" ||
+      window.confirm(
+        "Undo this? The raw materials that were deducted will be added back to inventory.",
+      );
+    if (!confirmed) return;
+    setError(null);
+    setUndoingProducedCycleId(cycle.id);
+    try {
+      const result = await undoRawMaterialDeductionForCycle({ supabase, user, cycle });
+      if (!result.ok) return;
+      setCycles((prev) =>
+        prev.map((c) => (c.id === cycle.id ? { ...c, raw_materials_deducted_at: null } : c)),
+      );
+    } catch (err: unknown) {
+      const msg =
+        (err as any)?.message ||
+        (err as any)?.error_description ||
+        (err as any)?.details ||
+        "Failed to undo raw material deduction.";
+      setError(String(msg));
+    } finally {
+      setUndoingProducedCycleId(null);
     }
   };
 
@@ -741,6 +694,34 @@ export default function CyclesPage() {
                         >
                           Open planner
                         </Link>
+                        {isBotaniqals && c.status !== "completed" && (
+                          c.raw_materials_deducted_at ? (
+                            <span className="flex items-center gap-1 text-[11px]">
+                              <span className="font-medium text-emerald-700">
+                                Raw materials deducted ✓
+                              </span>
+                              <button
+                                type="button"
+                                disabled={undoingProducedCycleId === c.id}
+                                className="font-medium text-amber-700 underline disabled:cursor-not-allowed disabled:opacity-60"
+                                onClick={() => handleUndoRawMaterials(c)}
+                              >
+                                {undoingProducedCycleId === c.id ? "Undoing…" : "Undo"}
+                              </button>
+                            </span>
+                          ) : (
+                            <button
+                              type="button"
+                              disabled={markingProducedCycleId === c.id}
+                              className="text-[11px] font-medium text-emerald-700 underline disabled:cursor-not-allowed disabled:opacity-60"
+                              onClick={() => handleMarkAsProduced(c)}
+                            >
+                              {markingProducedCycleId === c.id
+                                ? "Marking…"
+                                : "Mark as Produced"}
+                            </button>
+                          )
+                        )}
                         {isBotaniqals && cycleBatches.length === 0 && (
                           <button
                             type="button"
