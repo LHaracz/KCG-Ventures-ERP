@@ -26,7 +26,7 @@ type OrdersQueryResponse = {
 
 const ORDERS_QUERY = `
   query UnfulfilledOrders($first: Int!) {
-    orders(first: $first, query: "fulfillment_status:unfulfilled", sortKey: CREATED_AT, reverse: false) {
+    orders(first: $first, query: "status:open fulfillment_status:unfulfilled", sortKey: CREATED_AT, reverse: false) {
       edges {
         node {
           id
