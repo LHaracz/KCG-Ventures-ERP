@@ -267,7 +267,7 @@ export default function FulfillmentOrderDetailPage() {
                   <select
                     value={selectedPresetId}
                     onChange={(e) => setSelectedPresetId(e.target.value)}
-                    className="w-full rounded-md border border-zinc-300 px-2 py-1.5 text-xs shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                    className="w-full rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-xs text-black shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
                   >
                     <option value="">Select a package…</option>
                     {presets.map((p) => (

@@ -6,7 +6,7 @@ import { resolveShopifyAccessToken } from "@/lib/shopifyAccessToken";
  * inventory sync / the orders webhook rather than a second token cache.
  */
 
-const DEFAULT_FULFILLMENTS_API_VERSION = "2026-01";
+const DEFAULT_FULFILLMENTS_API_VERSION = "2026-07"; // LineItem.weight requires 2026-07+
 
 function normalizeShopDomain(shopDomain: string): string {
   return shopDomain.includes(".myshopify.com")

@@ -263,7 +263,7 @@ export default function FulfillmentsPage() {
                     onChange={(e) =>
                       setPresetForm((prev) => ({ ...prev, nickname: e.target.value }))
                     }
-                    className="w-full rounded-md border border-zinc-300 px-2 py-1.5 shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                    className="w-full rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-black placeholder:text-gray-400 shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
                     placeholder="Small box"
                   />
                 </div>
@@ -279,7 +279,7 @@ export default function FulfillmentsPage() {
                       onChange={(e) =>
                         setPresetForm((prev) => ({ ...prev, length_in: e.target.value }))
                       }
-                      className="w-full rounded-md border border-zinc-300 px-2 py-1.5 shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                      className="w-full rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-black placeholder:text-gray-400 shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
                     />
                   </div>
                   <div>
@@ -293,7 +293,7 @@ export default function FulfillmentsPage() {
                       onChange={(e) =>
                         setPresetForm((prev) => ({ ...prev, width_in: e.target.value }))
                       }
-                      className="w-full rounded-md border border-zinc-300 px-2 py-1.5 shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                      className="w-full rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-black placeholder:text-gray-400 shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
                     />
                   </div>
                   <div>
@@ -307,7 +307,7 @@ export default function FulfillmentsPage() {
                       onChange={(e) =>
                         setPresetForm((prev) => ({ ...prev, height_in: e.target.value }))
                       }
-                      className="w-full rounded-md border border-zinc-300 px-2 py-1.5 shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                      className="w-full rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-black placeholder:text-gray-400 shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
                     />
                   </div>
                 </div>
@@ -324,7 +324,7 @@ export default function FulfillmentsPage() {
                     onChange={(e) =>
                       setPresetForm((prev) => ({ ...prev, tare_weight_oz: e.target.value }))
                     }
-                    className="w-full rounded-md border border-zinc-300 px-2 py-1.5 shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                    className="w-full rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-black placeholder:text-gray-400 shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
                   />
                 </div>
                 {presetError && (
