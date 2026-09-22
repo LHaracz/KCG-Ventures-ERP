@@ -10,6 +10,7 @@ type OrdersQueryResponse = {
         name: string;
         createdAt: string;
         customer: { firstName: string | null; lastName: string | null } | null;
+        totalPriceSet: { shopMoney: { amount: string; currencyCode: string } } | null;
         lineItems: {
           edges: Array<{
             node: {
@@ -35,6 +36,12 @@ const ORDERS_QUERY = `
             firstName
             lastName
           }
+          totalPriceSet {
+            shopMoney {
+              amount
+              currencyCode
+            }
+          }
           lineItems(first: 50) {
             edges {
               node {
@@ -59,6 +66,8 @@ export type FulfillmentListRow = {
   customerName: string;
   itemCount: number;
   totalProductWeightOz: number;
+  totalPrice: number;
+  currencyCode: string;
 };
 
 export async function GET(request: Request) {
@@ -86,6 +95,8 @@ export async function GET(request: Request) {
         customerName: customerName || "Guest",
         itemCount,
         totalProductWeightOz,
+        totalPrice: Number(node.totalPriceSet?.shopMoney.amount ?? 0),
+        currencyCode: node.totalPriceSet?.shopMoney.currencyCode ?? "USD",
       };
     });
 

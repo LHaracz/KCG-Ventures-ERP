@@ -13,6 +13,8 @@ type FulfillmentListRow = {
   customerName: string;
   itemCount: number;
   totalProductWeightOz: number;
+  totalPrice: number;
+  currencyCode: string;
 };
 
 type PresetForm = {
@@ -31,6 +33,17 @@ const emptyPresetForm: PresetForm = {
   height_in: "",
   tare_weight_oz: "",
 };
+
+function formatOrderTotal(amount: number, currencyCode: string): string {
+  try {
+    return new Intl.NumberFormat("en-US", {
+      style: "currency",
+      currency: currencyCode || "USD",
+    }).format(amount);
+  } catch {
+    return `$${amount.toFixed(2)}`;
+  }
+}
 
 export default function FulfillmentsPage() {
   const { user, supabase } = useSupabase();
@@ -196,54 +209,6 @@ export default function FulfillmentsPage() {
         </section>
 
         <section className="rounded-lg border border-zinc-200 bg-white p-4 shadow-sm">
-          {ordersLoading ? (
-            <p className="text-xs text-black">Loading unfulfilled orders…</p>
-          ) : ordersError ? (
-            <p className="text-xs text-red-600" role="alert">
-              {ordersError}
-            </p>
-          ) : orders.length === 0 ? (
-            <p className="text-xs text-black">No unfulfilled orders right now.</p>
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="min-w-full border-collapse text-left text-xs">
-                <thead className="bg-zinc-50 text-[11px] uppercase tracking-wide text-zinc-500">
-                  <tr>
-                    <th className="px-3 py-2 font-medium">Order</th>
-                    <th className="px-3 py-2 font-medium">Date</th>
-                    <th className="px-3 py-2 font-medium">Customer</th>
-                    <th className="px-3 py-2 font-medium">Items</th>
-                    <th className="px-3 py-2 font-medium">Product Weight</th>
-                    <th className="px-3 py-2 font-medium"></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {orders.map((o) => (
-                    <tr key={o.orderId} className="border-b border-zinc-100">
-                      <td className="px-3 py-2 font-medium text-zinc-900">{o.name}</td>
-                      <td className="px-3 py-2 text-zinc-700">{formatDate(o.createdAt)}</td>
-                      <td className="px-3 py-2 text-zinc-700">{o.customerName}</td>
-                      <td className="px-3 py-2 text-zinc-700">{o.itemCount}</td>
-                      <td className="px-3 py-2 text-zinc-700">
-                        {o.totalProductWeightOz.toFixed(1)} oz
-                      </td>
-                      <td className="px-3 py-2">
-                        <Link
-                          href={`/fulfillments/${o.orderId}`}
-                          className="text-[11px] font-medium text-emerald-700 underline"
-                        >
-                          View
-                        </Link>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </section>
-
-        <section className="rounded-lg border border-zinc-200 bg-white p-4 shadow-sm">
           <button
             type="button"
             onClick={() => setPresetsPanelOpen((v) => !v)}
@@ -390,6 +355,58 @@ export default function FulfillmentsPage() {
                   </div>
                 )}
               </div>
+            </div>
+          )}
+        </section>
+
+        <section className="rounded-lg border border-zinc-200 bg-white p-4 shadow-sm">
+          {ordersLoading ? (
+            <p className="text-xs text-black">Loading unfulfilled orders…</p>
+          ) : ordersError ? (
+            <p className="text-xs text-red-600" role="alert">
+              {ordersError}
+            </p>
+          ) : orders.length === 0 ? (
+            <p className="text-xs text-black">No unfulfilled orders right now.</p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="min-w-full border-collapse text-left text-xs">
+                <thead className="bg-zinc-50 text-[11px] uppercase tracking-wide text-zinc-500">
+                  <tr>
+                    <th className="px-3 py-2 font-medium">Order</th>
+                    <th className="px-3 py-2 font-medium">Date</th>
+                    <th className="px-3 py-2 font-medium">Customer</th>
+                    <th className="px-3 py-2 font-medium">Items</th>
+                    <th className="px-3 py-2 font-medium">Product Weight</th>
+                    <th className="px-3 py-2 font-medium">Order Total</th>
+                    <th className="px-3 py-2 font-medium"></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {orders.map((o) => (
+                    <tr key={o.orderId} className="border-b border-zinc-100">
+                      <td className="px-3 py-2 font-medium text-zinc-900">{o.name}</td>
+                      <td className="px-3 py-2 text-zinc-700">{formatDate(o.createdAt)}</td>
+                      <td className="px-3 py-2 text-zinc-700">{o.customerName}</td>
+                      <td className="px-3 py-2 text-zinc-700">{o.itemCount}</td>
+                      <td className="px-3 py-2 text-zinc-700">
+                        {o.totalProductWeightOz.toFixed(1)} oz
+                      </td>
+                      <td className="px-3 py-2 text-zinc-700">
+                        {formatOrderTotal(o.totalPrice, o.currencyCode)}
+                      </td>
+                      <td className="px-3 py-2">
+                        <Link
+                          href={`/fulfillments/${o.orderId}`}
+                          className="text-[11px] font-medium text-emerald-700 underline"
+                        >
+                          View
+                        </Link>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
           )}
         </section>
