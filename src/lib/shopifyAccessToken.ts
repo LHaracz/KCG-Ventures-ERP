@@ -93,7 +93,7 @@ async function refreshViaClientCredentials(params: {
 }
 
 export async function resolveShopifyAccessToken(): Promise<ShopifyTokenResolution> {
-  const shopDomain = process.env.SHOPIFY_SHOP_DOMAIN ?? "";
+  const shopDomain = process.env.SHOPIFY_SHOP_DOMAIN ?? process.env.SHOPIFY_STORE_DOMAIN ?? "";
   const clientId = process.env.SHOPIFY_CLIENT_ID ?? "";
   const clientSecret = process.env.SHOPIFY_CLIENT_SECRET ?? "";
 

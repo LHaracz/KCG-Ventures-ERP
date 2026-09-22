@@ -23,6 +23,7 @@ const sections: NavSection[] = [
       { href: "/inventory", label: "Inventory & Cycle Count" },
       { href: "/products", label: "Products & BOM" },
       { href: "/cycles", label: "Production Cycles & Planner" },
+      { href: "/fulfillments", label: "Fulfillments" },
     ],
   },
   {
