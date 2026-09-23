@@ -24,6 +24,8 @@ const sections: NavSection[] = [
       { href: "/products", label: "Products & BOM" },
       { href: "/cycles", label: "Production Cycles & Planner" },
       { href: "/fulfillments", label: "Fulfillments" },
+      { href: "/fulfillments/settings", label: "Fulfillments Settings" },
+      { href: "/settings/shipping-methods", label: "Shipping Methods" },
     ],
   },
   {
