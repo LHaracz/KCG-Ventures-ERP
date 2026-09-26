@@ -1,21 +1,24 @@
 "use client";
 
-import { FormEvent, Suspense, useEffect, useState } from "react";
+import { FormEvent, Suspense, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { AuthGuard } from "@/components/AuthGuard";
 import { useSupabase } from "@/components/InstantProvider";
 
 // variant_component_map: Shopify line-item-name (exact string match) ->
-// the BotanIQals product(s) it represents, since Shopify order data here has
-// no SKUs populated. A line item can decompose into more than one product
-// (e.g. a bundle), each with its own qty_per_unit. Products are sourced
-// directly from the Products & BOM page (`products` where
-// `is_microgreen = false`) rather than a separate hand-typed list.
+// the product(s) it represents, since Shopify order data here has no SKUs
+// populated. A line item can decompose into more than one product (e.g. a
+// bundle), each with its own qty_per_unit. Products are sourced directly
+// from the Products & BOM page — both BotanIQals products and MiniLeaf
+// microgreens — rather than a separate hand-typed list. `business` is
+// inferred automatically from the selected product(s)' `is_microgreen` flag
+// rather than asked for.
 
 type ProductOption = {
   id: string;
   name: string;
+  is_microgreen: boolean;
 };
 
 type MappingComponent = { product_id: string; qty_per_unit: number };
@@ -47,6 +50,14 @@ function emptyForm(lineitemName = ""): MappingForm {
 const inputClassName =
   "w-full rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-black placeholder:text-gray-400 shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500";
 
+function businessLabel(business: string): string {
+  return business === "minileaf" ? "MiniLeaf" : "BotanIQals";
+}
+
+function productLabel(product: ProductOption): string {
+  return `${product.name} — ${product.is_microgreen ? "MiniLeaf" : "BotanIQals"}`;
+}
+
 function formatComponents(components: MappingComponent[], products: ProductOption[]): string {
   if (components.length === 0) return "—";
   return components
@@ -55,6 +66,18 @@ function formatComponents(components: MappingComponent[], products: ProductOptio
       return `${c.qty_per_unit}× ${product?.name ?? "Unknown product"}`;
     })
     .join(" + ");
+}
+
+// A mapping's business is derived from what it's mapped to, not asked for:
+// all-microgreen components make it a MiniLeaf mapping, anything else
+// (pure BotanIQals, or a mix) defaults to BotanIQals.
+function inferBusiness(
+  componentProductIds: string[],
+  productsById: Map<string, ProductOption>,
+): "minileaf" | "botaniqals" {
+  if (componentProductIds.length === 0) return "botaniqals";
+  const allMicrogreen = componentProductIds.every((id) => productsById.get(id)?.is_microgreen === true);
+  return allMicrogreen ? "minileaf" : "botaniqals";
 }
 
 function VariantMappingPageInner() {
@@ -71,12 +94,17 @@ function VariantMappingPageInner() {
   const [message, setMessage] = useState<string | null>(null);
   const [appliedPrefill, setAppliedPrefill] = useState(false);
 
+  const productsById = useMemo(() => {
+    const map = new Map<string, ProductOption>();
+    for (const p of products) map.set(p.id, p);
+    return map;
+  }, [products]);
+
   const loadAll = async () => {
     const [productsResult, mapResult] = await Promise.all([
       supabase
         .from("products")
-        .select("id, name")
-        .eq("is_microgreen", false)
+        .select("id, name, is_microgreen")
         .order("name", { ascending: true }),
       supabase
         .from("variant_component_map")
@@ -148,8 +176,8 @@ function VariantMappingPageInner() {
       setError("Add at least one component with a product and quantity.");
       return;
     }
-    if (validComponents.some((c) => !Number.isFinite(c.qty_per_unit) || c.qty_per_unit <= 0)) {
-      setError("Quantity per unit must be a positive number.");
+    if (validComponents.some((c) => !Number.isInteger(c.qty_per_unit) || c.qty_per_unit <= 0)) {
+      setError("Quantity per unit must be a whole number greater than zero.");
       return;
     }
 
@@ -157,7 +185,10 @@ function VariantMappingPageInner() {
     try {
       const payload = {
         lineitem_name: lineitemName,
-        business: "botaniqals" as const,
+        business: inferBusiness(
+          validComponents.map((c) => c.product_id),
+          productsById,
+        ),
         components: validComponents,
       };
 
@@ -226,9 +257,9 @@ function VariantMappingPageInner() {
           </Link>
           <h1 className="mb-1 text-2xl font-semibold text-zinc-900">Variant Component Mapping</h1>
           <p className="text-sm text-zinc-600">
-            Maps each exact Shopify line item name to the BotanIQals product(s) it represents, from
-            the Products &amp; BOM page. Matching is by exact name string only — never guessed or
-            auto-parsed.
+            Maps each exact Shopify line item name to the product(s) it represents, from the
+            Products &amp; BOM page — BotanIQals products and MiniLeaf microgreens alike. Matching
+            is by exact name string only — never guessed or auto-parsed.
           </p>
         </header>
 
@@ -262,39 +293,49 @@ function VariantMappingPageInner() {
                 </button>
               </div>
               <div className="space-y-2">
-                {form.components.map((row, index) => (
-                  <div key={index} className="flex items-center gap-2">
-                    <select
-                      value={row.product_id}
-                      onChange={(e) => updateComponentRow(index, "product_id", e.target.value)}
-                      className={`${inputClassName} flex-1`}
-                    >
-                      <option value="">Select product…</option>
-                      {products.map((p) => (
-                        <option key={p.id} value={p.id}>
-                          {p.name}
-                        </option>
-                      ))}
-                    </select>
-                    <input
-                      type="number"
-                      min="0.01"
-                      step="0.01"
-                      value={row.qty_per_unit}
-                      onChange={(e) => updateComponentRow(index, "qty_per_unit", e.target.value)}
-                      placeholder="Qty"
-                      className={`${inputClassName} w-20`}
-                    />
-                    <button
-                      type="button"
-                      onClick={() => removeComponentRow(index)}
-                      disabled={form.components.length <= 1}
-                      className="text-[11px] font-medium text-red-600 underline disabled:cursor-not-allowed disabled:opacity-40"
-                    >
-                      Remove
-                    </button>
-                  </div>
-                ))}
+                {form.components.map((row, index) => {
+                  const selectedProduct = row.product_id ? productsById.get(row.product_id) : undefined;
+                  return (
+                    <div key={index} className="space-y-1">
+                      <div className="flex items-center gap-2">
+                        <select
+                          value={row.product_id}
+                          onChange={(e) => updateComponentRow(index, "product_id", e.target.value)}
+                          className={`${inputClassName} flex-1`}
+                        >
+                          <option value="">Select product…</option>
+                          {products.map((p) => (
+                            <option key={p.id} value={p.id}>
+                              {productLabel(p)}
+                            </option>
+                          ))}
+                        </select>
+                        <input
+                          type="number"
+                          min="1"
+                          step="1"
+                          value={row.qty_per_unit}
+                          onChange={(e) => updateComponentRow(index, "qty_per_unit", e.target.value)}
+                          placeholder="Qty"
+                          className={`${inputClassName} w-20`}
+                        />
+                        <button
+                          type="button"
+                          onClick={() => removeComponentRow(index)}
+                          disabled={form.components.length <= 1}
+                          className="text-[11px] font-medium text-red-600 underline disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                          Remove
+                        </button>
+                      </div>
+                      {selectedProduct && (
+                        <p className="text-[11px] text-zinc-600">
+                          Selected: <span className="font-medium text-zinc-900">{productLabel(selectedProduct)}</span>
+                        </p>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
               {products.length === 0 && (
                 <p className="mt-1 text-[11px] text-zinc-600">
@@ -347,6 +388,7 @@ function VariantMappingPageInner() {
                 <thead className="bg-zinc-50 text-[11px] uppercase tracking-wide text-zinc-500">
                   <tr>
                     <th className="px-3 py-2 font-medium">Line item name</th>
+                    <th className="px-3 py-2 font-medium">Business</th>
                     <th className="px-3 py-2 font-medium">Products</th>
                     <th className="px-3 py-2 font-medium"></th>
                   </tr>
@@ -355,6 +397,7 @@ function VariantMappingPageInner() {
                   {mappings.map((m) => (
                     <tr key={m.id} className="border-b border-zinc-100">
                       <td className="px-3 py-2 font-medium text-zinc-900">{m.lineitem_name}</td>
+                      <td className="px-3 py-2 text-zinc-700">{businessLabel(m.business)}</td>
                       <td className="px-3 py-2 text-zinc-700">
                         {formatComponents(m.components, products)}
                       </td>
