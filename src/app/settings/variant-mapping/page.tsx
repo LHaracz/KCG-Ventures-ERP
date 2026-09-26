@@ -7,17 +7,18 @@ import { AuthGuard } from "@/components/AuthGuard";
 import { useSupabase } from "@/components/InstantProvider";
 
 // variant_component_map: Shopify line-item-name (exact string match) ->
-// the finished goods it represents, since Shopify order data here has no
-// SKUs populated. A line item can decompose into more than one finished
-// good (e.g. a bundle), each with its own qty_per_unit.
+// the BotanIQals product(s) it represents, since Shopify order data here has
+// no SKUs populated. A line item can decompose into more than one product
+// (e.g. a bundle), each with its own qty_per_unit. Products are sourced
+// directly from the Products & BOM page (`products` where
+// `is_microgreen = false`) rather than a separate hand-typed list.
 
-type FinishedGoodOption = {
+type ProductOption = {
   id: string;
   name: string;
-  business: "minileaf" | "botaniqals";
 };
 
-type MappingComponent = { finished_good_id: string; qty_per_unit: number };
+type MappingComponent = { product_id: string; qty_per_unit: number };
 
 type MappingRow = {
   id: string;
@@ -26,21 +27,19 @@ type MappingRow = {
   components: MappingComponent[];
 };
 
-type ComponentRowForm = { finished_good_id: string; qty_per_unit: string };
+type ComponentRowForm = { product_id: string; qty_per_unit: string };
 
 type MappingForm = {
   id?: string;
   lineitem_name: string;
-  business: "minileaf" | "botaniqals";
   components: ComponentRowForm[];
 };
 
-const emptyComponentRow: ComponentRowForm = { finished_good_id: "", qty_per_unit: "1" };
+const emptyComponentRow: ComponentRowForm = { product_id: "", qty_per_unit: "1" };
 
 function emptyForm(lineitemName = ""): MappingForm {
   return {
     lineitem_name: lineitemName,
-    business: "botaniqals",
     components: [{ ...emptyComponentRow }],
   };
 }
@@ -48,16 +47,12 @@ function emptyForm(lineitemName = ""): MappingForm {
 const inputClassName =
   "w-full rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-black placeholder:text-gray-400 shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500";
 
-function businessLabel(business: string): string {
-  return business === "minileaf" ? "MiniLeaf" : "BotanIQals";
-}
-
-function formatComponents(components: MappingComponent[], finishedGoods: FinishedGoodOption[]): string {
+function formatComponents(components: MappingComponent[], products: ProductOption[]): string {
   if (components.length === 0) return "—";
   return components
     .map((c) => {
-      const fg = finishedGoods.find((f) => f.id === c.finished_good_id);
-      return `${c.qty_per_unit}× ${fg?.name ?? "Unknown product"}`;
+      const product = products.find((p) => p.id === c.product_id);
+      return `${c.qty_per_unit}× ${product?.name ?? "Unknown product"}`;
     })
     .join(" + ");
 }
@@ -67,7 +62,7 @@ function VariantMappingPageInner() {
   const searchParams = useSearchParams();
   const prefillLineitem = searchParams.get("lineitem") || "";
 
-  const [finishedGoods, setFinishedGoods] = useState<FinishedGoodOption[]>([]);
+  const [products, setProducts] = useState<ProductOption[]>([]);
   const [mappings, setMappings] = useState<MappingRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [form, setForm] = useState<MappingForm>(emptyForm(prefillLineitem));
@@ -77,14 +72,18 @@ function VariantMappingPageInner() {
   const [appliedPrefill, setAppliedPrefill] = useState(false);
 
   const loadAll = async () => {
-    const [fgResult, mapResult] = await Promise.all([
-      supabase.from("finished_goods").select("id, name, business").order("name", { ascending: true }),
+    const [productsResult, mapResult] = await Promise.all([
+      supabase
+        .from("products")
+        .select("id, name")
+        .eq("is_microgreen", false)
+        .order("name", { ascending: true }),
       supabase
         .from("variant_component_map")
         .select("id, lineitem_name, business, components")
         .order("lineitem_name", { ascending: true }),
     ]);
-    setFinishedGoods((fgResult.data || []) as FinishedGoodOption[]);
+    setProducts((productsResult.data || []) as ProductOption[]);
     setMappings((mapResult.data || []) as MappingRow[]);
   };
 
@@ -142,11 +141,11 @@ function VariantMappingPageInner() {
     }
 
     const validComponents = form.components
-      .filter((c) => c.finished_good_id && c.qty_per_unit.trim() !== "")
-      .map((c) => ({ finished_good_id: c.finished_good_id, qty_per_unit: Number(c.qty_per_unit) }));
+      .filter((c) => c.product_id && c.qty_per_unit.trim() !== "")
+      .map((c) => ({ product_id: c.product_id, qty_per_unit: Number(c.qty_per_unit) }));
 
     if (validComponents.length === 0) {
-      setError("Add at least one component with a finished good and quantity.");
+      setError("Add at least one component with a product and quantity.");
       return;
     }
     if (validComponents.some((c) => !Number.isFinite(c.qty_per_unit) || c.qty_per_unit <= 0)) {
@@ -158,7 +157,7 @@ function VariantMappingPageInner() {
     try {
       const payload = {
         lineitem_name: lineitemName,
-        business: form.business,
+        business: "botaniqals" as const,
         components: validComponents,
       };
 
@@ -192,11 +191,10 @@ function VariantMappingPageInner() {
     setForm({
       id: row.id,
       lineitem_name: row.lineitem_name,
-      business: row.business,
       components:
         row.components.length > 0
           ? row.components.map((c) => ({
-              finished_good_id: c.finished_good_id,
+              product_id: c.product_id,
               qty_per_unit: String(c.qty_per_unit),
             }))
           : [{ ...emptyComponentRow }],
@@ -228,8 +226,9 @@ function VariantMappingPageInner() {
           </Link>
           <h1 className="mb-1 text-2xl font-semibold text-zinc-900">Variant Component Mapping</h1>
           <p className="text-sm text-zinc-600">
-            Maps each exact Shopify line item name to the finished good(s) it represents. Matching
-            is by exact name string only — never guessed or auto-parsed.
+            Maps each exact Shopify line item name to the BotanIQals product(s) it represents, from
+            the Products &amp; BOM page. Matching is by exact name string only — never guessed or
+            auto-parsed.
           </p>
         </header>
 
@@ -238,57 +237,42 @@ function VariantMappingPageInner() {
             {form.id ? "Edit mapping" : "Add mapping"}
           </h2>
           <form onSubmit={handleSubmit} className="space-y-3 text-xs">
-            <div className="grid gap-3 sm:grid-cols-2">
-              <div>
-                <label className="mb-1 block font-medium text-zinc-800">
-                  Line item name (exact match)
-                </label>
-                <input
-                  required
-                  value={form.lineitem_name}
-                  onChange={(e) => setForm((prev) => ({ ...prev, lineitem_name: e.target.value }))}
-                  placeholder="Starter Kit - Bundle"
-                  className={inputClassName}
-                />
-              </div>
-              <div>
-                <label className="mb-1 block font-medium text-zinc-800">Business</label>
-                <select
-                  value={form.business}
-                  onChange={(e) =>
-                    setForm((prev) => ({ ...prev, business: e.target.value as MappingForm["business"] }))
-                  }
-                  className={inputClassName}
-                >
-                  <option value="botaniqals">BotanIQals</option>
-                  <option value="minileaf">MiniLeaf</option>
-                </select>
-              </div>
+            <div>
+              <label className="mb-1 block font-medium text-zinc-800">
+                Line item name (exact match)
+              </label>
+              <input
+                required
+                value={form.lineitem_name}
+                onChange={(e) => setForm((prev) => ({ ...prev, lineitem_name: e.target.value }))}
+                placeholder="Starter Kit - Bundle"
+                className={inputClassName}
+              />
             </div>
 
             <div>
               <div className="mb-1 flex items-center justify-between">
-                <label className="block font-medium text-zinc-800">Components</label>
+                <label className="block font-medium text-zinc-800">Products</label>
                 <button
                   type="button"
                   onClick={addComponentRow}
                   className="text-[11px] font-medium text-emerald-700 underline"
                 >
-                  + Add component
+                  + Add product
                 </button>
               </div>
               <div className="space-y-2">
                 {form.components.map((row, index) => (
                   <div key={index} className="flex items-center gap-2">
                     <select
-                      value={row.finished_good_id}
-                      onChange={(e) => updateComponentRow(index, "finished_good_id", e.target.value)}
+                      value={row.product_id}
+                      onChange={(e) => updateComponentRow(index, "product_id", e.target.value)}
                       className={`${inputClassName} flex-1`}
                     >
-                      <option value="">Select finished good…</option>
-                      {finishedGoods.map((fg) => (
-                        <option key={fg.id} value={fg.id}>
-                          {fg.name} ({businessLabel(fg.business)})
+                      <option value="">Select product…</option>
+                      {products.map((p) => (
+                        <option key={p.id} value={p.id}>
+                          {p.name}
                         </option>
                       ))}
                     </select>
@@ -312,11 +296,11 @@ function VariantMappingPageInner() {
                   </div>
                 ))}
               </div>
-              {finishedGoods.length === 0 && (
+              {products.length === 0 && (
                 <p className="mt-1 text-[11px] text-zinc-600">
-                  No finished goods yet.{" "}
-                  <Link href="/settings/finished-goods" className="font-medium text-emerald-700 underline">
-                    Add one
+                  No products yet.{" "}
+                  <Link href="/products" className="font-medium text-emerald-700 underline">
+                    Add one on the Products &amp; BOM page
                   </Link>{" "}
                   first.
                 </p>
@@ -363,8 +347,7 @@ function VariantMappingPageInner() {
                 <thead className="bg-zinc-50 text-[11px] uppercase tracking-wide text-zinc-500">
                   <tr>
                     <th className="px-3 py-2 font-medium">Line item name</th>
-                    <th className="px-3 py-2 font-medium">Business</th>
-                    <th className="px-3 py-2 font-medium">Components</th>
+                    <th className="px-3 py-2 font-medium">Products</th>
                     <th className="px-3 py-2 font-medium"></th>
                   </tr>
                 </thead>
@@ -372,9 +355,8 @@ function VariantMappingPageInner() {
                   {mappings.map((m) => (
                     <tr key={m.id} className="border-b border-zinc-100">
                       <td className="px-3 py-2 font-medium text-zinc-900">{m.lineitem_name}</td>
-                      <td className="px-3 py-2 text-zinc-700">{businessLabel(m.business)}</td>
                       <td className="px-3 py-2 text-zinc-700">
-                        {formatComponents(m.components, finishedGoods)}
+                        {formatComponents(m.components, products)}
                       </td>
                       <td className="px-3 py-2">
                         <div className="flex items-center gap-2">

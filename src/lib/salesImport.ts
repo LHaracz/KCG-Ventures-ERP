@@ -201,7 +201,7 @@ export async function runSalesImport(params: {
         .eq("order_id", orderRow.id);
       if (deleteError) throw new Error(deleteError.message);
 
-      const lineItemRows = node.lineItems.edges.map((li) => ({
+      const lineItemRows = node.lineItems.edges.map((li, index) => ({
         order_id: orderRow.id,
         lineitem_name: li.node.name,
         quantity: li.node.quantity,
@@ -209,6 +209,7 @@ export async function runSalesImport(params: {
           ? Number(li.node.originalUnitPriceSet.shopMoney.amount)
           : null,
         raw_sku: li.node.sku || null,
+        position: index,
       }));
 
       if (lineItemRows.length > 0) {
