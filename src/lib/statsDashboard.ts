@@ -116,7 +116,7 @@ export type DashboardKpis = {
   totalUnits: number;
   totalOrders: number;
   channelTotals: Record<ChannelBucket, number>;
-  bundleAttachRate: number | null; // null = bundle_settings not configured
+  bundleAttachRate: number | null; // null only when there are no in-scope orders
   topProductName: string | null;
   topProductRevenue: number;
   zeroSalesProductNames: string[];
@@ -153,7 +153,6 @@ export function computeStatsDashboard(params: {
   scope: BusinessScope;
   marketFilter: MarketFilter;
   weeklyTargets: { botaniqals: number; minileaf: number };
-  bundleLineitemNames: string[];
   timezone: string;
   weekBuckets: string[];
 }): DashboardResult {
@@ -166,7 +165,6 @@ export function computeStatsDashboard(params: {
     scope,
     marketFilter,
     weeklyTargets,
-    bundleLineitemNames,
     timezone,
     weekBuckets,
   } = params;
@@ -226,10 +224,12 @@ export function computeStatsDashboard(params: {
     businessSplit = { botaniqals: botaniqalsRevenue, minileaf: minileafRevenue };
   }
 
-  // Bundle attach rate: % of in-scope orders containing any configured
-  // bundle line item. null (not 0%) when nothing's configured yet.
+  // Bundle attach rate: % of in-scope orders containing at least one line
+  // item that maps (via variant_component_map) to more than one distinct
+  // product_id — derived automatically from the mapping data, no manual
+  // bundle-name configuration needed.
   let bundleAttachRate: number | null = null;
-  if (bundleLineitemNames.length > 0 && orderIdsInScope.size > 0) {
+  if (orderIdsInScope.size > 0) {
     const lineItemNamesByOrder = new Map<string, string[]>();
     for (const r of filtered) {
       const arr = lineItemNamesByOrder.get(r.order.id) ?? [];
@@ -238,7 +238,7 @@ export function computeStatsDashboard(params: {
     }
     let containing = 0;
     for (const names of lineItemNamesByOrder.values()) {
-      if (orderContainsBundle(names, bundleLineitemNames)) containing += 1;
+      if (orderContainsBundle(names, componentsByLineitemName)) containing += 1;
     }
     bundleAttachRate = containing / orderIdsInScope.size;
   }

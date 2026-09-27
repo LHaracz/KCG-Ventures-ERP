@@ -39,7 +39,6 @@ ChartJS.register(CategoryScale, LinearScale, BarElement, LineElement, PointEleme
 
 const NOTIFICATION_CONFIG_ID = "a0000000-0000-0000-0000-000000000001";
 const DEFAULT_TIMEZONE = "America/New_York";
-const BUNDLE_SETTINGS_ID = "f0000000-0000-0000-0000-000000000001";
 
 const BRAND_GREEN = "#1a472a";
 const BRAND_GREEN_LIGHT = "#2f6b45";
@@ -114,7 +113,6 @@ export default function StatsPage() {
   const [marketFilter, setMarketFilter] = useState<MarketFilter>("all");
   const [botaniqalsTargetInput, setBotaniqalsTargetInput] = useState("0");
   const [minileafTargetInput, setMinileafTargetInput] = useState("0");
-  const [bundleNamesInput, setBundleNamesInput] = useState("");
 
   const [savingSettings, setSavingSettings] = useState(false);
   const [settingsMessage, setSettingsMessage] = useState<string | null>(null);
@@ -131,25 +129,18 @@ export default function StatsPage() {
   const dashboardRef = useRef<HTMLDivElement | null>(null);
 
   const loadReferenceData = async () => {
-    const [marketsResult, productsResult, mapResult, configResult, bundleResult, statsSettingsResult] =
-      await Promise.all([
-        supabase.from("markets").select("id, name").order("name", { ascending: true }),
-        supabase.from("products").select("id, name, is_microgreen, sale_price_per_unit").eq("is_microgreen", false),
-        supabase.from("variant_component_map").select("lineitem_name, business, components"),
-        supabase.from("notification_config").select("timezone").eq("id", NOTIFICATION_CONFIG_ID).maybeSingle(),
-        supabase
-          .from("bundle_settings")
-          .select("bundle_lineitem_names")
-          .eq("id", BUNDLE_SETTINGS_ID)
-          .maybeSingle(),
-        supabase.from("stats_settings").select("scope, weekly_revenue_target"),
-      ]);
+    const [marketsResult, productsResult, mapResult, configResult, statsSettingsResult] = await Promise.all([
+      supabase.from("markets").select("id, name").order("name", { ascending: true }),
+      supabase.from("products").select("id, name, is_microgreen, sale_price_per_unit").eq("is_microgreen", false),
+      supabase.from("variant_component_map").select("lineitem_name, business, components"),
+      supabase.from("notification_config").select("timezone").eq("id", NOTIFICATION_CONFIG_ID).maybeSingle(),
+      supabase.from("stats_settings").select("scope, weekly_revenue_target"),
+    ]);
 
     const errors = [
       marketsResult.error?.message,
       productsResult.error?.message,
       mapResult.error?.message,
-      bundleResult.error?.message,
       statsSettingsResult.error?.message,
     ].filter(Boolean);
     if (errors.length > 0) setReferenceError(errors.join(" | "));
@@ -158,7 +149,6 @@ export default function StatsPage() {
     setProducts((productsResult.data || []) as ProductOption[]);
     setVariantMap((mapResult.data || []) as VariantMapRow[]);
     setTimezone((configResult.data?.timezone as string) || DEFAULT_TIMEZONE);
-    setBundleNamesInput(((bundleResult.data?.bundle_lineitem_names as string[]) || []).join(", "));
 
     const statsSettingsRows = (statsSettingsResult.data || []) as Array<{
       scope: string;
@@ -192,15 +182,6 @@ export default function StatsPage() {
     return map;
   }, [products]);
 
-  const parsedBundleNames = useMemo(
-    () =>
-      bundleNamesInput
-        .split(",")
-        .map((s) => s.trim())
-        .filter(Boolean),
-    [bundleNamesInput],
-  );
-
   const handleSaveSettings = async () => {
     setSettingsError(null);
     setSettingsMessage(null);
@@ -220,12 +201,6 @@ export default function StatsPage() {
         { onConflict: "scope" },
       );
       if (statsError) throw statsError;
-
-      const { error: bundleError } = await supabase.from("bundle_settings").upsert(
-        { id: BUNDLE_SETTINGS_ID, bundle_lineitem_names: parsedBundleNames },
-        { onConflict: "id" },
-      );
-      if (bundleError) throw bundleError;
 
       setSettingsMessage("Settings saved.");
     } catch (err: unknown) {
@@ -285,7 +260,6 @@ export default function StatsPage() {
           botaniqals: Number(botaniqalsTargetInput) || 0,
           minileaf: Number(minileafTargetInput) || 0,
         },
-        bundleLineitemNames: parsedBundleNames,
         timezone,
         weekBuckets,
       });
@@ -428,10 +402,8 @@ export default function StatsPage() {
           )}
 
           <details className="mt-4 border-t border-zinc-100 pt-3">
-            <summary className="cursor-pointer text-xs font-medium text-zinc-800">
-              Weekly targets &amp; bundle settings
-            </summary>
-            <div className="mt-3 grid gap-3 md:grid-cols-3">
+            <summary className="cursor-pointer text-xs font-medium text-zinc-800">Weekly targets</summary>
+            <div className="mt-3 grid gap-3 md:grid-cols-2">
               <div>
                 <label className="mb-1 block text-xs font-medium text-zinc-800">
                   BotanIQals weekly revenue target
@@ -455,17 +427,6 @@ export default function StatsPage() {
                   min="0"
                   value={minileafTargetInput}
                   onChange={(e) => setMinileafTargetInput(e.target.value)}
-                  className="w-full rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-xs text-black shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
-                />
-              </div>
-              <div>
-                <label className="mb-1 block text-xs font-medium text-zinc-800">
-                  Bundle line items (comma-separated, for Bundle Attach Rate)
-                </label>
-                <input
-                  value={bundleNamesInput}
-                  onChange={(e) => setBundleNamesInput(e.target.value)}
-                  placeholder="Better Smile Bundle"
                   className="w-full rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-xs text-black shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
                 />
               </div>

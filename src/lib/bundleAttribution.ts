@@ -1,9 +1,10 @@
 // Splits a multi-component line item's revenue across its components for
 // the Stats page's product-level charts/table, and detects whether an
-// order contains a configured "bundle" line item for the Bundle Attach
-// Rate KPI. Bundle identification is settings-driven (bundle_settings.
-// bundle_lineitem_names, edited on the Stats page) rather than hardcoded,
-// so it survives a Shopify variant rename without a code change.
+// order contains a "bundle" line item for the Bundle Attach Rate KPI.
+// Bundle detection is derived automatically from variant_component_map: a
+// line item is a bundle if its mapped components array names more than one
+// distinct product_id. No manual configuration needed — it stays correct
+// as variant mappings change.
 
 export type MappingComponent = { product_id: string; qty_per_unit: number };
 
@@ -50,16 +51,23 @@ export function splitLineItemRevenueByComponents(
   });
 }
 
-// An order "contains the bundle" if any of its line items' lineitem_name is
-// an exact match against the configured list. Returns false (never "the
-// order might contain it") when bundle_settings hasn't been configured yet
-// — the Stats page shows "—" for Bundle Attach Rate in that case rather
-// than a misleading 0%.
+// A line item is "a bundle" if variant_component_map resolves it to more
+// than one distinct product_id (a single-product line item, even at
+// qty_per_unit > 1, is not a bundle — it's just one product).
+export function lineItemIsBundle(
+  lineitemName: string,
+  componentsByLineitemName: Map<string, MappingComponent[]>,
+): boolean {
+  const components = componentsByLineitemName.get(lineitemName) ?? [];
+  const distinctProductIds = new Set(components.map((c) => c.product_id));
+  return distinctProductIds.size > 1;
+}
+
+// An order "contains a bundle" if any of its line items resolve to a
+// multi-product components array.
 export function orderContainsBundle(
   orderLineItemNames: string[],
-  bundleLineitemNames: string[],
+  componentsByLineitemName: Map<string, MappingComponent[]>,
 ): boolean {
-  if (bundleLineitemNames.length === 0) return false;
-  const bundleSet = new Set(bundleLineitemNames);
-  return orderLineItemNames.some((name) => bundleSet.has(name));
+  return orderLineItemNames.some((name) => lineItemIsBundle(name, componentsByLineitemName));
 }
