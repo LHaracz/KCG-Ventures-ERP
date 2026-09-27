@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { useSupabase } from "@/components/InstantProvider";
 
 type NavLeaf = { href: string; label: string };
@@ -12,6 +12,15 @@ type NavSection = {
   items?: NavLeaf[];
   categories?: NavCategory[];
 };
+
+const SIDEBAR_WIDTH_STORAGE_KEY = "kcg-erp-sidebar-width";
+const SIDEBAR_MIN_WIDTH = 190;
+const SIDEBAR_MAX_WIDTH = 420;
+const SIDEBAR_DEFAULT_WIDTH = 256; // matches the previous fixed w-64
+
+function clampSidebarWidth(width: number): number {
+  return Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, width));
+}
 
 const topItems: NavLeaf[] = [
   { href: "/", label: "Dashboard" },
@@ -237,10 +246,105 @@ function NavMenu({
   );
 }
 
+// Draggable handle on the sidebar's right edge. Tracks drag state via React
+// state (not just CSS :hover) so the highlight persists even if the pointer
+// drifts off the thin handle mid-drag; width updates live via onResize, and
+// the final width is committed (and persisted) via onResizeEnd on release.
+function SidebarResizeHandle({
+  width,
+  onResize,
+  onResizeEnd,
+}: {
+  width: number;
+  onResize: (width: number) => void;
+  onResizeEnd: (width: number) => void;
+}) {
+  const [isDragging, setIsDragging] = useState(false);
+  const dragState = useRef<{ startX: number; startWidth: number } | null>(null);
+
+  const handlePointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    dragState.current = { startX: e.clientX, startWidth: width };
+    setIsDragging(true);
+    document.body.style.userSelect = "none";
+    document.body.style.cursor = "col-resize";
+
+    const handlePointerMove = (moveEvent: PointerEvent) => {
+      if (!dragState.current) return;
+      const delta = moveEvent.clientX - dragState.current.startX;
+      onResize(clampSidebarWidth(dragState.current.startWidth + delta));
+    };
+
+    const handlePointerUp = (upEvent: PointerEvent) => {
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", handlePointerUp);
+      document.body.style.userSelect = "";
+      document.body.style.cursor = "";
+      setIsDragging(false);
+      if (dragState.current) {
+        const delta = upEvent.clientX - dragState.current.startX;
+        onResizeEnd(clampSidebarWidth(dragState.current.startWidth + delta));
+      }
+      dragState.current = null;
+    };
+
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", handlePointerUp);
+  };
+
+  return (
+    <div
+      onPointerDown={handlePointerDown}
+      role="separator"
+      aria-orientation="vertical"
+      aria-label="Resize sidebar"
+      className="group absolute -right-1 top-0 hidden h-full w-2 cursor-col-resize touch-none select-none md:block"
+    >
+      <div
+        className={`mx-auto h-full transition-all ${
+          isDragging ? "w-1 bg-emerald-500" : "w-px bg-zinc-200 group-hover:w-1 group-hover:bg-emerald-400"
+        }`}
+      />
+    </div>
+  );
+}
+
 export function Navigation() {
   const pathname = usePathname();
   const { user, isLoading, supabase } = useSupabase();
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [sidebarWidth, setSidebarWidth] = useState(SIDEBAR_DEFAULT_WIDTH);
+
+  // Read the persisted width only on the client after mount, so the initial
+  // render always matches the SSR default (avoids a hydration mismatch). This
+  // is an intentional one-time sync from an external store (localStorage) on
+  // mount, not a derived-state loop — the empty dep array means it can only
+  // ever run once per mount.
+  useEffect(() => {
+    try {
+      const stored = window.localStorage.getItem(SIDEBAR_WIDTH_STORAGE_KEY);
+      if (stored) {
+        const parsed = Number(stored);
+        if (Number.isFinite(parsed)) {
+          // eslint-disable-next-line react-hooks/set-state-in-effect -- one-time read from localStorage on mount, guarded by an empty dep array
+          setSidebarWidth(clampSidebarWidth(parsed));
+        }
+      }
+    } catch {
+      // localStorage can throw in private browsing / disabled storage —
+      // just keep the default width in that case.
+    }
+  }, []);
+
+  const handleSidebarResizeEnd = (width: number) => {
+    setSidebarWidth(width);
+    try {
+      window.localStorage.setItem(SIDEBAR_WIDTH_STORAGE_KEY, String(width));
+    } catch {
+      // localStorage can throw in private browsing / disabled storage — the
+      // resize itself still works, it just won't persist this session.
+    }
+  };
 
   const handleLogout = async () => {
     await supabase.auth.signOut();
@@ -250,7 +354,10 @@ export function Navigation() {
   return (
     <>
       {/* Desktop sidebar */}
-      <aside className="hidden md:sticky md:top-0 md:flex md:h-screen md:w-64 md:shrink-0 md:flex-col md:border-r md:border-zinc-200 md:bg-white">
+      <aside
+        className="relative hidden md:sticky md:top-0 md:flex md:h-screen md:shrink-0 md:flex-col md:border-r md:border-zinc-200 md:bg-white"
+        style={{ width: sidebarWidth }}
+      >
         <div className="border-b border-zinc-200 px-4 py-4">
           <span className="text-sm font-semibold text-emerald-700">
             KCG Ventures ERP
@@ -260,6 +367,11 @@ export function Navigation() {
         <div className="border-t border-zinc-200 px-3 py-3">
           <AccountControls isLoading={isLoading} user={user} onLogout={handleLogout} />
         </div>
+        <SidebarResizeHandle
+          width={sidebarWidth}
+          onResize={setSidebarWidth}
+          onResizeEnd={handleSidebarResizeEnd}
+        />
       </aside>
 
       {/* Mobile top bar */}
