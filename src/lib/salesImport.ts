@@ -1,6 +1,11 @@
 import { shopifyAdminGraphQL, orderGidToNumericId } from "@/lib/shopifyAdmin";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { parseCsv } from "@/lib/csvParse";
+import {
+  preloadInventoryCache,
+  recordInventoryTransaction,
+  type InventoryRowCache,
+} from "@/lib/finishedGoodsInventory";
 
 /**
  * Sales Data import — pulls Shopify orders + line items into Supabase
@@ -147,24 +152,42 @@ export type SalesImportResult = {
   newUnmappedCount: number;
 };
 
+type MappingComponent = { product_id: string; qty_per_unit: number };
+
 // Upserts a batch of already-normalized orders (each order upserted on
 // shopify_order_id, its line items deleted+reinserted), tracks newly-seen
-// unmapped line item names, and advances the "since last import" watermark.
+// unmapped line item names, applies finished-goods inventory decrements for
+// BotanIQals components, and advances the "since last import" watermark.
 // Shared by both the Shopify API import and the CSV import so re-running
 // either one over an overlapping range never creates duplicates.
 async function processNormalizedOrders(
   admin: NonNullable<typeof supabaseAdmin>,
   orders: NormalizedOrderInput[],
+  triggeredByUserId: string | null = null,
 ): Promise<SalesImportResult> {
   const importedAt = new Date().toISOString();
 
-  // Preload existing mapped line item names once — this run's "unmapped"
-  // check is against the mapping as it stood when the import started.
+  // Preload the full mapping (not just names) once — this run's "unmapped"
+  // check, and the inventory decrement below, both work off the mapping as
+  // it stood when the import started.
   const { data: mapRows, error: mapError } = await admin
     .from("variant_component_map")
-    .select("lineitem_name");
+    .select("lineitem_name, components");
   if (mapError) throw new Error(mapError.message);
-  const mappedNames = new Set((mapRows || []).map((r) => r.lineitem_name));
+  const mappingByName = new Map<string, MappingComponent[]>(
+    (mapRows || []).map((r) => [r.lineitem_name, (r.components || []) as MappingComponent[]]),
+  );
+
+  // MiniLeaf/microgreens are out of scope for finished-goods inventory —
+  // only decrement components whose product is a BotanIQals product.
+  const { data: botaniqalsProductRows, error: botaniqalsProductsError } = await admin
+    .from("products")
+    .select("id")
+    .eq("is_microgreen", false);
+  if (botaniqalsProductsError) throw new Error(botaniqalsProductsError.message);
+  const botaniqalsProductIds = new Set((botaniqalsProductRows || []).map((p) => p.id));
+
+  const inventoryCache: InventoryRowCache = await preloadInventoryCache(admin);
 
   let importedOrders = 0;
   let latestCreatedAt: string | null = null;
@@ -188,7 +211,7 @@ async function processNormalizedOrders(
         },
         { onConflict: "shopify_order_id" },
       )
-      .select("id")
+      .select("id, inventory_applied")
       .single();
 
     if (orderError || !orderRow) {
@@ -217,10 +240,72 @@ async function processNormalizedOrders(
       if (insertError) throw new Error(insertError.message);
     }
 
+    // Inventory decrement: only attempt for an order that isn't already
+    // fully applied. A line item with no mapping is skipped on its own
+    // (doesn't block the rest of the order), and the order is only marked
+    // inventory_applied once every line item has been mapped and
+    // processed — so a future re-import picks up the rest once mapped.
+    //
+    // Re-import safety: an order that's already partially decremented (some
+    // items mapped, one still unmapped) must not be double-decremented on a
+    // later re-import before it's fully mapped. Since inventory_applied is
+    // order-level, we additionally check this order's own existing
+    // sale_decrease transactions and skip any (product, line item) pair
+    // that's already there — this is why the transaction's note is set to
+    // the exact line item name, doubling as the dedup key.
+    const attemptDecrement = !orderRow.inventory_applied;
+    let orderFullyMapped = true;
+
+    let alreadyProcessedKeys: Set<string> | null = null;
+    if (attemptDecrement) {
+      const { data: existingTx, error: existingTxError } = await admin
+        .from("inventory_transactions")
+        .select("product_id, note")
+        .eq("reference_type", "order")
+        .eq("reference_id", orderRow.id)
+        .eq("type", "sale_decrease");
+      if (existingTxError) throw new Error(existingTxError.message);
+      alreadyProcessedKeys = new Set((existingTx || []).map((t) => `${t.product_id}::${t.note ?? ""}`));
+    }
+
     for (const li of order.lineItems) {
-      if (!mappedNames.has(li.name)) {
+      const mapping = mappingByName.get(li.name);
+      if (!mapping) {
+        orderFullyMapped = false;
         unmappedIncrements.set(li.name, (unmappedIncrements.get(li.name) ?? 0) + 1);
+        continue;
       }
+
+      if (!attemptDecrement) continue;
+
+      for (const component of mapping) {
+        if (!botaniqalsProductIds.has(component.product_id)) continue; // MiniLeaf — no transaction
+        const key = `${component.product_id}::${li.name}`;
+        if (alreadyProcessedKeys!.has(key)) continue; // already decremented in a prior partial run
+
+        const rawAmount = Number(component.qty_per_unit) * Number(li.quantity);
+        if (!Number.isFinite(rawAmount) || rawAmount === 0) continue;
+        const decrementAmount = Math.round(rawAmount);
+
+        await recordInventoryTransaction(admin, {
+          productId: component.product_id,
+          type: "sale_decrease",
+          quantityDelta: -decrementAmount,
+          referenceType: "order",
+          referenceId: orderRow.id,
+          note: li.name,
+          createdBy: triggeredByUserId,
+          cache: inventoryCache,
+        });
+      }
+    }
+
+    if (attemptDecrement && orderFullyMapped) {
+      const { error: applyError } = await admin
+        .from("orders")
+        .update({ inventory_applied: true })
+        .eq("id", orderRow.id);
+      if (applyError) throw new Error(applyError.message);
     }
 
     importedOrders += 1;
@@ -287,6 +372,7 @@ async function processNormalizedOrders(
 export async function runSalesImport(params: {
   since?: string | null;
   until?: string | null;
+  triggeredByUserId?: string | null;
 }): Promise<SalesImportResult> {
   const admin = requireAdmin();
 
@@ -347,7 +433,7 @@ export async function runSalesImport(params: {
     after = data.orders.pageInfo.endCursor;
   }
 
-  return processNormalizedOrders(admin, normalizedOrders);
+  return processNormalizedOrders(admin, normalizedOrders, params.triggeredByUserId ?? null);
 }
 
 // --- CSV import (backfill path) ---------------------------------------
@@ -505,7 +591,10 @@ export type CsvSalesImportResult = SalesImportResult & {
   parseErrors: string[];
 };
 
-export async function runCsvSalesImport(csvText: string): Promise<CsvSalesImportResult> {
+export async function runCsvSalesImport(
+  csvText: string,
+  triggeredByUserId?: string | null,
+): Promise<CsvSalesImportResult> {
   const admin = requireAdmin();
   const { orders, skippedRowCount, errors } = parseShopifyOrdersCsv(csvText);
 
@@ -513,6 +602,6 @@ export async function runCsvSalesImport(csvText: string): Promise<CsvSalesImport
     return { importedOrders: 0, newUnmappedCount: 0, skippedRowCount, parseErrors: errors };
   }
 
-  const result = await processNormalizedOrders(admin, orders);
+  const result = await processNormalizedOrders(admin, orders, triggeredByUserId ?? null);
   return { ...result, skippedRowCount, parseErrors: errors };
 }

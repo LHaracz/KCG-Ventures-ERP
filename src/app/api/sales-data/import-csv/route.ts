@@ -12,7 +12,7 @@ const MAX_CSV_LENGTH = 20 * 1024 * 1024;
 
 export async function POST(request: Request) {
   try {
-    await requireApiUserFromBearerToken(request);
+    const user = await requireApiUserFromBearerToken(request);
 
     let body: ImportCsvRequestBody = {};
     try {
@@ -33,7 +33,7 @@ export async function POST(request: Request) {
       );
     }
 
-    const result = await runCsvSalesImport(csv);
+    const result = await runCsvSalesImport(csv, user.id);
     return NextResponse.json(result);
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unexpected server error.";

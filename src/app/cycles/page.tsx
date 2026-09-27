@@ -10,6 +10,10 @@ import {
   deductRawMaterialsForCycle,
   undoRawMaterialDeductionForCycle,
 } from "@/lib/rawMaterialDeduction";
+import {
+  preloadInventoryCache,
+  recordInventoryTransaction,
+} from "@/lib/finishedGoodsInventory";
 
 type BusinessType = "MiniLeaf" | "BotanIQals";
 
@@ -365,6 +369,34 @@ export default function CyclesPage() {
               ignoreDuplicates: false,
             });
           if (upsertBatchErr) throw upsertBatchErr;
+        }
+
+        // Finished-goods inventory increment — claimed the same way raw
+        // material deduction is (a conditional update on a nullable
+        // timestamp column), so a retried completion never double-credits
+        // on-hand quantity.
+        const { data: claimedFinishedGoodsRows, error: claimFinishedGoodsErr } = await supabase
+          .from("production_cycles")
+          .update({ finished_goods_applied_at: nowIso })
+          .eq("id", cycle.id)
+          .is("finished_goods_applied_at", null)
+          .select("id");
+        if (claimFinishedGoodsErr) throw claimFinishedGoodsErr;
+
+        if (claimedFinishedGoodsRows && claimedFinishedGoodsRows.length > 0 && batchRows.length > 0) {
+          const inventoryCache = await preloadInventoryCache(supabase);
+          for (const batchRow of batchRows) {
+            if (batchRow.quantity_produced <= 0) continue;
+            await recordInventoryTransaction(supabase, {
+              productId: batchRow.product_id,
+              type: "production_increase",
+              quantityDelta: batchRow.quantity_produced,
+              referenceType: "production_cycle",
+              referenceId: cycle.id,
+              createdBy: user.id,
+              cache: inventoryCache,
+            });
+          }
         }
       }
 

@@ -9,7 +9,7 @@ type ImportRequestBody = {
 
 export async function POST(request: Request) {
   try {
-    await requireApiUserFromBearerToken(request);
+    const user = await requireApiUserFromBearerToken(request);
 
     let body: ImportRequestBody = {};
     try {
@@ -22,6 +22,7 @@ export async function POST(request: Request) {
     const result = await runSalesImport({
       since: body.since || null,
       until: body.until || null,
+      triggeredByUserId: user.id,
     });
 
     return NextResponse.json(result);
