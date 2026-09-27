@@ -106,6 +106,11 @@ export default function SalesDataPage() {
   const [importMessage, setImportMessage] = useState<string | null>(null);
   const [importError, setImportError] = useState<string | null>(null);
 
+  const [csvFile, setCsvFile] = useState<File | null>(null);
+  const [csvImporting, setCsvImporting] = useState(false);
+  const [csvMessage, setCsvMessage] = useState<string | null>(null);
+  const [csvError, setCsvError] = useState<string | null>(null);
+
   const [orderNameFilter, setOrderNameFilter] = useState("");
   const [customerFilter, setCustomerFilter] = useState("");
   const [dateAfter, setDateAfter] = useState("");
@@ -128,7 +133,10 @@ export default function SalesDataPage() {
       ),
       supabase.from("variant_component_map").select("lineitem_name, business, components"),
       supabase.from("unmapped_line_items").select("*").order("order_count", { ascending: false }),
-      supabase.from("products").select("id, name").eq("is_microgreen", false),
+      // Not filtered to is_microgreen=false — variant mappings can now point
+      // at MiniLeaf microgreens too, so this needs every product to resolve
+      // names for the Products column below.
+      supabase.from("products").select("id, name"),
     ]);
     if (
       ordersResult.error ||
@@ -280,6 +288,40 @@ export default function SalesDataPage() {
     }
   };
 
+  const handleCsvImport = async () => {
+    if (!csvFile) {
+      setCsvError("Choose a CSV file first.");
+      return;
+    }
+    setCsvImporting(true);
+    setCsvError(null);
+    setCsvMessage(null);
+    try {
+      const csvText = await csvFile.text();
+      const payload = await authedFetch("/api/sales-data/import-csv", { csv: csvText });
+      const summaryParts = [
+        `Imported ${payload.importedOrders} order(s).`,
+        `${payload.newUnmappedCount} new unmapped line item(s) found.`,
+      ];
+      if (payload.skippedRowCount > 0) {
+        summaryParts.push(`${payload.skippedRowCount} row(s) skipped.`);
+      }
+      setCsvMessage(summaryParts.join(" "));
+      if (Array.isArray(payload.parseErrors) && payload.parseErrors.length > 0) {
+        const shown = payload.parseErrors.slice(0, 5);
+        const extra = payload.parseErrors.length - shown.length;
+        setCsvError(shown.join(" · ") + (extra > 0 ? ` (+${extra} more)` : ""));
+      }
+      await loadAll();
+      setCurrentPage(1);
+      setCsvFile(null);
+    } catch (err: any) {
+      setCsvError(err.message || "CSV import failed.");
+    } finally {
+      setCsvImporting(false);
+    }
+  };
+
   const visibleOrders = useMemo(() => {
     const orderNeedle = orderNameFilter.trim().toLowerCase();
     const customerNeedle = customerFilter.trim().toLowerCase();
@@ -375,6 +417,11 @@ export default function SalesDataPage() {
 
         <section className="rounded-lg border border-zinc-200 bg-white p-4 shadow-sm">
           <h2 className="mb-3 text-sm font-semibold text-zinc-900">Import Orders</h2>
+          <p className="mb-3 text-xs text-zinc-600">
+            Pulls from Shopify&apos;s API directly — keeps recent orders current, but Shopify only
+            exposes a rolling recent window this way. For anything older, use Import from CSV
+            below.
+          </p>
           <div className="flex flex-wrap items-end gap-3">
             <div>
               <label className="mb-1 block text-xs font-medium text-zinc-800">
@@ -409,6 +456,38 @@ export default function SalesDataPage() {
           {importError && (
             <p className="mt-2 text-xs text-red-600" role="alert">
               {importError}
+            </p>
+          )}
+        </section>
+
+        <section className="rounded-lg border border-zinc-200 bg-white p-4 shadow-sm">
+          <h2 className="mb-3 text-sm font-semibold text-zinc-900">Import from CSV</h2>
+          <p className="mb-3 text-xs text-zinc-600">
+            For order history Shopify&apos;s API won&apos;t return. In Shopify admin, go to Orders
+            → Export → export the date range you need as a CSV, then upload that file here as-is.
+            Uses the same order de-duplication as Import Orders above, so re-uploading an
+            overlapping date range is safe.
+          </p>
+          <div className="flex flex-wrap items-center gap-3">
+            <input
+              type="file"
+              accept=".csv"
+              onChange={(e) => setCsvFile(e.target.files?.[0] ?? null)}
+              className="text-xs text-zinc-700 file:mr-3 file:rounded-md file:border-0 file:bg-zinc-100 file:px-3 file:py-1.5 file:text-xs file:font-medium file:text-zinc-800 hover:file:bg-zinc-200"
+            />
+            <button
+              type="button"
+              onClick={handleCsvImport}
+              disabled={csvImporting || !csvFile}
+              className="rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white shadow-sm hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-70"
+            >
+              {csvImporting ? "Importing…" : "Upload CSV"}
+            </button>
+          </div>
+          {csvMessage && <p className="mt-2 text-xs text-emerald-700">{csvMessage}</p>}
+          {csvError && (
+            <p className="mt-2 text-xs text-red-600" role="alert">
+              {csvError}
             </p>
           )}
         </section>
