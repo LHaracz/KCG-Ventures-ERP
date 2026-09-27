@@ -6,6 +6,13 @@ import {
   recordInventoryTransaction,
   type InventoryRowCache,
 } from "@/lib/finishedGoodsInventory";
+import { matchMarketForOrder, type MarketRow } from "@/lib/marketMatching";
+
+// Same fixed id + default used by src/app/api/cron/notifications/route.ts —
+// market matching reuses this single business-timezone setting rather than
+// introducing a second one.
+const NOTIFICATION_CONFIG_ID = "a0000000-0000-0000-0000-000000000001";
+const DEFAULT_TIMEZONE = "America/New_York";
 
 /**
  * Sales Data import — pulls Shopify orders + line items into Supabase
@@ -37,12 +44,16 @@ type ShopifyOrderNode = {
   displayFinancialStatus: string | null;
   displayFulfillmentStatus: string | null;
   email: string | null;
+  sourceName: string | null;
   totalPriceSet: { shopMoney: { amount: string } } | null;
   customer: {
     firstName: string | null;
     lastName: string | null;
     email: string | null;
     phone: string | null;
+  } | null;
+  billingAddress: {
+    name: string | null;
   } | null;
   lineItems: {
     edges: Array<{
@@ -70,6 +81,7 @@ const ORDER_FIELDS = `
   displayFinancialStatus
   displayFulfillmentStatus
   email
+  sourceName
   totalPriceSet {
     shopMoney {
       amount
@@ -80,6 +92,9 @@ const ORDER_FIELDS = `
     lastName
     email
     phone
+  }
+  billingAddress {
+    name
   }
   lineItems(first: 100) {
     edges {
@@ -144,6 +159,12 @@ type NormalizedOrderInput = {
   customerEmail: string | null;
   customerName: string | null;
   total: number | null;
+  // Shopify's channel identifier ("web"/"pos"/"shopify_draft_order"/…, from
+  // sourceName in the API or the "Source" CSV column) and the order's
+  // billing name — both feed market matching / the Stats page's revenue
+  // channel split. Either may be unavailable (older CSV exports, etc.).
+  channel: string | null;
+  billingName: string | null;
   lineItems: Array<{ name: string; quantity: number; price: number | null; sku: string | null }>;
 };
 
@@ -189,12 +210,30 @@ async function processNormalizedOrders(
 
   const inventoryCache: InventoryRowCache = await preloadInventoryCache(admin);
 
+  // Market matching: preload active markets + the business timezone once
+  // per run, reused for every order below (src/lib/marketMatching.ts).
+  const { data: marketRows, error: marketsError } = await admin
+    .from("markets")
+    .select("id, day_of_week, start_time, end_time, season_start_date, season_end_date, active")
+    .eq("active", true);
+  if (marketsError) throw new Error(marketsError.message);
+  const activeMarkets = (marketRows || []) as MarketRow[];
+
+  const { data: configRow } = await admin
+    .from("notification_config")
+    .select("timezone")
+    .eq("id", NOTIFICATION_CONFIG_ID)
+    .maybeSingle();
+  const timezone = (configRow?.timezone as string) || DEFAULT_TIMEZONE;
+
   let importedOrders = 0;
   let latestCreatedAt: string | null = null;
   // lineitem_name -> number of NEW (unmapped) occurrences seen this run.
   const unmappedIncrements = new Map<string, number>();
 
   for (const order of orders) {
+    const marketMatch = matchMarketForOrder(order.createdAt, order.channel, activeMarkets, timezone);
+
     const { data: orderRow, error: orderError } = await admin
       .from("orders")
       .upsert(
@@ -207,6 +246,10 @@ async function processNormalizedOrders(
           customer_email: order.customerEmail,
           customer_name: order.customerName,
           total: order.total,
+          channel: order.channel,
+          billing_name: order.billingName,
+          market_id: marketMatch.market_id,
+          pos_category: marketMatch.pos_category,
           imported_at: importedAt,
         },
         { onConflict: "shopify_order_id" },
@@ -418,6 +461,8 @@ export async function runSalesImport(params: {
         customerEmail,
         customerName,
         total,
+        channel: node.sourceName || null,
+        billingName: node.billingAddress?.name || null,
         lineItems: node.lineItems.edges.map((li) => ({
           name: li.node.name,
           quantity: li.node.quantity,
@@ -509,6 +554,8 @@ export function parseShopifyOrdersCsv(csvText: string): CsvImportParseResult {
     customerEmail: string | null;
     customerName: string | null;
     total: number | null;
+    channel: string | null;
+    billingName: string | null;
     lineItems: Array<{ name: string; quantity: number; price: number | null; sku: string | null }>;
   };
 
@@ -539,6 +586,8 @@ export function parseShopifyOrdersCsv(csvText: string): CsvImportParseResult {
         customerEmail: (col(row, "Email") || "").trim() || null,
         customerName: billingName || shippingName || null,
         total: parseCsvNumber(col(row, "Total")),
+        channel: (col(row, "Source") || "").trim() || null,
+        billingName: billingName || null,
         lineItems: [],
       };
       groups.push(current);
@@ -579,6 +628,8 @@ export function parseShopifyOrdersCsv(csvText: string): CsvImportParseResult {
       customerEmail: group.customerEmail,
       customerName: group.customerName,
       total: group.total,
+      channel: group.channel,
+      billingName: group.billingName,
       lineItems: group.lineItems,
     });
   }

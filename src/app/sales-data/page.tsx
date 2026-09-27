@@ -5,6 +5,12 @@ import Link from "next/link";
 import { AuthGuard } from "@/components/AuthGuard";
 import { useSupabase } from "@/components/InstantProvider";
 import { formatDate, toMidnight } from "@/lib/date";
+import { fetchAllRows } from "@/lib/supabasePagination";
+import {
+  buildComponentsByLineitemName,
+  buildBusinessByLineitemName,
+  resolveOrderBusinessTag,
+} from "@/lib/salesAttribution";
 
 type OrderRow = {
   id: string;
@@ -48,7 +54,6 @@ type UnmappedRow = {
 type BusinessTag = "botaniqals" | "minileaf" | "Mixed" | "Unmapped";
 
 const PAGE_SIZE = 100;
-const FETCH_PAGE_SIZE = 1000;
 
 const inputClassName =
   "w-full rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-black placeholder:text-gray-400 shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500";
@@ -66,27 +71,6 @@ function formatTotal(amount: number | null): string {
   } catch {
     return `$${amount.toFixed(2)}`;
   }
-}
-
-// Supabase/PostgREST caps unbounded selects at a default row limit, which
-// silently truncated the (created_at-desc-sorted) orders/line-items fetch to
-// only the newest rows once enough history was imported. This loops through
-// with explicit .range() pages until a page comes back short, so nothing is
-// ever silently dropped.
-async function fetchAllRows<T>(
-  build: (from: number, to: number) => PromiseLike<{ data: T[] | null; error: { message: string } | null }>,
-): Promise<{ data: T[]; error: { message: string } | null }> {
-  let offset = 0;
-  let all: T[] = [];
-  while (true) {
-    const { data, error } = await build(offset, offset + FETCH_PAGE_SIZE - 1);
-    if (error) return { data: all, error };
-    const rows = data || [];
-    all = all.concat(rows);
-    if (rows.length < FETCH_PAGE_SIZE) break;
-    offset += FETCH_PAGE_SIZE;
-  }
-  return { data: all, error: null };
 }
 
 export default function SalesDataPage() {
@@ -205,43 +189,16 @@ export default function SalesDataPage() {
     return map;
   }, [products]);
 
-  const componentsByLineitemName = useMemo(() => {
-    const map = new Map<string, MappingComponent[]>();
-    for (const m of variantMap) map.set(m.lineitem_name, m.components || []);
-    return map;
-  }, [variantMap]);
+  const componentsByLineitemName = useMemo(() => buildComponentsByLineitemName(variantMap), [variantMap]);
 
-  const businessByLineitemName = useMemo(() => {
-    const map = new Map<string, "minileaf" | "botaniqals">();
-    for (const m of variantMap) map.set(m.lineitem_name, m.business);
-    return map;
-  }, [variantMap]);
+  const businessByLineitemName = useMemo(() => buildBusinessByLineitemName(variantMap), [variantMap]);
 
   const businessTagByOrderId = useMemo(() => {
     const map = new Map<string, BusinessTag>();
     for (const order of orders) {
       const items = lineItemsByOrderId.get(order.id) ?? [];
-      if (items.length === 0) {
-        map.set(order.id, "Unmapped");
-        continue;
-      }
-      const businesses = new Set<string>();
-      let hasUnmapped = false;
-      for (const li of items) {
-        const business = businessByLineitemName.get(li.lineitem_name);
-        if (!business) {
-          hasUnmapped = true;
-        } else {
-          businesses.add(business);
-        }
-      }
-      if (businesses.size === 0) {
-        map.set(order.id, "Unmapped");
-      } else if (businesses.size === 1 && !hasUnmapped) {
-        map.set(order.id, Array.from(businesses)[0] as BusinessTag);
-      } else {
-        map.set(order.id, "Mixed");
-      }
+      const names = items.map((li) => li.lineitem_name);
+      map.set(order.id, resolveOrderBusinessTag(names, businessByLineitemName));
     }
     return map;
   }, [orders, lineItemsByOrderId, businessByLineitemName]);
