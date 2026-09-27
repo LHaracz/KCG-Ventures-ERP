@@ -72,7 +72,7 @@ function NavLink({
   item,
   active,
   onClick,
-  inactiveTextClassName = "text-zinc-700",
+  inactiveTextClassName = "text-black",
 }: {
   item: NavLeaf;
   active: boolean;
@@ -96,7 +96,7 @@ function NavLink({
 
 function SectionHeading({ title }: { title: string }) {
   return (
-    <div className="mt-4 mb-1 px-3 text-xs font-semibold uppercase tracking-wide text-zinc-500 underline decoration-zinc-300 underline-offset-4">
+    <div className="mt-4 mb-1 px-3 text-xs font-semibold uppercase tracking-wide text-black underline decoration-zinc-300 underline-offset-4">
       {title}
     </div>
   );
@@ -150,7 +150,6 @@ function CategorySection({
               item={item}
               active={pathname === item.href}
               onClick={onNavigate}
-              inactiveTextClassName="text-black"
             />
           ))}
         </div>
