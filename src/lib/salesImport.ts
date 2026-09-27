@@ -105,11 +105,16 @@ function requireAdmin() {
   return supabaseAdmin;
 }
 
-function buildSearchQuery(since: string | null, until: string | null): string | null {
-  const parts: string[] = [];
+function buildSearchQuery(since: string | null, until: string | null): string {
+  // Shopify's orders() query defaults to status:open when no status term is
+  // given, silently excluding closed/archived orders — which is most orders
+  // more than a few weeks old. status:any is required here so date-range
+  // filtering (and the regular "since last import" sync) actually returns
+  // full history, not just currently-open orders.
+  const parts: string[] = ["status:any"];
   if (since) parts.push(`created_at:>='${since}'`);
   if (until) parts.push(`created_at:<='${until}'`);
-  return parts.length > 0 ? parts.join(" ") : null;
+  return parts.join(" ");
 }
 
 export type SalesImportResult = {
