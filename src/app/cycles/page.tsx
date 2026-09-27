@@ -550,14 +550,22 @@ export default function CyclesPage() {
   return (
     <AuthGuard>
       <div className="mx-auto max-w-5xl space-y-6">
-        <header>
-          <h1 className="mb-1 text-2xl font-semibold text-zinc-900">
-            Production Cycles & Planner
-          </h1>
-          <p className="text-sm text-zinc-600">
-            Define production windows and navigate to detailed planners for
-            feasibility, shortages, and tray plans.
-          </p>
+        <header className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h1 className="mb-1 text-2xl font-semibold text-zinc-900">
+              Production Cycles & Planner
+            </h1>
+            <p className="text-sm text-zinc-600">
+              Define production windows and navigate to detailed planners for
+              feasibility, shortages, and tray plans.
+            </p>
+          </div>
+          <Link
+            href="/production-optimization"
+            className="rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white shadow-sm hover:bg-emerald-700"
+          >
+            Run BotanIQals Optimization
+          </Link>
         </header>
 
         <section className="grid gap-4 lg:grid-cols-2">
