@@ -277,7 +277,7 @@ export default function InventoryPage() {
         <header className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <h1 className="mb-1 text-2xl font-semibold text-zinc-900">
-              Inventory & Cycle Count
+              Raw Materials
             </h1>
             <p className="text-sm text-black">
               Manage materials, capture purchases and usage, and run cycle
