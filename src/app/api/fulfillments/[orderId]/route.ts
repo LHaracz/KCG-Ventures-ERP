@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { requireApiUserFromBearerToken } from "@/lib/apiAuth";
 import { shopifyAdminGraphQL, weightToOz, toOrderGid } from "@/lib/shopifyAdmin";
+import { normalizeShippingAddress, type CanonicalAddress } from "@/lib/fulfillmentOrder";
 
 type OrderQueryResponse = {
   order: {
@@ -96,16 +97,7 @@ export type FulfillmentOrderDetail = {
   customerName: string;
   customerEmail: string | null;
   customerPhone: string | null;
-  shippingAddress: {
-    name: string;
-    address1: string | null;
-    address2: string | null;
-    city: string | null;
-    province: string | null;
-    zip: string | null;
-    country: string | null;
-    phone: string | null;
-  } | null;
+  shippingAddress: CanonicalAddress | null;
   shippingMethodTitle: string | null;
   lineItems: Array<{
     title: string;
@@ -148,21 +140,7 @@ export async function GET(
         : "Guest",
       customerEmail: order.customer?.email ?? order.email ?? null,
       customerPhone: order.customer?.phone ?? order.phone ?? null,
-      shippingAddress: order.shippingAddress
-        ? {
-            name:
-              [order.shippingAddress.firstName, order.shippingAddress.lastName]
-                .filter(Boolean)
-                .join(" ") || "",
-            address1: order.shippingAddress.address1,
-            address2: order.shippingAddress.address2,
-            city: order.shippingAddress.city,
-            province: order.shippingAddress.provinceCode || order.shippingAddress.province,
-            zip: order.shippingAddress.zip,
-            country: order.shippingAddress.countryCodeV2 || order.shippingAddress.country,
-            phone: order.shippingAddress.phone,
-          }
-        : null,
+      shippingAddress: normalizeShippingAddress(order.shippingAddress),
       shippingMethodTitle: order.shippingLine?.title ?? null,
       lineItems: lineItems.map((li) => {
         const unitWeightOz = weightToOz(li.weight);

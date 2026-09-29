@@ -8,6 +8,7 @@ import {
 } from "@/lib/shopifyAdmin";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import type { FulfillmentStatus } from "@/lib/fulfillmentStatus";
+import type { AddressVerificationStatus } from "@/lib/addressVerification";
 
 type OrderNode = {
   id: string;
@@ -95,9 +96,10 @@ export type FulfillmentListRow = {
   totalPrice: number;
   currencyCode: string;
   status: FulfillmentStatus;
+  addressStatus: AddressVerificationStatus;
 };
 
-function mapOrderNode(node: OrderNode): Omit<FulfillmentListRow, "status"> {
+function mapOrderNode(node: OrderNode): Omit<FulfillmentListRow, "status" | "addressStatus"> {
   const lineItems = node.lineItems.edges.map((e) => e.node);
   const itemCount = lineItems.reduce((sum, li) => sum + (li.quantity || 0), 0);
   const totalProductWeightOz = lineItems.reduce(
@@ -121,7 +123,9 @@ function mapOrderNode(node: OrderNode): Omit<FulfillmentListRow, "status"> {
 
 /** Orders fulfilled in the last 14 days, so they stay visible for a bit
  * after Shopify stops returning them as unfulfilled. */
-async function fetchRecentlyFulfilledOrders(): Promise<Omit<FulfillmentListRow, "status">[]> {
+async function fetchRecentlyFulfilledOrders(): Promise<
+  Omit<FulfillmentListRow, "status" | "addressStatus">[]
+> {
   if (!supabaseAdmin) return [];
 
   const fourteenDaysAgo = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString();
@@ -164,6 +168,29 @@ async function fetchOrderStatuses(
   return statusMap;
 }
 
+// Passive read — mirrors fetchOrderStatuses exactly. Never triggers an
+// EasyPost verification call for an order that hasn't been checked yet;
+// those show as "unchecked" (the default when no row exists) until the
+// orders-create webhook checks new orders or an employee visits the order
+// detail page.
+async function fetchAddressVerificationStatuses(
+  orderIds: string[],
+): Promise<Map<string, AddressVerificationStatus>> {
+  const statusMap = new Map<string, AddressVerificationStatus>();
+  if (!supabaseAdmin || orderIds.length === 0) return statusMap;
+
+  const { data, error } = await supabaseAdmin
+    .from("order_address_verification")
+    .select("shopify_order_id, status")
+    .in("shopify_order_id", orderIds);
+
+  if (error || !data) return statusMap;
+  for (const row of data) {
+    statusMap.set(String(row.shopify_order_id), row.status as AddressVerificationStatus);
+  }
+  return statusMap;
+}
+
 export async function GET(request: Request) {
   try {
     await requireApiUserFromBearerToken(request);
@@ -176,15 +203,20 @@ export async function GET(request: Request) {
     const liveRows = liveData.orders.edges.map(({ node }) => mapOrderNode(node));
 
     // Merge + dedupe by order id (live orders take precedence on overlap).
-    const merged = new Map<string, Omit<FulfillmentListRow, "status">>();
+    const merged = new Map<string, Omit<FulfillmentListRow, "status" | "addressStatus">>();
     for (const row of recentlyFulfilled) merged.set(row.orderId, row);
     for (const row of liveRows) merged.set(row.orderId, row);
 
-    const statusMap = await fetchOrderStatuses(Array.from(merged.keys()));
+    const orderIds = Array.from(merged.keys());
+    const [statusMap, addressStatusMap] = await Promise.all([
+      fetchOrderStatuses(orderIds),
+      fetchAddressVerificationStatuses(orderIds),
+    ]);
 
     const rows: FulfillmentListRow[] = Array.from(merged.values()).map((row) => ({
       ...row,
       status: statusMap.get(row.orderId) ?? "preparing_shipment",
+      addressStatus: addressStatusMap.get(row.orderId) ?? "unchecked",
     }));
 
     return NextResponse.json({ ok: true, orders: rows });

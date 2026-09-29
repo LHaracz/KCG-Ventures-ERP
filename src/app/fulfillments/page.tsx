@@ -11,6 +11,7 @@ import {
   fulfillmentStatusLabel,
   type FulfillmentStatus,
 } from "@/lib/fulfillmentStatus";
+import { addressVerificationBadge, type AddressVerificationStatus } from "@/lib/addressVerification";
 
 type FulfillmentListRow = {
   orderId: string;
@@ -22,6 +23,7 @@ type FulfillmentListRow = {
   totalPrice: number;
   currencyCode: string;
   status: FulfillmentStatus;
+  addressStatus: AddressVerificationStatus;
 };
 
 const inputClassName =
@@ -244,12 +246,14 @@ export default function FulfillmentsPage() {
                     <th className="px-3 py-2 font-medium">Product Weight</th>
                     <th className="px-3 py-2 font-medium">Order Total</th>
                     <th className="px-3 py-2 font-medium">Status</th>
+                    <th className="px-3 py-2 font-medium">Address</th>
                     <th className="px-3 py-2 font-medium"></th>
                   </tr>
                 </thead>
                 <tbody>
                   {visibleOrders.map((o) => {
                     const badge = fulfillmentStatusBadge(o.status);
+                    const addressBadge = addressVerificationBadge(o.addressStatus);
                     return (
                       <tr key={o.orderId} className="border-b border-zinc-100">
                         <td className="px-3 py-2 font-medium text-zinc-900">{o.name}</td>
@@ -264,6 +268,11 @@ export default function FulfillmentsPage() {
                         </td>
                         <td className="px-3 py-2">
                           <span className={badge.className}>{badge.label}</span>
+                        </td>
+                        <td className="px-3 py-2">
+                          {o.addressStatus !== "unchecked" && (
+                            <span className={addressBadge.className}>{addressBadge.label}</span>
+                          )}
                         </td>
                         <td className="px-3 py-2">
                           <Link

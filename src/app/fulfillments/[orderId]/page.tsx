@@ -7,6 +7,14 @@ import { AuthGuard } from "@/components/AuthGuard";
 import { useSupabase } from "@/components/InstantProvider";
 import { formatDate } from "@/lib/date";
 import { fulfillmentStatusBadge, type FulfillmentStatus } from "@/lib/fulfillmentStatus";
+import type { CanonicalAddress } from "@/lib/fulfillmentOrder";
+import {
+  addressVerificationBadge,
+  addressesEqual,
+  hasRequiredAddressFields,
+  type AddressVerificationDetails,
+  type AddressVerificationStatus,
+} from "@/lib/addressVerification";
 
 type EasyPostRateOption = {
   id: string;
@@ -31,16 +39,7 @@ type FulfillmentOrderDetail = {
   customerName: string;
   customerEmail: string | null;
   customerPhone: string | null;
-  shippingAddress: {
-    name: string;
-    address1: string | null;
-    address2: string | null;
-    city: string | null;
-    province: string | null;
-    zip: string | null;
-    country: string | null;
-    phone: string | null;
-  } | null;
+  shippingAddress: CanonicalAddress | null;
   shippingMethodTitle: string | null;
   lineItems: Array<{
     title: string;
@@ -75,6 +74,23 @@ export default function FulfillmentOrderDetailPage() {
 
   const [status, setStatus] = useState<FulfillmentStatus>("preparing_shipment");
   const [fulfillmentLog, setFulfillmentLog] = useState<FulfillmentLogRow | null>(null);
+
+  // Shipping Address Verification & Flagging.
+  const [addressVerification, setAddressVerification] = useState<{
+    status: AddressVerificationStatus;
+    details: AddressVerificationDetails | null;
+    acceptedAddress: CanonicalAddress | null;
+  } | null>(null);
+  const [addressVerifying, setAddressVerifying] = useState(false);
+  const [addressActionError, setAddressActionError] = useState<string | null>(null);
+  const [addressAccepting, setAddressAccepting] = useState(false);
+  const [addressEditOpen, setAddressEditOpen] = useState(false);
+  const [addressDraft, setAddressDraft] = useState<CanonicalAddress | null>(null);
+  const [addressDraftPreview, setAddressDraftPreview] = useState<{
+    status: AddressVerificationStatus;
+    details: AddressVerificationDetails;
+  } | null>(null);
+  const [addressDraftPreviewing, setAddressDraftPreviewing] = useState(false);
 
   const [printingLabel, setPrintingLabel] = useState(false);
   const [voidingLabel, setVoidingLabel] = useState(false);
@@ -149,7 +165,7 @@ export default function FulfillmentOrderDetailPage() {
     if (!user || !orderId) return;
     let cancelled = false;
     const loadStatusAndLog = async () => {
-      const [statusResult, logResult] = await Promise.all([
+      const [statusResult, logResult, addressResult] = await Promise.all([
         supabase
           .from("order_status")
           .select("status")
@@ -163,10 +179,22 @@ export default function FulfillmentOrderDetailPage() {
           .order("created_at", { ascending: false })
           .limit(1)
           .maybeSingle(),
+        supabase
+          .from("order_address_verification")
+          .select("status, address_verification_details, accepted_address")
+          .eq("shopify_order_id", orderId)
+          .maybeSingle(),
       ]);
       if (cancelled) return;
       if (statusResult.data?.status) setStatus(statusResult.data.status as FulfillmentStatus);
       if (logResult.data) setFulfillmentLog(logResult.data as FulfillmentLogRow);
+      if (addressResult.data) {
+        setAddressVerification({
+          status: addressResult.data.status as AddressVerificationStatus,
+          details: (addressResult.data.address_verification_details as AddressVerificationDetails) ?? null,
+          acceptedAddress: (addressResult.data.accepted_address as CanonicalAddress) ?? null,
+        });
+      }
     };
     loadStatusAndLog();
     return () => {
@@ -195,6 +223,26 @@ export default function FulfillmentOrderDetailPage() {
     const tare = selectedPreset?.tare_weight_oz ?? 0;
     return productWeight + tare;
   }, [order, selectedPreset]);
+
+  // The address label buying should actually use — an employee's accepted
+  // override once one exists, otherwise the live Shopify address.
+  const effectiveAddress = useMemo<CanonicalAddress | null>(
+    () => addressVerification?.acceptedAddress ?? order?.shippingAddress ?? null,
+    [addressVerification, order],
+  );
+
+  // True when the live Shopify address has moved on since whatever we're
+  // comparing against (the accepted override if set, else the last check's
+  // originalAddress) — no DB "stale" column, just a client-side diff on
+  // every visit (see the plan's Decisions section).
+  const addressIsStale = useMemo(() => {
+    if (!order?.shippingAddress) return false;
+    const reference = addressVerification?.acceptedAddress ?? addressVerification?.details?.originalAddress ?? null;
+    if (!reference) return false;
+    return !addressesEqual(reference, order.shippingAddress);
+  }, [order, addressVerification]);
+
+  const labelAlreadyPurchased = status === "label_generated" || status === "label_printed";
 
   const authedFetch = async (path: string, body: unknown) => {
     const {
@@ -249,7 +297,10 @@ export default function FulfillmentOrderDetailPage() {
             height_in: selectedPreset.height_in,
             weight_oz: totalParcelWeightOz,
           },
-          shippingAddress: order.shippingAddress,
+          // The employee's accepted/corrected address once one exists,
+          // otherwise the live Shopify address — see Shipping Address
+          // Verification & Flagging.
+          shippingAddress: effectiveAddress,
           shippingMethodTitle: order.shippingMethodTitle,
         });
         if (cancelled) return;
@@ -350,6 +401,117 @@ export default function FulfillmentOrderDetailPage() {
     }
   };
 
+  // --- Shipping Address Verification & Flagging --------------------------
+
+  const handleVerifyAddress = async () => {
+    if (!orderId) return;
+    setAddressVerifying(true);
+    setAddressActionError(null);
+    try {
+      const payload = await authedFetch(`/api/fulfillments/${orderId}/verify-address`, {});
+      setAddressVerification((prev) => ({
+        status: payload.status,
+        details: payload.details,
+        acceptedAddress: prev?.acceptedAddress ?? null,
+      }));
+    } catch (err: any) {
+      setAddressActionError(err.message || "Failed to verify this address.");
+    } finally {
+      setAddressVerifying(false);
+    }
+  };
+
+  const handleAcceptSuggestedAddress = async () => {
+    const suggested = addressVerification?.details?.suggestedAddress;
+    if (!orderId || !suggested) return;
+    setAddressAccepting(true);
+    setAddressActionError(null);
+    try {
+      // The suggested address IS EasyPost's own corrected result — accept
+      // it as already verified rather than spending a second EasyPost call
+      // just to re-confirm what it just told us.
+      const verification = {
+        status: "verified" as AddressVerificationStatus,
+        details: { originalAddress: suggested, suggestedAddress: null, messages: [] },
+      };
+      await authedFetch(`/api/fulfillments/${orderId}/accept-address`, {
+        address: suggested,
+        verification,
+      });
+      setAddressVerification({ status: verification.status, details: verification.details, acceptedAddress: suggested });
+    } catch (err: any) {
+      setAddressActionError(err.message || "Failed to accept this address.");
+    } finally {
+      setAddressAccepting(false);
+    }
+  };
+
+  const handleOpenAddressEdit = () => {
+    if (!effectiveAddress) return;
+    setAddressDraft({ ...effectiveAddress });
+    setAddressDraftPreview(null);
+    setAddressActionError(null);
+    setAddressEditOpen(true);
+  };
+
+  const handleCancelAddressEdit = () => {
+    setAddressEditOpen(false);
+    setAddressDraft(null);
+    setAddressDraftPreview(null);
+  };
+
+  const handleAddressDraftField = (field: keyof CanonicalAddress, value: string) => {
+    setAddressDraft((prev) => (prev ? { ...prev, [field]: value } : prev));
+  };
+
+  const handlePreviewAddressDraft = async () => {
+    if (!orderId || !addressDraft) return;
+    if (!hasRequiredAddressFields(addressDraft)) {
+      setAddressActionError("Street, city, and ZIP are required.");
+      return;
+    }
+    setAddressDraftPreviewing(true);
+    setAddressActionError(null);
+    try {
+      const payload = await authedFetch(`/api/fulfillments/${orderId}/verify-address`, {
+        address: addressDraft,
+      });
+      setAddressDraftPreview({ status: payload.status, details: payload.details });
+    } catch (err: any) {
+      setAddressActionError(err.message || "Failed to verify this address.");
+    } finally {
+      setAddressDraftPreviewing(false);
+    }
+  };
+
+  const handleSaveAddressDraft = async () => {
+    if (!orderId || !addressDraft) return;
+    if (!hasRequiredAddressFields(addressDraft)) {
+      setAddressActionError("Street, city, and ZIP are required.");
+      return;
+    }
+    setAddressAccepting(true);
+    setAddressActionError(null);
+    try {
+      await authedFetch(`/api/fulfillments/${orderId}/accept-address`, {
+        address: addressDraft,
+        verification: addressDraftPreview ?? undefined,
+      });
+      setAddressVerification({
+        status: addressDraftPreview?.status ?? "unchecked",
+        details: addressDraftPreview?.details ?? null,
+        acceptedAddress: addressDraft,
+      });
+      setAddressEditOpen(false);
+      setAddressDraft(null);
+      setAddressDraftPreview(null);
+    } catch (err: any) {
+      setAddressActionError(err.message || "Failed to save this address.");
+    } finally {
+      setAddressAccepting(false);
+    }
+  };
+
   return (
     <AuthGuard>
       <div className="mx-auto max-w-4xl space-y-6">
@@ -432,11 +594,193 @@ export default function FulfillmentOrderDetailPage() {
                 ) : (
                   <p className="text-xs text-black">No shipping address on file.</p>
                 )}
-                {/* TODO (Part 2): flag addresses that fail carrier address verification,
-                    and offer a manual address-edit flow (Shopify orderUpdate mutation)
-                    when the customer's address needs correction before a label is bought. */}
               </div>
             </section>
+
+            {order.shippingAddress && status !== "fulfilled" && (
+              <section className="rounded-lg border border-zinc-200 bg-white p-4 shadow-sm">
+                <div className="mb-3 flex flex-wrap items-center gap-2">
+                  <h2 className="text-sm font-semibold text-zinc-900">
+                    Shipping Address Verification
+                  </h2>
+                  <span className={addressVerificationBadge(addressVerification?.status).className}>
+                    {addressVerificationBadge(addressVerification?.status).label}
+                  </span>
+                </div>
+
+                {addressIsStale && (
+                  <p className="mb-3 rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                    This order&apos;s shipping address in Shopify has changed since it was last
+                    checked — re-verify to see the current result.
+                  </p>
+                )}
+
+                {labelAlreadyPurchased && (
+                  <p className="mb-3 rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                    A label was already purchased for this order&apos;s previous address.
+                    Accepting or saving a different address here won&apos;t change that label —
+                    void it and generate a new one afterward if the address changed.
+                  </p>
+                )}
+
+                <div className="mb-3 rounded-md bg-zinc-50 px-3 py-2 text-xs text-zinc-700">
+                  <p className="mb-1 font-medium text-zinc-500">
+                    {addressVerification?.acceptedAddress ? "Accepted address" : "Current address"}
+                  </p>
+                  {effectiveAddress && (
+                    <>
+                      {effectiveAddress.name && <p>{effectiveAddress.name}</p>}
+                      {effectiveAddress.address1 && <p>{effectiveAddress.address1}</p>}
+                      {effectiveAddress.address2 && <p>{effectiveAddress.address2}</p>}
+                      <p>
+                        {[effectiveAddress.city, effectiveAddress.province, effectiveAddress.zip]
+                          .filter(Boolean)
+                          .join(", ")}
+                      </p>
+                      {effectiveAddress.country && <p>{effectiveAddress.country}</p>}
+                    </>
+                  )}
+                </div>
+
+                {addressVerification?.details?.messages && addressVerification.details.messages.length > 0 && (
+                  <ul className="mb-3 space-y-0.5 text-xs text-red-700">
+                    {addressVerification.details.messages.map((m, idx) => (
+                      <li key={idx}>{m.message}</li>
+                    ))}
+                  </ul>
+                )}
+
+                {addressVerification?.status === "needs_review" &&
+                  addressVerification.details?.suggestedAddress && (
+                    <div className="mb-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                      <p className="mb-1 font-medium">EasyPost suggests:</p>
+                      {(() => {
+                        const s = addressVerification.details.suggestedAddress;
+                        return (
+                          <>
+                            {s.address1 && <p>{s.address1}</p>}
+                            {s.address2 && <p>{s.address2}</p>}
+                            <p>{[s.city, s.province, s.zip].filter(Boolean).join(", ")}</p>
+                            {s.country && <p>{s.country}</p>}
+                          </>
+                        );
+                      })()}
+                      <button
+                        type="button"
+                        onClick={handleAcceptSuggestedAddress}
+                        disabled={addressAccepting}
+                        className="mt-2 rounded-md bg-amber-600 px-3 py-1.5 text-xs font-medium text-white shadow-sm hover:bg-amber-700 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {addressAccepting ? "Accepting…" : "Accept Suggested Address"}
+                      </button>
+                    </div>
+                  )}
+
+                {addressActionError && (
+                  <p className="mb-3 text-xs text-red-600" role="alert">
+                    {addressActionError}
+                  </p>
+                )}
+
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={handleVerifyAddress}
+                    disabled={addressVerifying}
+                    className="rounded-md border border-zinc-300 bg-white px-3 py-1.5 text-xs font-medium text-zinc-800 shadow-sm hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {addressVerifying ? "Verifying…" : "Re-verify"}
+                  </button>
+                  {!addressEditOpen && (
+                    <button
+                      type="button"
+                      onClick={handleOpenAddressEdit}
+                      className="rounded-md border border-zinc-300 bg-white px-3 py-1.5 text-xs font-medium text-zinc-800 shadow-sm hover:bg-zinc-50"
+                    >
+                      Edit Address
+                    </button>
+                  )}
+                </div>
+
+                {addressEditOpen && addressDraft && (
+                  <div className="mt-3 space-y-2 rounded-md border border-zinc-200 bg-white p-3">
+                    <div className="grid gap-2 sm:grid-cols-2">
+                      <input
+                        value={addressDraft.address1 ?? ""}
+                        onChange={(e) => handleAddressDraftField("address1", e.target.value)}
+                        placeholder="Address line 1"
+                        className="rounded-md border border-zinc-300 px-2 py-1.5 text-xs text-black shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500 sm:col-span-2"
+                      />
+                      <input
+                        value={addressDraft.address2 ?? ""}
+                        onChange={(e) => handleAddressDraftField("address2", e.target.value)}
+                        placeholder="Address line 2 (optional)"
+                        className="rounded-md border border-zinc-300 px-2 py-1.5 text-xs text-black shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500 sm:col-span-2"
+                      />
+                      <input
+                        value={addressDraft.city ?? ""}
+                        onChange={(e) => handleAddressDraftField("city", e.target.value)}
+                        placeholder="City"
+                        className="rounded-md border border-zinc-300 px-2 py-1.5 text-xs text-black shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                      />
+                      <input
+                        value={addressDraft.province ?? ""}
+                        onChange={(e) => handleAddressDraftField("province", e.target.value)}
+                        placeholder="State/Province"
+                        className="rounded-md border border-zinc-300 px-2 py-1.5 text-xs text-black shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                      />
+                      <input
+                        value={addressDraft.zip ?? ""}
+                        onChange={(e) => handleAddressDraftField("zip", e.target.value)}
+                        placeholder="ZIP"
+                        className="rounded-md border border-zinc-300 px-2 py-1.5 text-xs text-black shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                      />
+                      <input
+                        value={addressDraft.country ?? ""}
+                        onChange={(e) => handleAddressDraftField("country", e.target.value)}
+                        placeholder="Country"
+                        className="rounded-md border border-zinc-300 px-2 py-1.5 text-xs text-black shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                      />
+                    </div>
+
+                    {addressDraftPreview && (
+                      <p className="text-xs">
+                        Preview result:{" "}
+                        <span className={addressVerificationBadge(addressDraftPreview.status).className}>
+                          {addressVerificationBadge(addressDraftPreview.status).label}
+                        </span>
+                      </p>
+                    )}
+
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={handlePreviewAddressDraft}
+                        disabled={addressDraftPreviewing}
+                        className="rounded-md border border-zinc-300 bg-white px-3 py-1.5 text-xs font-medium text-zinc-800 shadow-sm hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {addressDraftPreviewing ? "Checking…" : "Preview"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleSaveAddressDraft}
+                        disabled={addressAccepting}
+                        className="rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white shadow-sm hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {addressAccepting ? "Saving…" : "Save"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleCancelAddressEdit}
+                        className="rounded-md border border-zinc-300 bg-white px-3 py-1.5 text-xs font-medium text-zinc-800 shadow-sm hover:bg-zinc-50"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </section>
+            )}
 
             <section className="rounded-lg border border-zinc-200 bg-white p-4 shadow-sm">
               <h2 className="mb-3 text-sm font-semibold text-zinc-900">Shipping Method</h2>

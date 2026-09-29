@@ -3,6 +3,8 @@ import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { overrideErpFromShopifyForInventoryRow } from "@/lib/inventorySync";
 import { shopifyVariantIdLookupKeys } from "@/lib/shopifyIds";
+import type { CanonicalAddress } from "@/lib/fulfillmentOrder";
+import { hasRequiredAddressFields, verifyAndPersistAddress } from "@/lib/addressVerification";
 import { ordersCreateWebhookLog } from "./log";
 
 type ShopifyOrderLineItem = {
@@ -10,10 +12,44 @@ type ShopifyOrderLineItem = {
   quantity?: number | null;
 };
 
+// Shopify's REST Order webhook payload includes the full shipping address
+// object already — no extra API call needed to verify it at creation time.
+type ShopifyOrderShippingAddress = {
+  first_name?: string | null;
+  last_name?: string | null;
+  address1?: string | null;
+  address2?: string | null;
+  city?: string | null;
+  province?: string | null;
+  province_code?: string | null;
+  country?: string | null;
+  country_code?: string | null;
+  zip?: string | null;
+  phone?: string | null;
+};
+
 type ShopifyOrderPayload = {
   id?: number | string | null;
   line_items?: ShopifyOrderLineItem[];
+  shipping_address?: ShopifyOrderShippingAddress | null;
 };
+
+// Mirrors src/lib/fulfillmentOrder.ts's normalizeShippingAddress field
+// preference (province/country code over the spelled-out version) —
+// applied here to the REST webhook payload's shape instead of the GraphQL
+// shape route.ts/verify-address use.
+function canonicalAddressFromWebhookPayload(address: ShopifyOrderShippingAddress): CanonicalAddress {
+  return {
+    name: [address.first_name, address.last_name].filter(Boolean).join(" ") || "",
+    address1: address.address1 ?? null,
+    address2: address.address2 ?? null,
+    city: address.city ?? null,
+    province: address.province_code || address.province || null,
+    zip: address.zip ?? null,
+    country: address.country_code || address.country || null,
+    phone: address.phone ?? null,
+  };
+}
 
 type SkippedLine = {
   variantId: string | null;
@@ -387,6 +423,44 @@ export async function POST(request: Request) {
         },
         { status: 500 },
       );
+    }
+  }
+
+  // Shipping Address Verification & Flagging — best-effort verify-at-
+  // creation. This is entirely separate from the inventory-sync work above
+  // and must never affect it: a slow/failed EasyPost call here is logged
+  // and swallowed, never triggers the idempotency-release + 500 path real
+  // inventory failures use (that would make Shopify retry the whole
+  // webhook over an unrelated feature). Skipped silently when there's no
+  // shipping address (local pickup/digital orders) or it's missing
+  // required fields.
+  if (admin) {
+    try {
+      const rawAddress = payload.shipping_address;
+      if (rawAddress) {
+        const address = canonicalAddressFromWebhookPayload(rawAddress);
+        if (hasRequiredAddressFields(address)) {
+          const { status } = await verifyAndPersistAddress(admin, orderId, address);
+          ordersCreateWebhookLog("address verification completed", { runId, orderId, status });
+        } else {
+          ordersCreateWebhookLog("address verification skipped: incomplete address", {
+            runId,
+            orderId,
+          });
+        }
+      } else {
+        ordersCreateWebhookLog("address verification skipped: no shipping address", {
+          runId,
+          orderId,
+        });
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Unknown error";
+      ordersCreateWebhookLog("address verification failed (non-fatal)", {
+        runId,
+        orderId,
+        error: message,
+      });
     }
   }
 
