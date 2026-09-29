@@ -95,6 +95,10 @@ export default function SalesDataPage() {
   const [csvMessage, setCsvMessage] = useState<string | null>(null);
   const [csvError, setCsvError] = useState<string | null>(null);
 
+  const [clearing, setClearing] = useState(false);
+  const [clearMessage, setClearMessage] = useState<string | null>(null);
+  const [clearError, setClearError] = useState<string | null>(null);
+
   const [orderNameFilter, setOrderNameFilter] = useState("");
   const [customerFilter, setCustomerFilter] = useState("");
   const [dateAfter, setDateAfter] = useState("");
@@ -203,6 +207,25 @@ export default function SalesDataPage() {
     return map;
   }, [orders, lineItemsByOrderId, businessByLineitemName]);
 
+  // orders.shopify_order_id is the only de-dup key (UNIQUE + upsert
+  // onConflict). Two rows sharing the same order_name but a different
+  // shopify_order_id are almost always the same real Shopify order counted
+  // twice — most commonly from a CSV "Id" column that got mangled (e.g. by
+  // opening the export in Excel before uploading). Surfacing this directly
+  // is the fastest way to confirm that's what happened, since this session
+  // can't query the database directly.
+  const duplicateOrderNameGroups = useMemo(() => {
+    const byName = new Map<string, OrderRow[]>();
+    for (const o of orders) {
+      const arr = byName.get(o.order_name) ?? [];
+      arr.push(o);
+      byName.set(o.order_name, arr);
+    }
+    return Array.from(byName.values())
+      .filter((rows) => rows.length > 1)
+      .sort((a, b) => a[0].order_name.localeCompare(b[0].order_name, undefined, { numeric: true }));
+  }, [orders]);
+
   const authedFetch = async (path: string, body: unknown) => {
     const {
       data: { session },
@@ -279,6 +302,57 @@ export default function SalesDataPage() {
     }
   };
 
+  // Wipes imported Sales Data (orders + their line items, via ON DELETE
+  // CASCADE) and the unmapped-line-item queue derived from them, and resets
+  // the "since last import" watermark so a future Import Orders re-pulls
+  // Shopify's full current rolling window instead of resuming from wherever
+  // the old watermark was. Deliberately does NOT touch variant_component_map
+  // (mapping config, not sales data) or any finished-goods inventory
+  // transaction/on-hand numbers already recorded from these orders — a
+  // clear here cannot undo an inventory decrement that already happened.
+  const handleClearSalesData = async () => {
+    const confirmed =
+      typeof window !== "undefined"
+        ? window.confirm(
+            `Delete all ${orders.length} imported order(s) and their line items? This cannot be ` +
+              `undone. Your variant mapping (Settings → Variant Mapping) is not affected, and any ` +
+              `finished-goods inventory already decremented from these orders will NOT be restored ` +
+              `— check Finished Products Inventory afterward if you suspect double-counted sales.`,
+          )
+        : true;
+    if (!confirmed) return;
+
+    setClearing(true);
+    setClearError(null);
+    setClearMessage(null);
+    try {
+      // order_line_items cascades on orders' deletion (ON DELETE CASCADE),
+      // so deleting every orders row is sufficient for both tables.
+      const { error: ordersError } = await supabase.from("orders").delete().not("id", "is", null);
+      if (ordersError) throw new Error(ordersError.message);
+
+      const { error: unmappedError } = await supabase
+        .from("unmapped_line_items")
+        .delete()
+        .not("id", "is", null);
+      if (unmappedError) throw new Error(unmappedError.message);
+
+      const { error: watermarkError } = await supabase
+        .from("sales_import_state")
+        .update({ last_imported_at: null })
+        .eq("id", "d0000000-0000-0000-0000-000000000001");
+      if (watermarkError) throw new Error(watermarkError.message);
+
+      setClearMessage("Sales data cleared. Re-import from Shopify or CSV to start fresh.");
+      await loadAll();
+      setCurrentPage(1);
+    } catch (err: any) {
+      setClearError(err.message || "Failed to clear sales data.");
+    } finally {
+      setClearing(false);
+    }
+  };
+
   const visibleOrders = useMemo(() => {
     const orderNeedle = orderNameFilter.trim().toLowerCase();
     const customerNeedle = customerFilter.trim().toLowerCase();
@@ -325,6 +399,30 @@ export default function SalesDataPage() {
             by business.
           </p>
         </section>
+
+        {duplicateOrderNameGroups.length > 0 && (
+          <section className="rounded-lg border border-red-300 bg-red-50 p-4 shadow-sm">
+            <h2 className="mb-2 text-sm font-semibold text-zinc-900">
+              Possible Duplicate Orders ({duplicateOrderNameGroups.length})
+            </h2>
+            <p className="mb-3 text-xs text-red-800">
+              These order numbers appear more than once, each time with a different Shopify order
+              ID — almost always the same real order imported twice under two different IDs (a
+              common cause: a CSV re-saved in Excel before upload, which mangles large ID numbers).
+              This is what inflates Sales Stats. Use Clear Sales Data below, then re-import.
+            </p>
+            <div className="max-h-48 space-y-1 overflow-y-auto text-xs">
+              {duplicateOrderNameGroups.map((rows) => (
+                <div key={rows[0].order_name} className="rounded border border-red-200 bg-white px-2 py-1">
+                  <span className="font-medium text-zinc-900">{rows[0].order_name}</span>
+                  <span className="ml-2 text-zinc-600">
+                    {rows.length} rows — IDs: {rows.map((r) => r.shopify_order_id).join(", ")}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
 
         <section className="rounded-lg border border-zinc-200 bg-white p-4 shadow-sm">
           <h2 className="mb-3 text-sm font-semibold text-zinc-900">Setup</h2>
@@ -445,6 +543,30 @@ export default function SalesDataPage() {
           {csvError && (
             <p className="mt-2 text-xs text-red-600" role="alert">
               {csvError}
+            </p>
+          )}
+        </section>
+
+        <section className="rounded-lg border border-red-300 bg-white p-4 shadow-sm">
+          <h2 className="mb-1 text-sm font-semibold text-zinc-900">Danger Zone</h2>
+          <p className="mb-3 text-xs text-zinc-600">
+            Permanently deletes every imported order and line item ({orders.length} order
+            {orders.length === 1 ? "" : "s"} right now), so you can re-import cleanly after fixing
+            duplicates. Does not affect Variant Mapping, and does not reverse any finished-goods
+            inventory already decremented from these orders.
+          </p>
+          <button
+            type="button"
+            onClick={handleClearSalesData}
+            disabled={clearing || orders.length === 0}
+            className="rounded-md bg-red-600 px-3 py-1.5 text-xs font-medium text-white shadow-sm hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-70"
+          >
+            {clearing ? "Clearing…" : "Clear Sales Data"}
+          </button>
+          {clearMessage && <p className="mt-2 text-xs text-emerald-700">{clearMessage}</p>}
+          {clearError && (
+            <p className="mt-2 text-xs text-red-600" role="alert">
+              {clearError}
             </p>
           )}
         </section>

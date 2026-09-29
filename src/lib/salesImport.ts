@@ -609,6 +609,26 @@ export function parseShopifyOrdersCsv(csvText: string): CsvImportParseResult {
       skippedRowCount += 1;
       continue;
     }
+    // orders.shopify_order_id is the ONLY thing de-duplication keys on
+    // (UNIQUE constraint + upsert onConflict). Shopify's own export always
+    // writes this as a plain integer string, but a CSV that was opened and
+    // re-saved in Excel commonly mangles a large all-numeric cell into
+    // scientific notation (e.g. "5.84481E+12") or strips it entirely.
+    // Silently accepting that would create a second, differently-keyed
+    // `orders` row for an order that's already been imported — a real
+    // duplicate, invisible to the UNIQUE constraint since the strings
+    // differ. Reject anything that isn't a plain digit string instead of
+    // risking that.
+    if (!/^\d+$/.test(group.shopifyOrderId)) {
+      errors.push(
+        `Order ${group.orderName}: "Id" column value "${group.shopifyOrderId}" isn't a plain ` +
+          `number — skipped. This usually means the CSV was opened and re-saved in Excel, which ` +
+          `mangles large numbers. Re-export from Shopify and upload that file directly, without ` +
+          `opening it in Excel first.`,
+      );
+      skippedRowCount += 1;
+      continue;
+    }
     if (!group.createdAt) {
       errors.push(`Order ${group.orderName}: missing or unparseable "Created at" — skipped.`);
       skippedRowCount += 1;
