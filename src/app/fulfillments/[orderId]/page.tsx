@@ -8,6 +8,11 @@ import { useSupabase } from "@/components/InstantProvider";
 import { formatDate } from "@/lib/date";
 import { fulfillmentStatusBadge, type FulfillmentStatus } from "@/lib/fulfillmentStatus";
 import type { CanonicalAddress } from "@/lib/fulfillmentOrder";
+import {
+  buildComponentsByLineitemName,
+  resolveLineItemComponents,
+  type VariantMapRow,
+} from "@/lib/salesAttribution";
 
 const inputClassName =
   "rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-xs text-black shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500";
@@ -38,6 +43,10 @@ type FulfillmentOrderDetail = {
   shippingAddress: CanonicalAddress | null;
   shippingMethodTitle: string | null;
   lineItems: Array<{
+    // Shopify's combined "product title + variant title" — the exact-match
+    // key against variant_component_map.lineitem_name (see
+    // src/lib/salesAttribution.ts). Not the same as `title`.
+    name: string;
     title: string;
     sku: string | null;
     quantity: number;
@@ -45,6 +54,12 @@ type FulfillmentOrderDetail = {
     extendedWeightOz: number;
   }>;
   totalProductWeightOz: number;
+};
+
+type ResolvedComponent = {
+  productId: string;
+  productName: string;
+  qty: number;
 };
 
 type PackagePreset = {
@@ -67,6 +82,12 @@ export default function FulfillmentOrderDetailPage() {
 
   const [presets, setPresets] = useState<PackagePreset[]>([]);
   const [selectedPresetId, setSelectedPresetId] = useState<string>("");
+
+  // Resolves raw Shopify line items into packable components, same
+  // variant_component_map/exact-name-match logic the Sales Data page uses
+  // (src/lib/salesAttribution.ts) — reused as-is, not reimplemented.
+  const [variantMap, setVariantMap] = useState<VariantMapRow[]>([]);
+  const [productNamesById, setProductNamesById] = useState<Map<string, string>>(new Map());
 
   const [status, setStatus] = useState<FulfillmentStatus>("preparing_shipment");
   const [fulfillmentLog, setFulfillmentLog] = useState<FulfillmentLogRow | null>(null);
@@ -166,6 +187,27 @@ export default function FulfillmentOrderDetailPage() {
   }, [user, supabase]);
 
   useEffect(() => {
+    if (!user) return;
+    let cancelled = false;
+    const loadVariantMapping = async () => {
+      const [mapResult, productsResult] = await Promise.all([
+        supabase.from("variant_component_map").select("lineitem_name, business, components"),
+        supabase.from("products").select("id, name"),
+      ]);
+      if (cancelled) return;
+      if (mapResult.data) setVariantMap(mapResult.data as VariantMapRow[]);
+      if (productsResult.data) {
+        const rows = productsResult.data as Array<{ id: string; name: string }>;
+        setProductNamesById(new Map(rows.map((p) => [p.id, p.name])));
+      }
+    };
+    loadVariantMapping();
+    return () => {
+      cancelled = true;
+    };
+  }, [user, supabase]);
+
+  useEffect(() => {
     if (!user || !orderId) return;
     let cancelled = false;
     const loadStatusAndLog = async () => {
@@ -221,6 +263,30 @@ export default function FulfillmentOrderDetailPage() {
     const tare = selectedPreset?.tare_weight_oz ?? 0;
     return productWeight + tare;
   }, [order, selectedPreset]);
+
+  // Resolves each raw Shopify line item into its real packable components
+  // for the Line Items table, so an employee packs actual products instead
+  // of an ambiguous bundle name. Weight is NOT recomputed per component —
+  // Shopify's own per-line-item weight (unitWeightOz/extendedWeightOz,
+  // already correct) is shown once per line item, matching how the order's
+  // Total Product Weight is already calculated server-side.
+  const componentsByLineitemName = useMemo(
+    () => buildComponentsByLineitemName(variantMap),
+    [variantMap],
+  );
+
+  const resolvedLineItems = useMemo(() => {
+    if (!order) return [];
+    return order.lineItems.map((li) => {
+      const mapped = resolveLineItemComponents(li.name, componentsByLineitemName);
+      const components: ResolvedComponent[] = mapped.map((c) => ({
+        productId: c.product_id,
+        productName: productNamesById.get(c.product_id) ?? "Unknown product",
+        qty: c.qty_per_unit * li.quantity,
+      }));
+      return { ...li, components };
+    });
+  }, [order, componentsByLineitemName, productNamesById]);
 
   // Keeps the editable address form in sync with whatever Shopify actually
   // has — resets on initial load and again after a successful save (the
@@ -741,19 +807,73 @@ export default function FulfillmentOrderDetailPage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {order.lineItems.map((li, idx) => (
-                      <tr key={idx} className="border-b border-zinc-100">
-                        <td className="px-3 py-2 text-zinc-900">{li.title}</td>
-                        <td className="px-3 py-2 text-zinc-700">{li.sku || "—"}</td>
-                        <td className="px-3 py-2 text-zinc-700">{li.quantity}</td>
-                        <td className="px-3 py-2 text-zinc-700">
-                          {li.unitWeightOz.toFixed(2)} oz
-                        </td>
-                        <td className="px-3 py-2 text-zinc-700">
-                          {li.extendedWeightOz.toFixed(2)} oz
-                        </td>
-                      </tr>
-                    ))}
+                    {resolvedLineItems.map((li, idx) => {
+                      if (li.components.length === 0) {
+                        // No variant_component_map row for this exact Shopify
+                        // line item name yet — show the raw name with a clear
+                        // warning rather than silently guessing packing/weight.
+                        return (
+                          <tr key={`${li.name}-${idx}`} className="border-b border-amber-200 bg-amber-50">
+                            <td className="px-3 py-2">
+                              <div className="text-zinc-900">{li.name}</div>
+                              <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] font-medium text-amber-800">
+                                <span>⚠ Unmapped — map this variant before fulfilling</span>
+                                <Link
+                                  href={`/settings/variant-mapping?lineitem=${encodeURIComponent(li.name)}`}
+                                  className="rounded-md bg-amber-500 px-2 py-0.5 text-white shadow-sm hover:bg-amber-600"
+                                >
+                                  Map this
+                                </Link>
+                              </div>
+                            </td>
+                            <td className="px-3 py-2 text-zinc-700">{li.sku || "—"}</td>
+                            <td className="px-3 py-2 text-zinc-700">{li.quantity}</td>
+                            <td className="px-3 py-2 text-zinc-700">
+                              {li.unitWeightOz.toFixed(2)} oz
+                            </td>
+                            <td className="px-3 py-2 text-zinc-700">
+                              {li.extendedWeightOz.toFixed(2)} oz
+                            </td>
+                          </tr>
+                        );
+                      }
+                      // Mapped — one row per real packable component. Weight
+                      // is shown once for the whole original line item (via
+                      // rowSpan), not split per component: Shopify's own
+                      // per-line-item weight is already correct as a total,
+                      // and splitting it would fabricate precision that
+                      // doesn't exist per component.
+                      return li.components.map((c, cIdx) => (
+                        <tr key={`${li.name}-${idx}-${cIdx}`} className="border-b border-zinc-100">
+                          <td className="px-3 py-2 text-zinc-900">{c.productName}</td>
+                          {cIdx === 0 && (
+                            <td
+                              className="px-3 py-2 text-zinc-700"
+                              rowSpan={li.components.length}
+                            >
+                              {li.sku || "—"}
+                            </td>
+                          )}
+                          <td className="px-3 py-2 text-zinc-700">{c.qty}</td>
+                          {cIdx === 0 && (
+                            <>
+                              <td
+                                className="px-3 py-2 text-zinc-700"
+                                rowSpan={li.components.length}
+                              >
+                                {li.unitWeightOz.toFixed(2)} oz
+                              </td>
+                              <td
+                                className="px-3 py-2 text-zinc-700"
+                                rowSpan={li.components.length}
+                              >
+                                {li.extendedWeightOz.toFixed(2)} oz
+                              </td>
+                            </>
+                          )}
+                        </tr>
+                      ));
+                    })}
                   </tbody>
                   <tfoot>
                     <tr>

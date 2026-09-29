@@ -33,6 +33,7 @@ type OrderQueryResponse = {
     lineItems: {
       edges: Array<{
         node: {
+          name: string;
           title: string;
           sku: string | null;
           quantity: number;
@@ -76,6 +77,7 @@ const ORDER_QUERY = `
       lineItems(first: 100) {
         edges {
           node {
+            name
             title
             sku
             quantity
@@ -100,6 +102,11 @@ export type FulfillmentOrderDetail = {
   shippingAddress: CanonicalAddress | null;
   shippingMethodTitle: string | null;
   lineItems: Array<{
+    // Shopify's combined "product title + variant title" string — the same
+    // field src/lib/salesImport.ts stores as lineitem_name, and therefore
+    // the exact-match key the client resolves through variant_component_map
+    // (see src/lib/salesAttribution.ts). Not the same as `title`.
+    name: string;
     title: string;
     sku: string | null;
     quantity: number;
@@ -145,6 +152,7 @@ export async function GET(
       lineItems: lineItems.map((li) => {
         const unitWeightOz = weightToOz(li.weight);
         return {
+          name: li.name,
           title: li.title,
           sku: li.sku,
           quantity: li.quantity,
