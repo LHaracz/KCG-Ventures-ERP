@@ -8,7 +8,6 @@ import {
 } from "@/lib/shopifyAdmin";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import type { FulfillmentStatus } from "@/lib/fulfillmentStatus";
-import type { AddressVerificationStatus } from "@/lib/addressVerification";
 
 type OrderNode = {
   id: string;
@@ -96,10 +95,11 @@ export type FulfillmentListRow = {
   totalPrice: number;
   currencyCode: string;
   status: FulfillmentStatus;
-  addressStatus: AddressVerificationStatus;
+  isFlagged: boolean;
+  flaggedReason: string | null;
 };
 
-function mapOrderNode(node: OrderNode): Omit<FulfillmentListRow, "status" | "addressStatus"> {
+function mapOrderNode(node: OrderNode): Omit<FulfillmentListRow, "status" | "isFlagged" | "flaggedReason"> {
   const lineItems = node.lineItems.edges.map((e) => e.node);
   const itemCount = lineItems.reduce((sum, li) => sum + (li.quantity || 0), 0);
   const totalProductWeightOz = lineItems.reduce(
@@ -124,7 +124,7 @@ function mapOrderNode(node: OrderNode): Omit<FulfillmentListRow, "status" | "add
 /** Orders fulfilled in the last 14 days, so they stay visible for a bit
  * after Shopify stops returning them as unfulfilled. */
 async function fetchRecentlyFulfilledOrders(): Promise<
-  Omit<FulfillmentListRow, "status" | "addressStatus">[]
+  Omit<FulfillmentListRow, "status" | "isFlagged" | "flaggedReason">[]
 > {
   if (!supabaseAdmin) return [];
 
@@ -150,43 +150,30 @@ async function fetchRecentlyFulfilledOrders(): Promise<
     .map(mapOrderNode);
 }
 
+type OrderStatusRow = {
+  status: FulfillmentStatus;
+  isFlagged: boolean;
+  flaggedReason: string | null;
+};
+
 async function fetchOrderStatuses(
   orderIds: string[],
-): Promise<Map<string, FulfillmentStatus>> {
-  const statusMap = new Map<string, FulfillmentStatus>();
+): Promise<Map<string, OrderStatusRow>> {
+  const statusMap = new Map<string, OrderStatusRow>();
   if (!supabaseAdmin || orderIds.length === 0) return statusMap;
 
   const { data, error } = await supabaseAdmin
     .from("order_status")
-    .select("shopify_order_id, status")
+    .select("shopify_order_id, status, is_flagged, flagged_reason")
     .in("shopify_order_id", orderIds);
 
   if (error || !data) return statusMap;
   for (const row of data) {
-    statusMap.set(String(row.shopify_order_id), row.status as FulfillmentStatus);
-  }
-  return statusMap;
-}
-
-// Passive read — mirrors fetchOrderStatuses exactly. Never triggers an
-// EasyPost verification call for an order that hasn't been checked yet;
-// those show as "unchecked" (the default when no row exists) until the
-// orders-create webhook checks new orders or an employee visits the order
-// detail page.
-async function fetchAddressVerificationStatuses(
-  orderIds: string[],
-): Promise<Map<string, AddressVerificationStatus>> {
-  const statusMap = new Map<string, AddressVerificationStatus>();
-  if (!supabaseAdmin || orderIds.length === 0) return statusMap;
-
-  const { data, error } = await supabaseAdmin
-    .from("order_address_verification")
-    .select("shopify_order_id, status")
-    .in("shopify_order_id", orderIds);
-
-  if (error || !data) return statusMap;
-  for (const row of data) {
-    statusMap.set(String(row.shopify_order_id), row.status as AddressVerificationStatus);
+    statusMap.set(String(row.shopify_order_id), {
+      status: row.status as FulfillmentStatus,
+      isFlagged: !!row.is_flagged,
+      flaggedReason: (row.flagged_reason as string | null) ?? null,
+    });
   }
   return statusMap;
 }
@@ -203,21 +190,25 @@ export async function GET(request: Request) {
     const liveRows = liveData.orders.edges.map(({ node }) => mapOrderNode(node));
 
     // Merge + dedupe by order id (live orders take precedence on overlap).
-    const merged = new Map<string, Omit<FulfillmentListRow, "status" | "addressStatus">>();
+    const merged = new Map<
+      string,
+      Omit<FulfillmentListRow, "status" | "isFlagged" | "flaggedReason">
+    >();
     for (const row of recentlyFulfilled) merged.set(row.orderId, row);
     for (const row of liveRows) merged.set(row.orderId, row);
 
     const orderIds = Array.from(merged.keys());
-    const [statusMap, addressStatusMap] = await Promise.all([
-      fetchOrderStatuses(orderIds),
-      fetchAddressVerificationStatuses(orderIds),
-    ]);
+    const statusMap = await fetchOrderStatuses(orderIds);
 
-    const rows: FulfillmentListRow[] = Array.from(merged.values()).map((row) => ({
-      ...row,
-      status: statusMap.get(row.orderId) ?? "preparing_shipment",
-      addressStatus: addressStatusMap.get(row.orderId) ?? "unchecked",
-    }));
+    const rows: FulfillmentListRow[] = Array.from(merged.values()).map((row) => {
+      const statusRow = statusMap.get(row.orderId);
+      return {
+        ...row,
+        status: statusRow?.status ?? "preparing_shipment",
+        isFlagged: statusRow?.isFlagged ?? false,
+        flaggedReason: statusRow?.flaggedReason ?? null,
+      };
+    });
 
     return NextResponse.json({ ok: true, orders: rows });
   } catch (error) {

@@ -11,7 +11,6 @@ import {
   fulfillmentStatusLabel,
   type FulfillmentStatus,
 } from "@/lib/fulfillmentStatus";
-import { addressVerificationBadge, type AddressVerificationStatus } from "@/lib/addressVerification";
 
 type FulfillmentListRow = {
   orderId: string;
@@ -23,8 +22,12 @@ type FulfillmentListRow = {
   totalPrice: number;
   currencyCode: string;
   status: FulfillmentStatus;
-  addressStatus: AddressVerificationStatus;
+  isFlagged: boolean;
+  flaggedReason: string | null;
 };
+
+const flaggedBadgeClassName =
+  "inline-flex items-center rounded-full bg-red-600 px-2 py-0.5 text-[11px] font-medium text-white";
 
 const inputClassName =
   "w-full rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-black placeholder:text-gray-400 shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500";
@@ -51,7 +54,7 @@ export default function FulfillmentsPage() {
   const [customerFilter, setCustomerFilter] = useState("");
   const [dateAfter, setDateAfter] = useState("");
   const [dateBefore, setDateBefore] = useState("");
-  const [statusFilter, setStatusFilter] = useState<FulfillmentStatus | "all">("all");
+  const [statusFilter, setStatusFilter] = useState<FulfillmentStatus | "all" | "flagged">("all");
   const [sortDirection, setSortDirection] = useState<"asc" | "desc">("asc");
 
   useEffect(() => {
@@ -99,7 +102,11 @@ export default function FulfillmentsPage() {
     const filtered = orders.filter((o) => {
       if (orderIdNeedle && !o.name.toLowerCase().includes(orderIdNeedle)) return false;
       if (customerNeedle && !o.customerName.toLowerCase().includes(customerNeedle)) return false;
-      if (statusFilter !== "all" && o.status !== statusFilter) return false;
+      if (statusFilter === "flagged") {
+        if (!o.isFlagged) return false;
+      } else if (statusFilter !== "all" && o.status !== statusFilter) {
+        return false;
+      }
       if (afterMs != null || beforeMs != null) {
         const createdMs = new Date(o.createdAt).getTime();
         if (afterMs != null && createdMs < afterMs) return false;
@@ -109,6 +116,12 @@ export default function FulfillmentsPage() {
     });
 
     return filtered.sort((a, b) => {
+      // Flagged orders always float to the top, regardless of direction or
+      // underlying status (even a flagged+fulfilled order).
+      const aFlagged = a.isFlagged ? 0 : 1;
+      const bFlagged = b.isFlagged ? 0 : 1;
+      if (aFlagged !== bFlagged) return aFlagged - bFlagged;
+
       // Fulfilled orders always sink to the bottom, regardless of direction.
       const aFulfilled = a.status === "fulfilled" ? 1 : 0;
       const bFulfilled = b.status === "fulfilled" ? 1 : 0;
@@ -198,10 +211,13 @@ export default function FulfillmentsPage() {
               <label className="mb-1 block text-xs font-medium text-zinc-800">Status</label>
               <select
                 value={statusFilter}
-                onChange={(e) => setStatusFilter(e.target.value as FulfillmentStatus | "all")}
+                onChange={(e) =>
+                  setStatusFilter(e.target.value as FulfillmentStatus | "all" | "flagged")
+                }
                 className={inputClassName}
               >
                 <option value="all">All</option>
+                <option value="flagged">Flagged</option>
                 {FULFILLMENT_STATUSES.map((s) => (
                   <option key={s} value={s}>
                     {fulfillmentStatusLabel(s)}
@@ -246,14 +262,12 @@ export default function FulfillmentsPage() {
                     <th className="px-3 py-2 font-medium">Product Weight</th>
                     <th className="px-3 py-2 font-medium">Order Total</th>
                     <th className="px-3 py-2 font-medium">Status</th>
-                    <th className="px-3 py-2 font-medium">Address</th>
                     <th className="px-3 py-2 font-medium"></th>
                   </tr>
                 </thead>
                 <tbody>
                   {visibleOrders.map((o) => {
                     const badge = fulfillmentStatusBadge(o.status);
-                    const addressBadge = addressVerificationBadge(o.addressStatus);
                     return (
                       <tr key={o.orderId} className="border-b border-zinc-100">
                         <td className="px-3 py-2 font-medium text-zinc-900">{o.name}</td>
@@ -267,11 +281,15 @@ export default function FulfillmentsPage() {
                           {formatOrderTotal(o.totalPrice, o.currencyCode)}
                         </td>
                         <td className="px-3 py-2">
-                          <span className={badge.className}>{badge.label}</span>
-                        </td>
-                        <td className="px-3 py-2">
-                          {o.addressStatus !== "unchecked" && (
-                            <span className={addressBadge.className}>{addressBadge.label}</span>
+                          {o.isFlagged ? (
+                            <span
+                              className={flaggedBadgeClassName}
+                              title={o.flaggedReason ?? undefined}
+                            >
+                              Flagged
+                            </span>
+                          ) : (
+                            <span className={badge.className}>{badge.label}</span>
                           )}
                         </td>
                         <td className="px-3 py-2">

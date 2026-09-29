@@ -8,13 +8,9 @@ import { useSupabase } from "@/components/InstantProvider";
 import { formatDate } from "@/lib/date";
 import { fulfillmentStatusBadge, type FulfillmentStatus } from "@/lib/fulfillmentStatus";
 import type { CanonicalAddress } from "@/lib/fulfillmentOrder";
-import {
-  addressVerificationBadge,
-  addressesEqual,
-  hasRequiredAddressFields,
-  type AddressVerificationDetails,
-  type AddressVerificationStatus,
-} from "@/lib/addressVerification";
+
+const inputClassName =
+  "rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-xs text-black shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500";
 
 type EasyPostRateOption = {
   id: string;
@@ -75,22 +71,30 @@ export default function FulfillmentOrderDetailPage() {
   const [status, setStatus] = useState<FulfillmentStatus>("preparing_shipment");
   const [fulfillmentLog, setFulfillmentLog] = useState<FulfillmentLogRow | null>(null);
 
-  // Shipping Address Verification & Flagging.
-  const [addressVerification, setAddressVerification] = useState<{
-    status: AddressVerificationStatus;
-    details: AddressVerificationDetails | null;
-    acceptedAddress: CanonicalAddress | null;
+  // Editable shipping address (direct Shopify write via update-address route).
+  const [addressDraft, setAddressDraft] = useState<{
+    address1: string;
+    address2: string;
+    city: string;
+    province: string;
+    zip: string;
+    country: string;
   } | null>(null);
-  const [addressVerifying, setAddressVerifying] = useState(false);
-  const [addressActionError, setAddressActionError] = useState<string | null>(null);
-  const [addressAccepting, setAddressAccepting] = useState(false);
-  const [addressEditOpen, setAddressEditOpen] = useState(false);
-  const [addressDraft, setAddressDraft] = useState<CanonicalAddress | null>(null);
-  const [addressDraftPreview, setAddressDraftPreview] = useState<{
-    status: AddressVerificationStatus;
-    details: AddressVerificationDetails;
-  } | null>(null);
-  const [addressDraftPreviewing, setAddressDraftPreviewing] = useState(false);
+  const [addressSaving, setAddressSaving] = useState(false);
+  const [addressSaveError, setAddressSaveError] = useState<string | null>(null);
+  const [addressSaved, setAddressSaved] = useState(false);
+
+  // Manual Order Flagging.
+  const [isFlagged, setIsFlagged] = useState(false);
+  const [flaggedReason, setFlaggedReason] = useState<string | null>(null);
+  const [flaggedAt, setFlaggedAt] = useState<string | null>(null);
+  const [flaggedBy, setFlaggedBy] = useState<string | null>(null);
+  const [flagModalOpen, setFlagModalOpen] = useState(false);
+  const [flagReasonDraft, setFlagReasonDraft] = useState("");
+  const [flagSubmitting, setFlagSubmitting] = useState(false);
+  const [flagError, setFlagError] = useState<string | null>(null);
+  const [unflagConfirming, setUnflagConfirming] = useState(false);
+  const [unflagSubmitting, setUnflagSubmitting] = useState(false);
 
   const [printingLabel, setPrintingLabel] = useState(false);
   const [voidingLabel, setVoidingLabel] = useState(false);
@@ -165,10 +169,10 @@ export default function FulfillmentOrderDetailPage() {
     if (!user || !orderId) return;
     let cancelled = false;
     const loadStatusAndLog = async () => {
-      const [statusResult, logResult, addressResult] = await Promise.all([
+      const [statusResult, logResult] = await Promise.all([
         supabase
           .from("order_status")
-          .select("status")
+          .select("status, is_flagged, flagged_reason, flagged_at, flagged_by")
           .eq("shopify_order_id", orderId)
           .maybeSingle(),
         supabase
@@ -179,22 +183,16 @@ export default function FulfillmentOrderDetailPage() {
           .order("created_at", { ascending: false })
           .limit(1)
           .maybeSingle(),
-        supabase
-          .from("order_address_verification")
-          .select("status, address_verification_details, accepted_address")
-          .eq("shopify_order_id", orderId)
-          .maybeSingle(),
       ]);
       if (cancelled) return;
       if (statusResult.data?.status) setStatus(statusResult.data.status as FulfillmentStatus);
-      if (logResult.data) setFulfillmentLog(logResult.data as FulfillmentLogRow);
-      if (addressResult.data) {
-        setAddressVerification({
-          status: addressResult.data.status as AddressVerificationStatus,
-          details: (addressResult.data.address_verification_details as AddressVerificationDetails) ?? null,
-          acceptedAddress: (addressResult.data.accepted_address as CanonicalAddress) ?? null,
-        });
+      if (statusResult.data) {
+        setIsFlagged(!!statusResult.data.is_flagged);
+        setFlaggedReason((statusResult.data.flagged_reason as string | null) ?? null);
+        setFlaggedAt((statusResult.data.flagged_at as string | null) ?? null);
+        setFlaggedBy((statusResult.data.flagged_by as string | null) ?? null);
       }
+      if (logResult.data) setFulfillmentLog(logResult.data as FulfillmentLogRow);
     };
     loadStatusAndLog();
     return () => {
@@ -224,23 +222,20 @@ export default function FulfillmentOrderDetailPage() {
     return productWeight + tare;
   }, [order, selectedPreset]);
 
-  // The address label buying should actually use — an employee's accepted
-  // override once one exists, otherwise the live Shopify address.
-  const effectiveAddress = useMemo<CanonicalAddress | null>(
-    () => addressVerification?.acceptedAddress ?? order?.shippingAddress ?? null,
-    [addressVerification, order],
-  );
-
-  // True when the live Shopify address has moved on since whatever we're
-  // comparing against (the accepted override if set, else the last check's
-  // originalAddress) — no DB "stale" column, just a client-side diff on
-  // every visit (see the plan's Decisions section).
-  const addressIsStale = useMemo(() => {
-    if (!order?.shippingAddress) return false;
-    const reference = addressVerification?.acceptedAddress ?? addressVerification?.details?.originalAddress ?? null;
-    if (!reference) return false;
-    return !addressesEqual(reference, order.shippingAddress);
-  }, [order, addressVerification]);
+  // Keeps the editable address form in sync with whatever Shopify actually
+  // has — resets on initial load and again after a successful save (the
+  // route echoes back Shopify's own normalized response).
+  useEffect(() => {
+    if (!order?.shippingAddress) return;
+    setAddressDraft({
+      address1: order.shippingAddress.address1 ?? "",
+      address2: order.shippingAddress.address2 ?? "",
+      city: order.shippingAddress.city ?? "",
+      province: order.shippingAddress.province ?? "",
+      zip: order.shippingAddress.zip ?? "",
+      country: order.shippingAddress.country ?? "",
+    });
+  }, [order]);
 
   const labelAlreadyPurchased = status === "label_generated" || status === "label_printed";
 
@@ -297,10 +292,7 @@ export default function FulfillmentOrderDetailPage() {
             height_in: selectedPreset.height_in,
             weight_oz: totalParcelWeightOz,
           },
-          // The employee's accepted/corrected address once one exists,
-          // otherwise the live Shopify address — see Shipping Address
-          // Verification & Flagging.
-          shippingAddress: effectiveAddress,
+          shippingAddress: order.shippingAddress,
           shippingMethodTitle: order.shippingMethodTitle,
         });
         if (cancelled) return;
@@ -401,114 +393,113 @@ export default function FulfillmentOrderDetailPage() {
     }
   };
 
-  // --- Shipping Address Verification & Flagging --------------------------
+  // --- Editable shipping address ------------------------------------------
 
-  const handleVerifyAddress = async () => {
-    if (!orderId) return;
-    setAddressVerifying(true);
-    setAddressActionError(null);
-    try {
-      const payload = await authedFetch(`/api/fulfillments/${orderId}/verify-address`, {});
-      setAddressVerification((prev) => ({
-        status: payload.status,
-        details: payload.details,
-        acceptedAddress: prev?.acceptedAddress ?? null,
-      }));
-    } catch (err: any) {
-      setAddressActionError(err.message || "Failed to verify this address.");
-    } finally {
-      setAddressVerifying(false);
-    }
-  };
-
-  const handleAcceptSuggestedAddress = async () => {
-    const suggested = addressVerification?.details?.suggestedAddress;
-    if (!orderId || !suggested) return;
-    setAddressAccepting(true);
-    setAddressActionError(null);
-    try {
-      // The suggested address IS EasyPost's own corrected result — accept
-      // it as already verified rather than spending a second EasyPost call
-      // just to re-confirm what it just told us.
-      const verification = {
-        status: "verified" as AddressVerificationStatus,
-        details: { originalAddress: suggested, suggestedAddress: null, messages: [] },
-      };
-      await authedFetch(`/api/fulfillments/${orderId}/accept-address`, {
-        address: suggested,
-        verification,
-      });
-      setAddressVerification({ status: verification.status, details: verification.details, acceptedAddress: suggested });
-    } catch (err: any) {
-      setAddressActionError(err.message || "Failed to accept this address.");
-    } finally {
-      setAddressAccepting(false);
-    }
-  };
-
-  const handleOpenAddressEdit = () => {
-    if (!effectiveAddress) return;
-    setAddressDraft({ ...effectiveAddress });
-    setAddressDraftPreview(null);
-    setAddressActionError(null);
-    setAddressEditOpen(true);
-  };
-
-  const handleCancelAddressEdit = () => {
-    setAddressEditOpen(false);
-    setAddressDraft(null);
-    setAddressDraftPreview(null);
-  };
-
-  const handleAddressDraftField = (field: keyof CanonicalAddress, value: string) => {
+  const handleAddressDraftField = (field: keyof NonNullable<typeof addressDraft>, value: string) => {
     setAddressDraft((prev) => (prev ? { ...prev, [field]: value } : prev));
+    setAddressSaved(false);
   };
 
-  const handlePreviewAddressDraft = async () => {
+  const handleSaveAddress = async () => {
     if (!orderId || !addressDraft) return;
-    if (!hasRequiredAddressFields(addressDraft)) {
-      setAddressActionError("Street, city, and ZIP are required.");
+    if (
+      !addressDraft.address1.trim() ||
+      !addressDraft.city.trim() ||
+      !addressDraft.province.trim() ||
+      !addressDraft.zip.trim() ||
+      !addressDraft.country.trim()
+    ) {
+      setAddressSaveError("Street address, city, state, zip, and country are required.");
       return;
     }
-    setAddressDraftPreviewing(true);
-    setAddressActionError(null);
+    setAddressSaving(true);
+    setAddressSaveError(null);
+    setAddressSaved(false);
     try {
-      const payload = await authedFetch(`/api/fulfillments/${orderId}/verify-address`, {
-        address: addressDraft,
-      });
-      setAddressDraftPreview({ status: payload.status, details: payload.details });
+      const payload = await authedFetch(`/api/fulfillments/${orderId}/update-address`, addressDraft);
+      const shippingAddress = payload.shippingAddress as CanonicalAddress | null;
+      setOrder((prev) => (prev ? { ...prev, shippingAddress } : prev));
+      setAddressSaved(true);
     } catch (err: any) {
-      setAddressActionError(err.message || "Failed to verify this address.");
+      setAddressSaveError(err.message || "Failed to save this address.");
     } finally {
-      setAddressDraftPreviewing(false);
+      setAddressSaving(false);
     }
   };
 
-  const handleSaveAddressDraft = async () => {
-    if (!orderId || !addressDraft) return;
-    if (!hasRequiredAddressFields(addressDraft)) {
-      setAddressActionError("Street, city, and ZIP are required.");
+  // --- Manual Order Flagging ------------------------------------------------
+
+  const handleOpenFlagModal = () => {
+    setFlagReasonDraft(flaggedReason ?? "");
+    setFlagError(null);
+    setFlagModalOpen(true);
+  };
+
+  const handleCloseFlagModal = () => {
+    setFlagModalOpen(false);
+    setFlagError(null);
+  };
+
+  const handleSubmitFlag = async () => {
+    if (!orderId) return;
+    const reason = flagReasonDraft.trim();
+    if (!reason) {
+      setFlagError("A reason is required to flag this order.");
       return;
     }
-    setAddressAccepting(true);
-    setAddressActionError(null);
+    setFlagSubmitting(true);
+    setFlagError(null);
     try {
-      await authedFetch(`/api/fulfillments/${orderId}/accept-address`, {
-        address: addressDraft,
-        verification: addressDraftPreview ?? undefined,
-      });
-      setAddressVerification({
-        status: addressDraftPreview?.status ?? "unchecked",
-        details: addressDraftPreview?.details ?? null,
-        acceptedAddress: addressDraft,
-      });
-      setAddressEditOpen(false);
-      setAddressDraft(null);
-      setAddressDraftPreview(null);
+      const nowIso = new Date().toISOString();
+      const { error } = await supabase.from("order_status").upsert(
+        {
+          shopify_order_id: orderId,
+          is_flagged: true,
+          flagged_reason: reason,
+          flagged_at: nowIso,
+          flagged_by: user?.email ?? null,
+          updated_at: nowIso,
+        },
+        { onConflict: "shopify_order_id" },
+      );
+      if (error) throw new Error(error.message);
+      setIsFlagged(true);
+      setFlaggedReason(reason);
+      setFlaggedAt(nowIso);
+      setFlaggedBy(user?.email ?? null);
+      setFlagModalOpen(false);
     } catch (err: any) {
-      setAddressActionError(err.message || "Failed to save this address.");
+      setFlagError(err.message || "Failed to flag this order.");
     } finally {
-      setAddressAccepting(false);
+      setFlagSubmitting(false);
+    }
+  };
+
+  const handleUnflag = async () => {
+    if (!orderId) return;
+    setUnflagSubmitting(true);
+    try {
+      const nowIso = new Date().toISOString();
+      const { error } = await supabase.from("order_status").upsert(
+        {
+          shopify_order_id: orderId,
+          is_flagged: false,
+          flagged_reason: null,
+          flagged_at: null,
+          flagged_by: null,
+          updated_at: nowIso,
+        },
+        { onConflict: "shopify_order_id" },
+      );
+      if (!error) {
+        setIsFlagged(false);
+        setFlaggedReason(null);
+        setFlaggedAt(null);
+        setFlaggedBy(null);
+      }
+    } finally {
+      setUnflagSubmitting(false);
+      setUnflagConfirming(false);
     }
   };
 
@@ -522,18 +513,83 @@ export default function FulfillmentOrderDetailPage() {
           >
             ← Back to Fulfillments
           </Link>
-          <div className="flex flex-wrap items-center gap-2">
-            <h1 className="text-2xl font-semibold text-zinc-900">
-              {order ? order.name : "Order"}
-            </h1>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <h1 className="text-2xl font-semibold text-zinc-900">
+                {order ? order.name : "Order"}
+              </h1>
+              {order && (
+                <span className={fulfillmentStatusBadge(status).className}>
+                  {fulfillmentStatusBadge(status).label}
+                </span>
+              )}
+            </div>
             {order && (
-              <span className={fulfillmentStatusBadge(status).className}>
-                {fulfillmentStatusBadge(status).label}
-              </span>
+              <div className="flex flex-wrap items-center gap-2">
+                {isFlagged ? (
+                  <>
+                    <button
+                      type="button"
+                      onClick={handleOpenFlagModal}
+                      className="rounded-md border border-zinc-300 bg-white px-3 py-1.5 text-xs font-medium text-zinc-800 shadow-sm hover:bg-zinc-50"
+                    >
+                      Edit Reason
+                    </button>
+                    {unflagConfirming ? (
+                      <span className="flex items-center gap-2 text-xs text-zinc-700">
+                        Unflag this order?
+                        <button
+                          type="button"
+                          onClick={handleUnflag}
+                          disabled={unflagSubmitting}
+                          className="rounded-md bg-red-600 px-2 py-1 text-[11px] font-medium text-white shadow-sm hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          {unflagSubmitting ? "Unflagging…" : "Yes, unflag"}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setUnflagConfirming(false)}
+                          className="rounded-md border border-zinc-300 bg-white px-2 py-1 text-[11px] font-medium text-zinc-800 hover:bg-zinc-50"
+                        >
+                          Cancel
+                        </button>
+                      </span>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => setUnflagConfirming(true)}
+                        className="rounded-md border border-red-300 bg-white px-3 py-1.5 text-xs font-medium text-red-700 shadow-sm hover:bg-red-50"
+                      >
+                        Unflag Order
+                      </button>
+                    )}
+                  </>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={handleOpenFlagModal}
+                    className="rounded-md bg-red-600 px-3 py-1.5 text-xs font-medium text-white shadow-sm hover:bg-red-700"
+                  >
+                    Flag Order
+                  </button>
+                )}
+              </div>
             )}
           </div>
           {order && (
             <p className="text-sm text-black">Placed {formatDate(order.createdAt)}</p>
+          )}
+          {isFlagged && (
+            <div
+              className="mt-3 rounded-md border border-red-300 bg-red-50 px-3 py-2 text-xs text-red-800"
+              role="alert"
+            >
+              <p className="font-semibold">Flagged: {flaggedReason}</p>
+              <p className="mt-0.5 text-red-700">
+                {flaggedBy ? `By ${flaggedBy}` : "By an unknown user"}
+                {flaggedAt ? ` on ${formatDate(flaggedAt)}` : ""}
+              </p>
+            </div>
           )}
         </section>
 
@@ -567,220 +623,98 @@ export default function FulfillmentOrderDetailPage() {
               </div>
 
               <div className="rounded-lg border border-zinc-200 bg-white p-4 shadow-sm">
-                <h2 className="mb-3 text-sm font-semibold text-zinc-900">
-                  Shipping Address
-                </h2>
-                {order.shippingAddress ? (
-                  <div className="space-y-0.5 text-xs text-zinc-700">
-                    {order.shippingAddress.name && <p>{order.shippingAddress.name}</p>}
-                    {order.shippingAddress.address1 && (
-                      <p>{order.shippingAddress.address1}</p>
+                <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                  <h2 className="text-sm font-semibold text-zinc-900">Shipping Address</h2>
+                  {status === "fulfilled" && (
+                    <span className="text-[11px] text-zinc-500">Locked (fulfilled)</span>
+                  )}
+                </div>
+                {order.shippingAddress && (
+                  <p className="mb-2 text-xs text-zinc-500">
+                    {order.shippingAddress.name || "—"}
+                    {order.shippingAddress.phone ? ` · ${order.shippingAddress.phone}` : ""}
+                  </p>
+                )}
+                {addressDraft ? (
+                  <div className="space-y-2">
+                    <div className="grid gap-2 sm:grid-cols-2">
+                      <input
+                        value={addressDraft.address1}
+                        onChange={(e) => handleAddressDraftField("address1", e.target.value)}
+                        placeholder="Address line 1"
+                        disabled={status === "fulfilled"}
+                        className={`${inputClassName} sm:col-span-2 disabled:cursor-not-allowed disabled:bg-zinc-100 disabled:opacity-70`}
+                      />
+                      <input
+                        value={addressDraft.address2}
+                        onChange={(e) => handleAddressDraftField("address2", e.target.value)}
+                        placeholder="Address line 2 (optional)"
+                        disabled={status === "fulfilled"}
+                        className={`${inputClassName} sm:col-span-2 disabled:cursor-not-allowed disabled:bg-zinc-100 disabled:opacity-70`}
+                      />
+                      <input
+                        value={addressDraft.city}
+                        onChange={(e) => handleAddressDraftField("city", e.target.value)}
+                        placeholder="City"
+                        disabled={status === "fulfilled"}
+                        className={`${inputClassName} disabled:cursor-not-allowed disabled:bg-zinc-100 disabled:opacity-70`}
+                      />
+                      <input
+                        value={addressDraft.province}
+                        onChange={(e) => handleAddressDraftField("province", e.target.value)}
+                        placeholder="State/Province"
+                        disabled={status === "fulfilled"}
+                        className={`${inputClassName} disabled:cursor-not-allowed disabled:bg-zinc-100 disabled:opacity-70`}
+                      />
+                      <input
+                        value={addressDraft.zip}
+                        onChange={(e) => handleAddressDraftField("zip", e.target.value)}
+                        placeholder="ZIP"
+                        disabled={status === "fulfilled"}
+                        className={`${inputClassName} disabled:cursor-not-allowed disabled:bg-zinc-100 disabled:opacity-70`}
+                      />
+                      <input
+                        value={addressDraft.country}
+                        onChange={(e) => handleAddressDraftField("country", e.target.value)}
+                        placeholder="Country"
+                        disabled={status === "fulfilled"}
+                        className={`${inputClassName} disabled:cursor-not-allowed disabled:bg-zinc-100 disabled:opacity-70`}
+                      />
+                    </div>
+
+                    {labelAlreadyPurchased && (
+                      <p className="rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                        A label was already purchased for this order&apos;s previous address.
+                        Saving a different address here won&apos;t change that label — void it
+                        and generate a new one afterward if the address changed.
+                      </p>
                     )}
-                    {order.shippingAddress.address2 && (
-                      <p>{order.shippingAddress.address2}</p>
+
+                    {addressSaveError && (
+                      <p className="text-xs text-red-600" role="alert">
+                        {addressSaveError}
+                      </p>
                     )}
-                    <p>
-                      {[
-                        order.shippingAddress.city,
-                        order.shippingAddress.province,
-                        order.shippingAddress.zip,
-                      ]
-                        .filter(Boolean)
-                        .join(", ")}
-                    </p>
-                    {order.shippingAddress.country && <p>{order.shippingAddress.country}</p>}
-                    {order.shippingAddress.phone && <p>{order.shippingAddress.phone}</p>}
+                    {addressSaved && !addressSaveError && (
+                      <p className="text-xs font-medium text-emerald-700">Address saved.</p>
+                    )}
+
+                    {status !== "fulfilled" && (
+                      <button
+                        type="button"
+                        onClick={handleSaveAddress}
+                        disabled={addressSaving}
+                        className="rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white shadow-sm hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {addressSaving ? "Saving…" : "Save Address"}
+                      </button>
+                    )}
                   </div>
                 ) : (
                   <p className="text-xs text-black">No shipping address on file.</p>
                 )}
               </div>
             </section>
-
-            {order.shippingAddress && status !== "fulfilled" && (
-              <section className="rounded-lg border border-zinc-200 bg-white p-4 shadow-sm">
-                <div className="mb-3 flex flex-wrap items-center gap-2">
-                  <h2 className="text-sm font-semibold text-zinc-900">
-                    Shipping Address Verification
-                  </h2>
-                  <span className={addressVerificationBadge(addressVerification?.status).className}>
-                    {addressVerificationBadge(addressVerification?.status).label}
-                  </span>
-                </div>
-
-                {addressIsStale && (
-                  <p className="mb-3 rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-800">
-                    This order&apos;s shipping address in Shopify has changed since it was last
-                    checked — re-verify to see the current result.
-                  </p>
-                )}
-
-                {labelAlreadyPurchased && (
-                  <p className="mb-3 rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-800">
-                    A label was already purchased for this order&apos;s previous address.
-                    Accepting or saving a different address here won&apos;t change that label —
-                    void it and generate a new one afterward if the address changed.
-                  </p>
-                )}
-
-                <div className="mb-3 rounded-md bg-zinc-50 px-3 py-2 text-xs text-zinc-700">
-                  <p className="mb-1 font-medium text-zinc-500">
-                    {addressVerification?.acceptedAddress ? "Accepted address" : "Current address"}
-                  </p>
-                  {effectiveAddress && (
-                    <>
-                      {effectiveAddress.name && <p>{effectiveAddress.name}</p>}
-                      {effectiveAddress.address1 && <p>{effectiveAddress.address1}</p>}
-                      {effectiveAddress.address2 && <p>{effectiveAddress.address2}</p>}
-                      <p>
-                        {[effectiveAddress.city, effectiveAddress.province, effectiveAddress.zip]
-                          .filter(Boolean)
-                          .join(", ")}
-                      </p>
-                      {effectiveAddress.country && <p>{effectiveAddress.country}</p>}
-                    </>
-                  )}
-                </div>
-
-                {addressVerification?.details?.messages && addressVerification.details.messages.length > 0 && (
-                  <ul className="mb-3 space-y-0.5 text-xs text-red-700">
-                    {addressVerification.details.messages.map((m, idx) => (
-                      <li key={idx}>{m.message}</li>
-                    ))}
-                  </ul>
-                )}
-
-                {addressVerification?.status === "needs_review" &&
-                  addressVerification.details?.suggestedAddress && (
-                    <div className="mb-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
-                      <p className="mb-1 font-medium">EasyPost suggests:</p>
-                      {(() => {
-                        const s = addressVerification.details.suggestedAddress;
-                        return (
-                          <>
-                            {s.address1 && <p>{s.address1}</p>}
-                            {s.address2 && <p>{s.address2}</p>}
-                            <p>{[s.city, s.province, s.zip].filter(Boolean).join(", ")}</p>
-                            {s.country && <p>{s.country}</p>}
-                          </>
-                        );
-                      })()}
-                      <button
-                        type="button"
-                        onClick={handleAcceptSuggestedAddress}
-                        disabled={addressAccepting}
-                        className="mt-2 rounded-md bg-amber-600 px-3 py-1.5 text-xs font-medium text-white shadow-sm hover:bg-amber-700 disabled:cursor-not-allowed disabled:opacity-50"
-                      >
-                        {addressAccepting ? "Accepting…" : "Accept Suggested Address"}
-                      </button>
-                    </div>
-                  )}
-
-                {addressActionError && (
-                  <p className="mb-3 text-xs text-red-600" role="alert">
-                    {addressActionError}
-                  </p>
-                )}
-
-                <div className="flex flex-wrap gap-2">
-                  <button
-                    type="button"
-                    onClick={handleVerifyAddress}
-                    disabled={addressVerifying}
-                    className="rounded-md border border-zinc-300 bg-white px-3 py-1.5 text-xs font-medium text-zinc-800 shadow-sm hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    {addressVerifying ? "Verifying…" : "Re-verify"}
-                  </button>
-                  {!addressEditOpen && (
-                    <button
-                      type="button"
-                      onClick={handleOpenAddressEdit}
-                      className="rounded-md border border-zinc-300 bg-white px-3 py-1.5 text-xs font-medium text-zinc-800 shadow-sm hover:bg-zinc-50"
-                    >
-                      Edit Address
-                    </button>
-                  )}
-                </div>
-
-                {addressEditOpen && addressDraft && (
-                  <div className="mt-3 space-y-2 rounded-md border border-zinc-200 bg-white p-3">
-                    <div className="grid gap-2 sm:grid-cols-2">
-                      <input
-                        value={addressDraft.address1 ?? ""}
-                        onChange={(e) => handleAddressDraftField("address1", e.target.value)}
-                        placeholder="Address line 1"
-                        className="rounded-md border border-zinc-300 px-2 py-1.5 text-xs text-black shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500 sm:col-span-2"
-                      />
-                      <input
-                        value={addressDraft.address2 ?? ""}
-                        onChange={(e) => handleAddressDraftField("address2", e.target.value)}
-                        placeholder="Address line 2 (optional)"
-                        className="rounded-md border border-zinc-300 px-2 py-1.5 text-xs text-black shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500 sm:col-span-2"
-                      />
-                      <input
-                        value={addressDraft.city ?? ""}
-                        onChange={(e) => handleAddressDraftField("city", e.target.value)}
-                        placeholder="City"
-                        className="rounded-md border border-zinc-300 px-2 py-1.5 text-xs text-black shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
-                      />
-                      <input
-                        value={addressDraft.province ?? ""}
-                        onChange={(e) => handleAddressDraftField("province", e.target.value)}
-                        placeholder="State/Province"
-                        className="rounded-md border border-zinc-300 px-2 py-1.5 text-xs text-black shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
-                      />
-                      <input
-                        value={addressDraft.zip ?? ""}
-                        onChange={(e) => handleAddressDraftField("zip", e.target.value)}
-                        placeholder="ZIP"
-                        className="rounded-md border border-zinc-300 px-2 py-1.5 text-xs text-black shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
-                      />
-                      <input
-                        value={addressDraft.country ?? ""}
-                        onChange={(e) => handleAddressDraftField("country", e.target.value)}
-                        placeholder="Country"
-                        className="rounded-md border border-zinc-300 px-2 py-1.5 text-xs text-black shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
-                      />
-                    </div>
-
-                    {addressDraftPreview && (
-                      <p className="text-xs">
-                        Preview result:{" "}
-                        <span className={addressVerificationBadge(addressDraftPreview.status).className}>
-                          {addressVerificationBadge(addressDraftPreview.status).label}
-                        </span>
-                      </p>
-                    )}
-
-                    <div className="flex flex-wrap gap-2">
-                      <button
-                        type="button"
-                        onClick={handlePreviewAddressDraft}
-                        disabled={addressDraftPreviewing}
-                        className="rounded-md border border-zinc-300 bg-white px-3 py-1.5 text-xs font-medium text-zinc-800 shadow-sm hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-50"
-                      >
-                        {addressDraftPreviewing ? "Checking…" : "Preview"}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={handleSaveAddressDraft}
-                        disabled={addressAccepting}
-                        className="rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white shadow-sm hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
-                      >
-                        {addressAccepting ? "Saving…" : "Save"}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={handleCancelAddressEdit}
-                        className="rounded-md border border-zinc-300 bg-white px-3 py-1.5 text-xs font-medium text-zinc-800 shadow-sm hover:bg-zinc-50"
-                      >
-                        Cancel
-                      </button>
-                    </div>
-                  </div>
-                )}
-              </section>
-            )}
 
             <section className="rounded-lg border border-zinc-200 bg-white p-4 shadow-sm">
               <h2 className="mb-3 text-sm font-semibold text-zinc-900">Shipping Method</h2>
@@ -1054,6 +988,54 @@ export default function FulfillmentOrderDetailPage() {
                   className="rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   {modalBuying ? "Generating…" : "Generate Label"}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {flagModalOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+            <div className="w-full max-w-xl rounded-md border border-zinc-200 bg-white p-4">
+              <h2 className="text-sm font-semibold text-zinc-900">
+                {isFlagged ? "Edit Flag Reason" : "Flag Order"}
+              </h2>
+              <p className="mt-1 text-xs text-zinc-600">
+                A reason is required. This is visible to the whole team on the order list and
+                this page.
+              </p>
+
+              <div className="mt-4">
+                <label className="mb-1 block text-xs font-medium text-zinc-800">Reason</label>
+                <textarea
+                  value={flagReasonDraft}
+                  onChange={(e) => setFlagReasonDraft(e.target.value)}
+                  rows={4}
+                  placeholder="Why is this order flagged?"
+                  className="w-full rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-xs text-black placeholder:text-zinc-400 shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                />
+                {flagError && (
+                  <p className="mt-2 text-xs text-red-600" role="alert">
+                    {flagError}
+                  </p>
+                )}
+              </div>
+
+              <div className="mt-4 flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={handleCloseFlagModal}
+                  className="rounded-md border border-zinc-300 bg-white px-3 py-1.5 text-xs font-medium text-zinc-800 hover:bg-zinc-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={handleSubmitFlag}
+                  disabled={flagSubmitting}
+                  className="rounded-md bg-red-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {flagSubmitting ? "Saving…" : isFlagged ? "Save Reason" : "Flag Order"}
                 </button>
               </div>
             </div>

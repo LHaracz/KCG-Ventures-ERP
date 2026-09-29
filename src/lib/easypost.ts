@@ -32,10 +32,8 @@ function authHeader(): string {
   return `Basic ${encoded}`;
 }
 
-// 10s bound on every EasyPost call — this client is now also invoked from
-// the orders-create webhook (best-effort address verification at order
-// creation), where a hung request would otherwise hold up webhook
-// execution indefinitely.
+// 10s bound on every EasyPost call, so a hung request can't hold up label
+// buying/printing indefinitely.
 const REQUEST_TIMEOUT_MS = 10_000;
 
 async function easypostFetch<T>(path: string, body: Record<string, unknown>): Promise<T> {
@@ -149,66 +147,4 @@ export type EasyPostRefundResult = {
 // block buying a fresh label locally.
 export async function refundEasyPostShipment(shipmentId: string): Promise<EasyPostRefundResult> {
   return easypostFetch<EasyPostRefundResult>(`/shipments/${shipmentId}/refund`, {});
-}
-
-// --- Address verification (Shipping Address Verification & Flagging) ----
-//
-// EasyPost's address-only endpoint (POST /addresses with verify:
-// ["delivery"]) — cheap and fast compared to creating a full shipment, and
-// the right tool for "is this address deliverable" rather than "what does
-// shipping it cost." A verification "failure" (undeliverable/invalid
-// address) is a normal 200 response with verifications.delivery.success =
-// false, not an HTTP error — easypostFetch only throws on a genuine
-// request failure (bad auth, EasyPost outage, timeout, etc).
-
-type EasyPostRawAddressResponse = EasyPostAddress & {
-  verifications?: {
-    delivery?: {
-      success?: boolean;
-      errors?: Array<{ code?: string; message?: string; field?: string }>;
-    };
-  };
-};
-
-export type EasyPostVerifyError = { code: string | null; message: string; field: string | null };
-
-export type EasyPostVerifyResult = {
-  success: boolean;
-  errors: EasyPostVerifyError[];
-  // EasyPost's corrected/standardized address, present whenever it returned
-  // one — even alongside success: false, EasyPost sometimes still echoes
-  // back a best-effort standardized address; callers decide what to do
-  // with it based on `success`.
-  correctedAddress: EasyPostAddress | null;
-};
-
-export async function verifyEasyPostAddress(address: EasyPostAddress): Promise<EasyPostVerifyResult> {
-  const raw = await easypostFetch<EasyPostRawAddressResponse>("/addresses", {
-    address: { ...address, verify: ["delivery"] },
-  });
-
-  const delivery = raw.verifications?.delivery;
-  const success = delivery?.success === true;
-  const errors: EasyPostVerifyError[] = (delivery?.errors || []).map((e) => ({
-    code: e.code ?? null,
-    message: e.message || "Unknown verification error.",
-    field: e.field ?? null,
-  }));
-
-  const hasAddressFields = !!(raw.street1 && raw.city && raw.zip);
-  const correctedAddress: EasyPostAddress | null = hasAddressFields
-    ? {
-        name: raw.name,
-        company: raw.company,
-        street1: raw.street1,
-        street2: raw.street2,
-        city: raw.city,
-        state: raw.state,
-        zip: raw.zip,
-        country: raw.country,
-        phone: raw.phone,
-      }
-    : null;
-
-  return { success, errors, correctedAddress };
 }
