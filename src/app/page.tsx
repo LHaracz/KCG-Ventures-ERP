@@ -12,8 +12,15 @@ import {
   computeShortages,
   feasibilityBadge,
 } from "@/lib/feasibility";
+// Reuse the sidebar's own BotanIQals category groupings (Production /
+// Inventory / Fulfillment) so the dashboard's dropdowns always show exactly
+// the same pages as the side nav, with one definition to keep in sync.
+import { sections as navSections, type NavCategory } from "@/components/Navigation";
 
 const ACTIVE_STATUSES = ["draft", "planned"];
+
+const botaniqalsCategories: NavCategory[] =
+  navSections.find((s) => s.title === "BotanIQals")?.categories ?? [];
 
 export default function Home() {
   const { user, isLoading, supabase } = useSupabase();
@@ -155,6 +162,23 @@ export default function Home() {
 
         <ActiveCyclesTable rows={cycleRows} loading={dataLoading} />
 
+        <section className="rounded-lg border border-zinc-200 bg-white p-4 shadow-sm">
+          <div className="flex flex-wrap gap-2">
+            <Link
+              href="/schedule"
+              className="rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white shadow-sm hover:bg-emerald-700"
+            >
+              Schedule
+            </Link>
+            <Link
+              href="/stats"
+              className="rounded-md border border-zinc-300 bg-white px-3 py-1.5 text-xs font-medium text-zinc-800 shadow-sm hover:bg-zinc-50"
+            >
+              Sales Dashboard
+            </Link>
+          </div>
+        </section>
+
         <section className="grid gap-6 lg:grid-cols-2">
           <BusinessColumn
             title="MiniLeaf"
@@ -176,39 +200,66 @@ export default function Home() {
               },
             ]}
           />
-          <BusinessColumn
-            title="BotanIQals"
-            cards={[
-              {
-                href: "/calibration",
-                title: "Freeze Dryer Calibration",
-                description: "Define machines, trays, cycle times, and capacities.",
-              },
-              {
-                href: "/inventory",
-                title: "Inventory & Cycle Count",
-                description: "Track materials, adjustments, and cycle counts.",
-              },
-              {
-                href: "/products",
-                title: "Products & BOM",
-                description: "Define products, microgreen links, and BOM lines.",
-              },
-              {
-                href: "/cycles",
-                title: "Production Cycles & Planner",
-                description: "Set cycle targets, feasibility, and tray plans.",
-              },
-              {
-                href: "/schedule",
-                title: "Schedule",
-                description: "View upcoming soak, sow, harvest, and freeze-dry events.",
-              },
-            ]}
-          />
+          <div>
+            <h2 className="mb-3 text-sm font-semibold text-zinc-900 underline decoration-zinc-300 underline-offset-4">
+              BotanIQals
+            </h2>
+            <div className="space-y-3">
+              {botaniqalsCategories.map((category) => (
+                <CategoryDropdown key={category.title} category={category} />
+              ))}
+            </div>
+          </div>
         </section>
       </div>
     </AuthGuard>
+  );
+}
+
+// Mirrors the sidebar's collapsible BotanIQals categories (Production /
+// Inventory / Fulfillment) as a stack of dropdowns: click a category to
+// reveal the same pages as buttons, instead of one long flat card list.
+function CategoryDropdown({ category }: { category: NavCategory }) {
+  const [isOpen, setIsOpen] = useState(false);
+
+  return (
+    <div className="rounded-lg border border-zinc-200 bg-white shadow-sm">
+      <button
+        type="button"
+        onClick={() => setIsOpen((prev) => !prev)}
+        aria-expanded={isOpen}
+        className="flex w-full items-center justify-between px-4 py-3 text-left text-sm font-semibold text-zinc-900"
+      >
+        <span>{category.title}</span>
+        <svg
+          viewBox="0 0 20 20"
+          fill="currentColor"
+          aria-hidden="true"
+          className={`h-4 w-4 shrink-0 text-zinc-500 transition-transform ${
+            isOpen ? "rotate-90" : ""
+          }`}
+        >
+          <path
+            fillRule="evenodd"
+            d="M7.21 14.77a.75.75 0 01.02-1.06L11.168 10 7.23 6.29a.75.75 0 111.04-1.08l4.5 4.25a.75.75 0 010 1.08l-4.5 4.25a.75.75 0 01-1.06-.02z"
+            clipRule="evenodd"
+          />
+        </svg>
+      </button>
+      {isOpen && (
+        <div className="flex flex-wrap gap-2 border-t border-zinc-200 px-4 py-3">
+          {category.items.map((item) => (
+            <Link
+              key={item.href}
+              href={item.href}
+              className="rounded-md border border-zinc-300 bg-white px-3 py-1.5 text-xs font-medium text-zinc-800 shadow-sm hover:border-emerald-500 hover:bg-zinc-50"
+            >
+              {item.label}
+            </Link>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 

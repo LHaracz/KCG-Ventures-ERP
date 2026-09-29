@@ -5,9 +5,9 @@ import { usePathname } from "next/navigation";
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { useSupabase } from "@/components/InstantProvider";
 
-type NavLeaf = { href: string; label: string };
-type NavCategory = { title: string; items: NavLeaf[] };
-type NavSection = {
+export type NavLeaf = { href: string; label: string };
+export type NavCategory = { title: string; items: NavLeaf[] };
+export type NavSection = {
   title: string;
   items?: NavLeaf[];
   categories?: NavCategory[];
@@ -29,7 +29,10 @@ const topItems: NavLeaf[] = [
   { href: "/settings/notifications", label: "Notification Settings" },
 ];
 
-const sections: NavSection[] = [
+// Exported so other pages (e.g. the Dashboard's BotanIQals dropdowns) can
+// mirror these exact categories/pages instead of maintaining a second,
+// driftable copy of the same links.
+export const sections: NavSection[] = [
   {
     title: "BotanIQals",
     categories: [
