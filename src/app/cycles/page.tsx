@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { AuthGuard } from "@/components/AuthGuard";
 import { formatDate } from "@/lib/date";
@@ -119,6 +119,8 @@ export default function CyclesPage() {
   const [loadingReopenCycleId, setLoadingReopenCycleId] = useState<string | null>(null);
   const [reopening, setReopening] = useState(false);
 
+  const [actionsFor, setActionsFor] = useState<{ cycle: any; tab: TabKey } | null>(null);
+
   const today = new Date().toISOString().slice(0, 10);
   const [form, setForm] = useState<CycleForm>({
     business_type: "MiniLeaf",
@@ -176,18 +178,19 @@ export default function CyclesPage() {
     load();
   }, [user, supabase]);
 
-  // Close any open Delete/Reopen confirmation on Escape.
+  // Close any open Actions/Delete/Reopen popup on Escape.
   useEffect(() => {
-    if (!deleteConfirm && !reopenConfirm) return;
+    if (!deleteConfirm && !reopenConfirm && !actionsFor) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         setDeleteConfirm(null);
         setReopenConfirm(null);
+        setActionsFor(null);
       }
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [deleteConfirm, reopenConfirm]);
+  }, [deleteConfirm, reopenConfirm, actionsFor]);
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
@@ -1001,15 +1004,7 @@ export default function CyclesPage() {
                 <CyclesTable
                   rows={inProgressPageRows}
                   tab="in_progress"
-                  onMarkProduced={handleMarkAsProduced}
-                  onUndoProduced={handleUndoMarkAsProduced}
-                  onBeginComplete={beginCompleteProduction}
-                  onOpenDelete={openDeleteConfirm}
-                  onOpenReopen={openReopenConfirm}
-                  markingProducedCycleId={markingProducedCycleId}
-                  undoingProducedCycleId={undoingProducedCycleId}
-                  completingCycleId={completingCycleId}
-                  loadingReopenCycleId={loadingReopenCycleId}
+                  onOpenActions={(cycle) => setActionsFor({ cycle, tab: "in_progress" })}
                 />
                 <PaginationControls
                   page={safeInProgressPage}
@@ -1026,15 +1021,7 @@ export default function CyclesPage() {
               <CyclesTable
                 rows={completedPageRows}
                 tab="completed"
-                onMarkProduced={handleMarkAsProduced}
-                onUndoProduced={handleUndoMarkAsProduced}
-                onBeginComplete={beginCompleteProduction}
-                onOpenDelete={openDeleteConfirm}
-                onOpenReopen={openReopenConfirm}
-                markingProducedCycleId={markingProducedCycleId}
-                undoingProducedCycleId={undoingProducedCycleId}
-                completingCycleId={completingCycleId}
-                loadingReopenCycleId={loadingReopenCycleId}
+                onOpenActions={(cycle) => setActionsFor({ cycle, tab: "completed" })}
               />
               <PaginationControls
                 page={safeCompletedPage}
@@ -1144,6 +1131,110 @@ export default function CyclesPage() {
                 >
                   Submit actuals and complete
                 </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {actionsFor && (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+            onClick={() => setActionsFor(null)}
+          >
+            <div
+              className="w-full max-w-xs rounded-md border border-zinc-200 bg-white p-3"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="mb-2 flex items-center justify-between px-1">
+                <h2 className="text-sm font-semibold text-black">
+                  Cycle {String(actionsFor.cycle.id).slice(0, 8)}
+                </h2>
+                <button
+                  type="button"
+                  onClick={() => setActionsFor(null)}
+                  aria-label="Close"
+                  className="text-zinc-500 hover:text-zinc-700"
+                >
+                  ✕
+                </button>
+              </div>
+              <div className="space-y-1">
+                <Link
+                  href={`/cycles/${actionsFor.cycle.id}/plan`}
+                  onClick={() => setActionsFor(null)}
+                  className="block rounded-md px-3 py-2 text-sm font-medium text-black hover:bg-zinc-50"
+                >
+                  Open Planner
+                </Link>
+                {actionsFor.tab === "in_progress" && (
+                  <>
+                    {actionsFor.cycle.raw_materials_deducted_at ? (
+                      <button
+                        type="button"
+                        disabled={undoingProducedCycleId === actionsFor.cycle.id}
+                        onClick={() => {
+                          handleUndoMarkAsProduced(actionsFor.cycle);
+                          setActionsFor(null);
+                        }}
+                        className="block w-full rounded-md px-3 py-2 text-left text-sm font-medium text-black hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        {undoingProducedCycleId === actionsFor.cycle.id
+                          ? "Undoing…"
+                          : "Undo Mark as Produced"}
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        disabled={markingProducedCycleId === actionsFor.cycle.id}
+                        onClick={() => {
+                          handleMarkAsProduced(actionsFor.cycle);
+                          setActionsFor(null);
+                        }}
+                        className="block w-full rounded-md px-3 py-2 text-left text-sm font-medium text-black hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        {markingProducedCycleId === actionsFor.cycle.id
+                          ? "Marking…"
+                          : "Mark as Produced"}
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      disabled={completingCycleId === actionsFor.cycle.id}
+                      onClick={() => {
+                        beginCompleteProduction(actionsFor.cycle);
+                        setActionsFor(null);
+                      }}
+                      className="block w-full rounded-md px-3 py-2 text-left text-sm font-medium text-black hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {completingCycleId === actionsFor.cycle.id
+                        ? "Completing…"
+                        : "Complete Production"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        openDeleteConfirm(actionsFor.cycle);
+                        setActionsFor(null);
+                      }}
+                      className="block w-full rounded-md px-3 py-2 text-left text-sm font-medium text-red-600 hover:bg-zinc-50"
+                    >
+                      Delete
+                    </button>
+                  </>
+                )}
+                {actionsFor.tab === "completed" && (
+                  <button
+                    type="button"
+                    disabled={loadingReopenCycleId === actionsFor.cycle.id}
+                    onClick={() => {
+                      openReopenConfirm(actionsFor.cycle);
+                      setActionsFor(null);
+                    }}
+                    className="block w-full rounded-md px-3 py-2 text-left text-sm font-medium text-black hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {loadingReopenCycleId === actionsFor.cycle.id ? "Loading…" : "Reopen Production"}
+                  </button>
+                )}
               </div>
             </div>
           </div>
@@ -1305,80 +1396,14 @@ function PaginationControls({
   );
 }
 
-function RowActionsMenu({
-  children,
-}: {
-  children: (close: () => void) => React.ReactNode;
-}) {
-  const [isOpen, setIsOpen] = useState(false);
-  const containerRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!isOpen) return;
-    const onDocMouseDown = (e: MouseEvent) => {
-      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
-        setIsOpen(false);
-      }
-    };
-    document.addEventListener("mousedown", onDocMouseDown);
-    return () => document.removeEventListener("mousedown", onDocMouseDown);
-  }, [isOpen]);
-
-  return (
-    <div ref={containerRef} className="relative inline-block text-left">
-      <button
-        type="button"
-        onClick={() => setIsOpen((prev) => !prev)}
-        aria-expanded={isOpen}
-        className="inline-flex items-center gap-1 rounded-md border border-zinc-300 bg-white px-2 py-1 text-[11px] font-medium text-zinc-800 shadow-sm hover:bg-zinc-50"
-      >
-        Actions
-        <svg
-          viewBox="0 0 20 20"
-          fill="currentColor"
-          aria-hidden="true"
-          className={`h-3 w-3 shrink-0 text-zinc-500 transition-transform ${isOpen ? "rotate-180" : ""}`}
-        >
-          <path
-            fillRule="evenodd"
-            d="M5.23 7.21a.75.75 0 011.06.02L10 10.94l3.71-3.71a.75.75 0 111.06 1.06l-4.24 4.24a.75.75 0 01-1.06 0L5.21 8.29a.75.75 0 01.02-1.08z"
-            clipRule="evenodd"
-          />
-        </svg>
-      </button>
-      {isOpen && (
-        <div className="absolute left-0 z-20 mt-1 w-48 rounded-md border border-zinc-200 bg-white py-1 text-xs shadow-lg">
-          {children(() => setIsOpen(false))}
-        </div>
-      )}
-    </div>
-  );
-}
-
 function CyclesTable({
   rows,
   tab,
-  onMarkProduced,
-  onUndoProduced,
-  onBeginComplete,
-  onOpenDelete,
-  onOpenReopen,
-  markingProducedCycleId,
-  undoingProducedCycleId,
-  completingCycleId,
-  loadingReopenCycleId,
+  onOpenActions,
 }: {
   rows: CycleRow[];
   tab: TabKey;
-  onMarkProduced: (cycle: any) => void;
-  onUndoProduced: (cycle: any) => void;
-  onBeginComplete: (cycle: any) => void;
-  onOpenDelete: (cycle: any) => void;
-  onOpenReopen: (cycle: any) => void;
-  markingProducedCycleId: string | null;
-  undoingProducedCycleId: string | null;
-  completingCycleId: string | null;
-  loadingReopenCycleId: string | null;
+  onOpenActions: (cycle: any) => void;
 }) {
   return (
     <div className="overflow-x-auto">
@@ -1401,86 +1426,13 @@ function CyclesTable({
             return (
               <tr key={cycle.id} className="border-b border-zinc-100">
                 <td className="px-3 py-2">
-                  <RowActionsMenu>
-                    {(close) => (
-                      <>
-                        <Link
-                          href={`/cycles/${cycle.id}/plan`}
-                          onClick={close}
-                          className="block px-3 py-2 text-zinc-800 hover:bg-zinc-50"
-                        >
-                          Open Planner
-                        </Link>
-                        {tab === "in_progress" && (
-                          <>
-                            {isProduced ? (
-                              <button
-                                type="button"
-                                disabled={undoingProducedCycleId === cycle.id}
-                                onClick={() => {
-                                  onUndoProduced(cycle);
-                                  close();
-                                }}
-                                className="block w-full px-3 py-2 text-left text-amber-700 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-60"
-                              >
-                                {undoingProducedCycleId === cycle.id
-                                  ? "Undoing…"
-                                  : "Undo Mark as Produced"}
-                              </button>
-                            ) : (
-                              <button
-                                type="button"
-                                disabled={markingProducedCycleId === cycle.id}
-                                onClick={() => {
-                                  onMarkProduced(cycle);
-                                  close();
-                                }}
-                                className="block w-full px-3 py-2 text-left text-zinc-800 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-60"
-                              >
-                                {markingProducedCycleId === cycle.id
-                                  ? "Marking…"
-                                  : "Mark as Produced"}
-                              </button>
-                            )}
-                            <button
-                              type="button"
-                              disabled={completingCycleId === cycle.id}
-                              onClick={() => {
-                                onBeginComplete(cycle);
-                                close();
-                              }}
-                              className="block w-full px-3 py-2 text-left text-emerald-700 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-60"
-                            >
-                              {completingCycleId === cycle.id ? "Completing…" : "Complete Production"}
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                onOpenDelete(cycle);
-                                close();
-                              }}
-                              className="block w-full px-3 py-2 text-left text-red-600 hover:bg-zinc-50"
-                            >
-                              Delete
-                            </button>
-                          </>
-                        )}
-                        {tab === "completed" && (
-                          <button
-                            type="button"
-                            disabled={loadingReopenCycleId === cycle.id}
-                            onClick={() => {
-                              onOpenReopen(cycle);
-                              close();
-                            }}
-                            className="block w-full px-3 py-2 text-left text-zinc-800 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-60"
-                          >
-                            {loadingReopenCycleId === cycle.id ? "Loading…" : "Reopen Production"}
-                          </button>
-                        )}
-                      </>
-                    )}
-                  </RowActionsMenu>
+                  <button
+                    type="button"
+                    onClick={() => onOpenActions(cycle)}
+                    className="inline-flex items-center rounded-md border border-zinc-300 bg-white px-2 py-1 text-[11px] font-medium text-black shadow-sm hover:bg-zinc-50"
+                  >
+                    Actions
+                  </button>
                 </td>
                 <td className="px-3 py-2">
                   <Link
