@@ -19,7 +19,8 @@ export const LOW_STOCK_THRESHOLD = 5;
 export type InventoryTransactionType =
   | "sale_decrease"
   | "production_increase"
-  | "cycle_count_adjustment";
+  | "cycle_count_adjustment"
+  | "production_reversal";
 
 export type InventoryReferenceType = "order" | "production_cycle" | "manual";
 

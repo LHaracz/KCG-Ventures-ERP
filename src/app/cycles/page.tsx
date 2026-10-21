@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { AuthGuard } from "@/components/AuthGuard";
 import { formatDate } from "@/lib/date";
@@ -14,6 +14,13 @@ import {
   preloadInventoryCache,
   recordInventoryTransaction,
 } from "@/lib/finishedGoodsInventory";
+import {
+  computeMinileafAggregate,
+  computeFeasibility,
+  computeShortages,
+  feasibilityBadge,
+  type Feasibility,
+} from "@/lib/feasibility";
 
 type BusinessType = "MiniLeaf" | "BotanIQals";
 
@@ -36,6 +43,36 @@ type CompletionActualsDraft = {
   }>;
 };
 
+type TabKey = "in_progress" | "completed";
+
+type ReopenWarning = {
+  productId: string;
+  productName: string;
+  projectedQty: number;
+};
+
+type ReopenConfirmState = {
+  cycle: any;
+  isBotaniqals: boolean;
+  batchRows: Array<{ product_id: string; quantity_produced: number }>;
+  warnings: ReopenWarning[];
+};
+
+type DeleteConfirmState = {
+  cycleId: string;
+  cycleLabel: string;
+};
+
+type CycleRow = {
+  cycle: any;
+  isMiniLeaf: boolean;
+  targetCount: number;
+  feasibility: Feasibility | null;
+  shortageCount: number;
+};
+
+const PAGE_SIZE = 20;
+
 function filterScopedRows<T extends { user_id?: string | null }>(
   rows: T[],
   userId: string,
@@ -49,7 +86,19 @@ export default function CyclesPage() {
   const [targets, setTargets] = useState<any[]>([]);
   const [batches, setBatches] = useState<any[]>([]);
   const [products, setProducts] = useState<any[]>([]);
+  const [microgreens, setMicrogreens] = useState<any[]>([]);
+  const [bomLines, setBomLines] = useState<any[]>([]);
+  const [items, setItems] = useState<any[]>([]);
+  const [calibration, setCalibration] = useState<any | null>(null);
+  const [yieldEntries, setYieldEntries] = useState<any[]>([]);
+  const [variants, setVariants] = useState<any[]>([]);
+  const [machine, setMachine] = useState<any | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+
+  const [activeTab, setActiveTab] = useState<TabKey>("in_progress");
+  const [inProgressPage, setInProgressPage] = useState(1);
+  const [completedPage, setCompletedPage] = useState(1);
+
   const [completingCycleId, setCompletingCycleId] = useState<string | null>(
     null,
   );
@@ -62,6 +111,13 @@ export default function CyclesPage() {
   const [completionDraft, setCompletionDraft] = useState<CompletionActualsDraft | null>(
     null,
   );
+
+  const [deleteConfirm, setDeleteConfirm] = useState<DeleteConfirmState | null>(null);
+  const [deletingCycleId, setDeletingCycleId] = useState<string | null>(null);
+
+  const [reopenConfirm, setReopenConfirm] = useState<ReopenConfirmState | null>(null);
+  const [loadingReopenCycleId, setLoadingReopenCycleId] = useState<string | null>(null);
+  const [reopening, setReopening] = useState(false);
 
   const today = new Date().toISOString().slice(0, 10);
   const [form, setForm] = useState<CycleForm>({
@@ -78,7 +134,7 @@ export default function CyclesPage() {
     if (!user) return;
     const load = async () => {
       setIsLoading(true);
-      const [c, t, b, p] = await Promise.all([
+      const [c, t, b, p, mg, bom, inv, cal, y, v, mach] = await Promise.all([
         supabase
           .from("production_cycles")
           .select("*")
@@ -96,15 +152,42 @@ export default function CyclesPage() {
           .eq("user_id", user.id)
           .order("created_at", { ascending: false }),
         supabase.from("products").select("*"),
+        supabase.from("microgreens").select("*"),
+        supabase.from("bom_lines").select("*"),
+        supabase.from("inventory_items").select("*"),
+        supabase.from("calibration").select("*").limit(1).maybeSingle(),
+        supabase.from("yield_entries").select("*"),
+        supabase.from("product_variants").select("*"),
+        supabase.from("freeze_dryer_machine_settings").select("*").maybeSingle(),
       ]);
       setCycles(c.data || []);
       setTargets(t.data || []);
       setBatches(b.data || []);
       setProducts(filterScopedRows(p.data || [], user.id));
+      setMicrogreens(mg.data || []);
+      setBomLines(bom.data || []);
+      setItems(inv.data || []);
+      setCalibration(cal.data || null);
+      setYieldEntries(y.data || []);
+      setVariants(v.data || []);
+      setMachine(mach.data || null);
       setIsLoading(false);
     };
     load();
   }, [user, supabase]);
+
+  // Close any open Delete/Reopen confirmation on Escape.
+  useEffect(() => {
+    if (!deleteConfirm && !reopenConfirm) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setDeleteConfirm(null);
+        setReopenConfirm(null);
+      }
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [deleteConfirm, reopenConfirm]);
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
@@ -177,14 +260,10 @@ export default function CyclesPage() {
   const displayBusinessType = (c: { business_type?: string; brand?: string }) =>
     normalizeBusinessType(c, { defaultType: "BotanIQals" });
 
-  const handleDeleteCycle = async (id: string) => {
-    if (!user) return;
-    if (typeof window !== "undefined") {
-      const confirmed = window.confirm(
-        "Delete this production cycle and all associated targets, plan lines, and schedule events? This cannot be undone."
-      );
-      if (!confirmed) return;
-    }
+  const confirmDelete = async () => {
+    if (!deleteConfirm || !user) return;
+    const id = deleteConfirm.cycleId;
+    setDeletingCycleId(id);
     setError(null);
     try {
       // Remove dependent data first to avoid orphaned records.
@@ -216,15 +295,29 @@ export default function CyclesPage() {
 
       setCycles((prev) => prev.filter((c) => c.id !== id));
       setTargets((prev) => prev.filter((t) => t.production_cycle !== id));
+      setDeleteConfirm(null);
     } catch (err: unknown) {
       setError(
         err instanceof Error ? err.message : "Failed to delete production cycle."
       );
+    } finally {
+      setDeletingCycleId(null);
     }
   };
 
   const beginCompleteProduction = (cycle: any) => {
     const cycleTargets = targets.filter((t: any) => t.production_cycle === cycle.id);
+    // If this cycle has been completed before (and reopened), prefill from
+    // the actuals already on record for it instead of the planned quantity,
+    // so a correction starts from what was last entered rather than from
+    // scratch. Only BotanIQals cycles ever get a batch row.
+    const previousActualByProductId = new Map<string, number>();
+    for (const batch of batches) {
+      if (batch.production_cycle_id !== cycle.id) continue;
+      const qty = Number(batch.quantity_produced ?? 0) || 0;
+      if (!batch.product_id) continue;
+      previousActualByProductId.set(batch.product_id, qty);
+    }
     const grouped = new Map<string, { productName: string; plannedQty: number }>();
     for (const target of cycleTargets) {
       const productId = String(target.product ?? "").trim();
@@ -241,12 +334,16 @@ export default function CyclesPage() {
       existing.plannedQty += plannedQty;
       grouped.set(productId, existing);
     }
-    const productActuals = Array.from(grouped.entries()).map(([productId, value]) => ({
-      productId,
-      productName: value.productName,
-      plannedQty: value.plannedQty,
-      actualQty: String(Math.trunc(value.plannedQty)),
-    }));
+    const productActuals = Array.from(grouped.entries()).map(([productId, value]) => {
+      const previousActual = previousActualByProductId.get(productId);
+      const defaultQty = previousActual != null ? previousActual : Math.trunc(value.plannedQty);
+      return {
+        productId,
+        productName: value.productName,
+        plannedQty: value.plannedQty,
+        actualQty: String(defaultQty),
+      };
+    });
     if (productActuals.length === 0) {
       setError("No production targets with quantity found for this cycle.");
       return;
@@ -361,7 +458,9 @@ export default function CyclesPage() {
         const batchRows = Array.from(batchByProductId.values());
         if (batchRows.length > 0) {
           // Conflict target matches uq_botaniqals_batches_cycle_product_null_variant
-          // (product_variant_id omitted / NULL).
+          // (product_variant_id omitted / NULL). On a re-completion after a
+          // reopen, this updates the existing row's quantity_produced in
+          // place instead of inserting a second one.
           const { error: upsertBatchErr } = await supabase
             .from("botaniqals_production_batches")
             .upsert(batchRows, {
@@ -374,7 +473,8 @@ export default function CyclesPage() {
         // Finished-goods inventory increment — claimed the same way raw
         // material deduction is (a conditional update on a nullable
         // timestamp column), so a retried completion never double-credits
-        // on-hand quantity.
+        // on-hand quantity. Reopen Production clears this column back to
+        // NULL so a corrected re-completion can claim and apply again.
         const { data: claimedFinishedGoodsRows, error: claimFinishedGoodsErr } = await supabase
           .from("production_cycles")
           .update({ finished_goods_applied_at: nowIso })
@@ -400,10 +500,10 @@ export default function CyclesPage() {
         }
       }
 
+      const nowIso = new Date().toISOString();
       const { error: cycleErr } = await supabase
         .from("production_cycles")
-        // Some schemas may not include updated_at on production_cycles; status is enough.
-        .update({ status: "completed" })
+        .update({ status: "completed", completed_at: nowIso })
         .eq("id", cycle.id)
         .eq("user_id", user.id);
       if (cycleErr) throw cycleErr;
@@ -419,7 +519,9 @@ export default function CyclesPage() {
       setBatches(refreshedBatches || []);
 
       setCycles((prev) =>
-        prev.map((c) => (c.id === cycle.id ? { ...c, status: "completed" } : c)),
+        prev.map((c) =>
+          c.id === cycle.id ? { ...c, status: "completed", completed_at: nowIso } : c,
+        ),
       );
     } catch (err: unknown) {
       const msg =
@@ -470,14 +572,11 @@ export default function CyclesPage() {
     }
   };
 
-  const handleUndoRawMaterials = async (cycle: any) => {
+  // Deliberately no confirmation dialog here — "Undo Mark as Produced" is
+  // itself the safety net for an accidental "Mark as Produced" click, so
+  // gating it behind a second confirmation would defeat the point.
+  const handleUndoMarkAsProduced = async (cycle: any) => {
     if (!user) return;
-    const confirmed =
-      typeof window === "undefined" ||
-      window.confirm(
-        "Undo this? The raw materials that were deducted will be added back to inventory.",
-      );
-    if (!confirmed) return;
     setError(null);
     setUndoingProducedCycleId(cycle.id);
     try {
@@ -522,6 +621,182 @@ export default function CyclesPage() {
     await handleCompleteProduction(cycle, actualQtyByProductId);
   };
 
+  const openDeleteConfirm = (cycle: any) => {
+    const label = cycle.harvest_date
+      ? formatDate(cycle.harvest_date)
+      : `${formatDate(cycle.start_date)} – ${formatDate(cycle.end_date)}`;
+    setDeleteConfirm({ cycleId: cycle.id, cycleLabel: label });
+  };
+
+  const openReopenConfirm = async (cycle: any) => {
+    setError(null);
+    setLoadingReopenCycleId(cycle.id);
+    try {
+      const isBotaniqals = displayBusinessType(cycle) === "BotanIQals";
+      const batchRows = isBotaniqals
+        ? batches
+            .filter(
+              (b: any) =>
+                b.production_cycle_id === cycle.id && (Number(b.quantity_produced) || 0) > 0,
+            )
+            .map((b: any) => ({
+              product_id: b.product_id as string,
+              quantity_produced: Number(b.quantity_produced) || 0,
+            }))
+        : [];
+
+      let warnings: ReopenWarning[] = [];
+      if (batchRows.length > 0) {
+        const productIds = batchRows.map((b) => b.product_id);
+        const { data: invRows, error: invErr } = await supabase
+          .from("finished_products_inventory")
+          .select("product_id, on_hand_qty")
+          .in("product_id", productIds);
+        if (invErr) throw invErr;
+        const onHandByProduct = new Map<string, number>(
+          (invRows || []).map((r: any) => [r.product_id, Number(r.on_hand_qty) || 0]),
+        );
+        warnings = batchRows
+          .map((b) => {
+            const current = onHandByProduct.get(b.product_id) ?? 0;
+            const projectedQty = current - b.quantity_produced;
+            if (projectedQty >= 0) return null;
+            const productName =
+              products.find((p: any) => p.id === b.product_id)?.name ?? "Unknown product";
+            return { productId: b.product_id, productName, projectedQty };
+          })
+          .filter((row): row is ReopenWarning => row !== null);
+      }
+
+      setReopenConfirm({ cycle, isBotaniqals, batchRows, warnings });
+    } catch (err: unknown) {
+      setError(
+        err instanceof Error ? err.message : "Failed to prepare reopen for this cycle.",
+      );
+    } finally {
+      setLoadingReopenCycleId(null);
+    }
+  };
+
+  const confirmReopen = async () => {
+    if (!reopenConfirm || !user) return;
+    const { cycle, isBotaniqals, batchRows } = reopenConfirm;
+    setReopening(true);
+    setError(null);
+    try {
+      if (isBotaniqals && batchRows.length > 0) {
+        const cache = await preloadInventoryCache(supabase);
+        for (const batchRow of batchRows) {
+          await recordInventoryTransaction(supabase, {
+            productId: batchRow.product_id,
+            type: "production_reversal",
+            quantityDelta: -batchRow.quantity_produced,
+            referenceType: "production_cycle",
+            referenceId: cycle.id,
+            note: "Cycle reopened, reversal of completion",
+            createdBy: user.id,
+            cache,
+          });
+        }
+      }
+
+      const { error: updateErr } = await supabase
+        .from("production_cycles")
+        .update({ status: "planned", completed_at: null, finished_goods_applied_at: null })
+        .eq("id", cycle.id)
+        .eq("user_id", user.id);
+      if (updateErr) throw updateErr;
+
+      setCycles((prev) =>
+        prev.map((c) =>
+          c.id === cycle.id
+            ? { ...c, status: "planned", completed_at: null, finished_goods_applied_at: null }
+            : c,
+        ),
+      );
+      setReopenConfirm(null);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Failed to reopen production cycle.");
+    } finally {
+      setReopening(false);
+    }
+  };
+
+  const cycleRows: CycleRow[] = useMemo(() => {
+    return cycles.map((cycle: any) => {
+      const isMiniLeaf = normalizeBusinessType(cycle, { defaultType: "BotanIQals" }) === "MiniLeaf";
+      const cycleTargets = targets.filter((t: any) => t.production_cycle === cycle.id);
+
+      const minileafAggregate = computeMinileafAggregate({
+        isMiniLeaf,
+        targets: cycleTargets,
+        products,
+        variants,
+        microgreens,
+        yieldEntries,
+      });
+      const feasibility = computeFeasibility({
+        cycle,
+        isMiniLeaf,
+        targets: cycleTargets,
+        products,
+        bomLines,
+        calibration,
+        machine,
+        minileafAggregate,
+      });
+      const shortages = computeShortages({
+        targets: cycleTargets,
+        products,
+        bomLines,
+        items,
+      });
+      const shortageCount = shortages.filter((s) => s.shortage > 0).length;
+
+      return {
+        cycle,
+        isMiniLeaf,
+        targetCount: cycleTargets.length,
+        feasibility,
+        shortageCount,
+      };
+    });
+  }, [cycles, targets, products, variants, microgreens, yieldEntries, bomLines, calibration, machine, items]);
+
+  const inProgressCycleRows = useMemo(() => {
+    return cycleRows
+      .filter((row) => row.cycle.status !== "completed")
+      .sort((a, b) => {
+        const at = new Date(a.cycle.created_at ?? 0).getTime();
+        const bt = new Date(b.cycle.created_at ?? 0).getTime();
+        return bt - at;
+      });
+  }, [cycleRows]);
+
+  const completedCycleRows = useMemo(() => {
+    return cycleRows
+      .filter((row) => row.cycle.status === "completed")
+      .sort((a, b) => {
+        const at = new Date(a.cycle.completed_at ?? a.cycle.created_at ?? 0).getTime();
+        const bt = new Date(b.cycle.completed_at ?? b.cycle.created_at ?? 0).getTime();
+        return bt - at;
+      });
+  }, [cycleRows]);
+
+  const inProgressTotalPages = Math.max(1, Math.ceil(inProgressCycleRows.length / PAGE_SIZE));
+  const completedTotalPages = Math.max(1, Math.ceil(completedCycleRows.length / PAGE_SIZE));
+  const safeInProgressPage = Math.min(inProgressPage, inProgressTotalPages);
+  const safeCompletedPage = Math.min(completedPage, completedTotalPages);
+
+  const inProgressPageRows = inProgressCycleRows.slice(
+    (safeInProgressPage - 1) * PAGE_SIZE,
+    safeInProgressPage * PAGE_SIZE,
+  );
+  const completedPageRows = completedCycleRows.slice(
+    (safeCompletedPage - 1) * PAGE_SIZE,
+    safeCompletedPage * PAGE_SIZE,
+  );
+
   const batchDetailRows = batches
     .filter((batch: any) => {
       const cycle = cycles.find((cycleRow: any) => cycleRow.id === batch.production_cycle_id);
@@ -549,7 +824,7 @@ export default function CyclesPage() {
 
   return (
     <AuthGuard>
-      <div className="mx-auto max-w-5xl space-y-6">
+      <div className="mx-auto max-w-6xl space-y-6">
         <header className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <h1 className="mb-1 text-2xl font-semibold text-zinc-900">
@@ -568,231 +843,207 @@ export default function CyclesPage() {
           </Link>
         </header>
 
-        <section className="grid gap-4 lg:grid-cols-2">
-          <div className="rounded-md border border-zinc-200 bg-white p-4 text-xs">
-            <h2 className="mb-2 text-sm font-semibold text-zinc-900">
-              Create cycle
-            </h2>
-            <form onSubmit={handleSubmit} className="space-y-2">
+        <section className="max-w-xl rounded-md border border-zinc-200 bg-white p-4 text-xs">
+          <h2 className="mb-2 text-sm font-semibold text-zinc-900">
+            Create cycle
+          </h2>
+          <form onSubmit={handleSubmit} className="space-y-2">
+            <div>
+              <label className="mb-1 block font-medium text-zinc-800">
+                Business type
+              </label>
+              <select
+                value={form.business_type}
+                onChange={(e) =>
+                  setForm((prev) => ({
+                    ...prev,
+                    business_type: e.target.value as BusinessType,
+                  }))
+                }
+                className="w-full rounded-md border border-zinc-300 px-2 py-1.5 shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+              >
+                <option value="MiniLeaf">MiniLeaf</option>
+                <option value="BotanIQals">BotanIQals</option>
+              </select>
+            </div>
+
+            {form.business_type === "MiniLeaf" ? (
               <div>
                 <label className="mb-1 block font-medium text-zinc-800">
-                  Business type
+                  Harvest date <span className="text-red-600">*</span>
                 </label>
-                <select
-                  value={form.business_type}
+                <input
+                  type="date"
+                  required
+                  value={form.harvest_date}
                   onChange={(e) =>
                     setForm((prev) => ({
                       ...prev,
-                      business_type: e.target.value as BusinessType,
+                      harvest_date: e.target.value,
                     }))
                   }
                   className="w-full rounded-md border border-zinc-300 px-2 py-1.5 shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
-                >
-                  <option value="MiniLeaf">MiniLeaf (fresh microgreens)</option>
-                  <option value="BotanIQals">BotanIQals (dried products)</option>
-                </select>
+                />
               </div>
-
-              {form.business_type === "MiniLeaf" ? (
+            ) : (
+              <div className="grid gap-2 sm:grid-cols-2">
                 <div>
                   <label className="mb-1 block font-medium text-zinc-800">
-                    Harvest date <span className="text-red-600">*</span>
+                    Start date <span className="text-red-600">*</span>
                   </label>
                   <input
                     type="date"
                     required
-                    value={form.harvest_date}
+                    value={form.start_date}
                     onChange={(e) =>
                       setForm((prev) => ({
                         ...prev,
-                        harvest_date: e.target.value,
+                        start_date: e.target.value,
                       }))
                     }
                     className="w-full rounded-md border border-zinc-300 px-2 py-1.5 shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
                   />
                 </div>
-              ) : (
-                <div className="grid gap-2 sm:grid-cols-2">
-                  <div>
-                    <label className="mb-1 block font-medium text-zinc-800">
-                      Start date <span className="text-red-600">*</span>
-                    </label>
-                    <input
-                      type="date"
-                      required
-                      value={form.start_date}
-                      onChange={(e) =>
-                        setForm((prev) => ({
-                          ...prev,
-                          start_date: e.target.value,
-                        }))
-                      }
-                      className="w-full rounded-md border border-zinc-300 px-2 py-1.5 shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
-                    />
-                  </div>
-                  <div>
-                    <label className="mb-1 block font-medium text-zinc-800">
-                      End date <span className="text-red-600">*</span>
-                    </label>
-                    <input
-                      type="date"
-                      required
-                      value={form.end_date}
-                      onChange={(e) =>
-                        setForm((prev) => ({
-                          ...prev,
-                          end_date: e.target.value,
-                        }))
-                      }
-                      className="w-full rounded-md border border-zinc-300 px-2 py-1.5 shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
-                    />
-                  </div>
+                <div>
+                  <label className="mb-1 block font-medium text-zinc-800">
+                    End date <span className="text-red-600">*</span>
+                  </label>
+                  <input
+                    type="date"
+                    required
+                    value={form.end_date}
+                    onChange={(e) =>
+                      setForm((prev) => ({
+                        ...prev,
+                        end_date: e.target.value,
+                      }))
+                    }
+                    className="w-full rounded-md border border-zinc-300 px-2 py-1.5 shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                  />
                 </div>
-              )}
-
-              <div>
-                <label className="mb-1 block font-medium text-zinc-800">
-                  Status
-                </label>
-                <select
-                  value={form.status}
-                  onChange={(e) =>
-                    setForm((prev) => ({
-                      ...prev,
-                      status: e.target.value as CycleForm["status"],
-                    }))
-                  }
-                  className="w-full rounded-md border border-zinc-300 px-2 py-1.5 shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
-                >
-                  <option value="draft">Draft</option>
-                  <option value="planned">Planned</option>
-                  <option value="completed">Completed</option>
-                </select>
               </div>
-              {error && (
-                <p className="text-xs text-red-600" role="alert">
-                  {error}
-                </p>
-              )}
-              <button
-                type="submit"
-                disabled={saving}
-                className="rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white shadow-sm hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-70"
+            )}
+
+            <div>
+              <label className="mb-1 block font-medium text-zinc-800">
+                Status
+              </label>
+              <select
+                value={form.status}
+                onChange={(e) =>
+                  setForm((prev) => ({
+                    ...prev,
+                    status: e.target.value as CycleForm["status"],
+                  }))
+                }
+                className="w-full rounded-md border border-zinc-300 px-2 py-1.5 shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
               >
-                {saving ? "Creating…" : "Create cycle"}
-              </button>
-            </form>
-          </div>
-
-          <div className="rounded-md border border-zinc-200 bg-white p-4 text-xs">
-            <h2 className="mb-2 text-sm font-semibold text-zinc-900">
-              Existing cycles
-            </h2>
-            {isLoading ? (
-              <p className="text-xs text-black">Loading cycles…</p>
-            ) : cycles.length ? (
-              <div className="max-h-72 space-y-2 overflow-y-auto">
-                {cycles.map((c: any) => {
-                  const cycleTargets = targets.filter(
-                    (t: any) => t.production_cycle === c.id
-                  );
-                  const cycleBatches = batches.filter(
-                    (b: any) => b.production_cycle_id === c.id,
-                  );
-                  const businessLabel = displayBusinessType(c);
-                  const isBotaniqals = businessLabel === "BotanIQals";
-                  return (
-                    <div
-                      key={c.id}
-                      className="flex items-center justify-between rounded border border-zinc-100 bg-zinc-50 px-2 py-1.5"
-                    >
-                      <div>
-                        <div className="text-xs font-medium text-zinc-900">
-                          {c.harvest_date
-                            ? `${businessLabel} · Harvest: ${formatDate(c.harvest_date)}`
-                            : `${formatDate(c.start_date)} – ${formatDate(c.end_date)}`}
-                        </div>
-                        <div className="text-[11px] text-zinc-600">
-                          {!c.harvest_date && `${businessLabel} · `}
-                          Status: {c.status} · Targets: {cycleTargets.length}
-                        </div>
-                        {isBotaniqals && cycleBatches.length > 0 && (
-                          <div className="mt-1 text-[11px] text-zinc-700">
-                            Batches:{" "}
-                            {cycleBatches
-                              .slice(0, 3)
-                              .map((b: any) => b.batch_id)
-                              .join(", ")}
-                            {cycleBatches.length > 3 ? "…" : ""}
-                          </div>
-                        )}
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <Link
-                          href={`/cycles/${c.id}/plan`}
-                          className="text-[11px] font-medium text-emerald-700 underline"
-                        >
-                          Open planner
-                        </Link>
-                        {isBotaniqals && c.status !== "completed" && (
-                          c.raw_materials_deducted_at ? (
-                            <span className="flex items-center gap-1 text-[11px]">
-                              <span className="font-medium text-emerald-700">
-                                Raw materials deducted ✓
-                              </span>
-                              <button
-                                type="button"
-                                disabled={undoingProducedCycleId === c.id}
-                                className="font-medium text-amber-700 underline disabled:cursor-not-allowed disabled:opacity-60"
-                                onClick={() => handleUndoRawMaterials(c)}
-                              >
-                                {undoingProducedCycleId === c.id ? "Undoing…" : "Undo"}
-                              </button>
-                            </span>
-                          ) : (
-                            <button
-                              type="button"
-                              disabled={markingProducedCycleId === c.id}
-                              className="text-[11px] font-medium text-emerald-700 underline disabled:cursor-not-allowed disabled:opacity-60"
-                              onClick={() => handleMarkAsProduced(c)}
-                            >
-                              {markingProducedCycleId === c.id
-                                ? "Marking…"
-                                : "Mark as Produced"}
-                            </button>
-                          )
-                        )}
-                        {isBotaniqals && cycleBatches.length === 0 && (
-                          <button
-                            type="button"
-                            disabled={completingCycleId === c.id}
-                            className="text-[11px] font-medium text-emerald-700 underline disabled:cursor-not-allowed disabled:opacity-60"
-                            onClick={() => beginCompleteProduction(c)}
-                          >
-                            {completingCycleId === c.id
-                              ? "Completing…"
-                              : "Complete production"}
-                          </button>
-                        )}
-                        <button
-                          type="button"
-                          className="text-[11px] font-medium text-red-600 underline"
-                          onClick={() => handleDeleteCycle(c.id)}
-                        >
-                          Delete
-                        </button>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            ) : (
-              <p className="text-xs text-black">
-                No cycles yet. Create a cycle to begin planning feasibility and
-                tray runs.
+                <option value="draft">Draft</option>
+                <option value="planned">Planned</option>
+                <option value="completed">Completed</option>
+              </select>
+            </div>
+            {error && (
+              <p className="text-xs text-red-600" role="alert">
+                {error}
               </p>
             )}
+            <button
+              type="submit"
+              disabled={saving}
+              className="rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white shadow-sm hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-70"
+            >
+              {saving ? "Creating…" : "Create cycle"}
+            </button>
+          </form>
+        </section>
+
+        <section className="rounded-lg border border-zinc-200 bg-white p-4 shadow-sm">
+          <h2 className="mb-3 text-sm font-semibold text-zinc-900">
+            Existing Cycles
+          </h2>
+
+          <div className="mb-3 flex gap-1 border-b border-zinc-200">
+            <button
+              type="button"
+              onClick={() => setActiveTab("in_progress")}
+              className={`-mb-px border-b-2 px-3 py-2 text-xs font-medium ${
+                activeTab === "in_progress"
+                  ? "border-emerald-600 text-emerald-700"
+                  : "border-transparent text-zinc-600 hover:text-zinc-900"
+              }`}
+            >
+              In Progress ({inProgressCycleRows.length})
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab("completed")}
+              className={`-mb-px border-b-2 px-3 py-2 text-xs font-medium ${
+                activeTab === "completed"
+                  ? "border-emerald-600 text-emerald-700"
+                  : "border-transparent text-zinc-600 hover:text-zinc-900"
+              }`}
+            >
+              Completed ({completedCycleRows.length})
+            </button>
           </div>
+
+          {isLoading ? (
+            <p className="text-xs text-black">Loading cycles…</p>
+          ) : activeTab === "in_progress" ? (
+            inProgressCycleRows.length === 0 ? (
+              <p className="text-xs text-black">
+                No cycles in progress. Create a cycle to begin planning
+                feasibility and tray runs.
+              </p>
+            ) : (
+              <>
+                <CyclesTable
+                  rows={inProgressPageRows}
+                  tab="in_progress"
+                  onMarkProduced={handleMarkAsProduced}
+                  onUndoProduced={handleUndoMarkAsProduced}
+                  onBeginComplete={beginCompleteProduction}
+                  onOpenDelete={openDeleteConfirm}
+                  onOpenReopen={openReopenConfirm}
+                  markingProducedCycleId={markingProducedCycleId}
+                  undoingProducedCycleId={undoingProducedCycleId}
+                  completingCycleId={completingCycleId}
+                  loadingReopenCycleId={loadingReopenCycleId}
+                />
+                <PaginationControls
+                  page={safeInProgressPage}
+                  totalItems={inProgressCycleRows.length}
+                  pageSize={PAGE_SIZE}
+                  onPageChange={setInProgressPage}
+                />
+              </>
+            )
+          ) : completedCycleRows.length === 0 ? (
+            <p className="text-xs text-black">No completed cycles yet.</p>
+          ) : (
+            <>
+              <CyclesTable
+                rows={completedPageRows}
+                tab="completed"
+                onMarkProduced={handleMarkAsProduced}
+                onUndoProduced={handleUndoMarkAsProduced}
+                onBeginComplete={beginCompleteProduction}
+                onOpenDelete={openDeleteConfirm}
+                onOpenReopen={openReopenConfirm}
+                markingProducedCycleId={markingProducedCycleId}
+                undoingProducedCycleId={undoingProducedCycleId}
+                completingCycleId={completingCycleId}
+                loadingReopenCycleId={loadingReopenCycleId}
+              />
+              <PaginationControls
+                page={safeCompletedPage}
+                totalItems={completedCycleRows.length}
+                pageSize={PAGE_SIZE}
+                onPageChange={setCompletedPage}
+              />
+            </>
+          )}
         </section>
 
         {batchDetailRows.length > 0 && (
@@ -897,7 +1148,381 @@ export default function CyclesPage() {
             </div>
           </div>
         )}
+
+        {deleteConfirm && (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+            onClick={() => setDeleteConfirm(null)}
+          >
+            <div
+              className="w-full max-w-md rounded-md border border-zinc-200 bg-white p-4"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <h2 className="text-sm font-semibold text-zinc-900">
+                Delete this production cycle?
+              </h2>
+              <p className="mt-2 text-xs text-zinc-700">
+                You&apos;re about to permanently delete cycle {deleteConfirm.cycleLabel},
+                including its targets and planner data. This can&apos;t be undone.
+              </p>
+              <div className="mt-4 flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setDeleteConfirm(null)}
+                  className="rounded-md border border-zinc-300 bg-white px-3 py-1.5 text-xs font-medium text-zinc-800 hover:bg-zinc-50"
+                >
+                  Keep Cycle
+                </button>
+                <button
+                  type="button"
+                  disabled={deletingCycleId === deleteConfirm.cycleId}
+                  onClick={confirmDelete}
+                  className="rounded-md bg-red-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-70"
+                >
+                  {deletingCycleId === deleteConfirm.cycleId ? "Deleting…" : "Delete Cycle"}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {reopenConfirm && (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+            onClick={() => setReopenConfirm(null)}
+          >
+            <div
+              className="w-full max-w-md rounded-md border border-zinc-200 bg-white p-4"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <h2 className="text-sm font-semibold text-zinc-900">
+                Reopen this production cycle?
+              </h2>
+              <p className="mt-2 text-xs text-zinc-700">
+                Cycle {String(reopenConfirm.cycle.id).slice(0, 8)} will move back to In
+                Progress. Any finished products it added to inventory will be reversed,
+                and you&apos;ll enter actuals again when you complete it.
+              </p>
+              {reopenConfirm.isBotaniqals && (
+                <p className="mt-2 text-[11px] text-zinc-600">
+                  The Google Sheet row from the original completion will not be removed
+                  automatically.
+                </p>
+              )}
+              {reopenConfirm.warnings.length > 0 && (
+                <div className="mt-2 rounded border border-amber-300 bg-amber-50 p-2 text-[11px] text-amber-800">
+                  <p className="font-medium">
+                    This will take on-hand inventory negative for:
+                  </p>
+                  <ul className="mt-1 list-disc pl-4">
+                    {reopenConfirm.warnings.map((w) => (
+                      <li key={w.productId}>
+                        {w.productName}: projected {w.projectedQty}
+                      </li>
+                    ))}
+                  </ul>
+                  <p className="mt-1">Fix the count with a cycle count afterward.</p>
+                </div>
+              )}
+              <div className="mt-4 flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setReopenConfirm(null)}
+                  className="rounded-md border border-zinc-300 bg-white px-3 py-1.5 text-xs font-medium text-zinc-800 hover:bg-zinc-50"
+                >
+                  Keep Completed
+                </button>
+                <button
+                  type="button"
+                  disabled={reopening}
+                  onClick={confirmReopen}
+                  className="rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-70"
+                >
+                  {reopening ? "Reopening…" : "Reopen Cycle"}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </AuthGuard>
+  );
+}
+
+function PaginationControls({
+  page,
+  totalItems,
+  pageSize,
+  onPageChange,
+}: {
+  page: number;
+  totalItems: number;
+  pageSize: number;
+  onPageChange: (page: number) => void;
+}) {
+  if (totalItems <= pageSize) return null;
+  const totalPages = Math.max(1, Math.ceil(totalItems / pageSize));
+  const start = (page - 1) * pageSize + 1;
+  const end = Math.min(page * pageSize, totalItems);
+  return (
+    <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-[11px] text-zinc-600">
+      <span>
+        Showing {start}-{end} of {totalItems}
+      </span>
+      <div className="flex items-center gap-1">
+        <button
+          type="button"
+          disabled={page <= 1}
+          onClick={() => onPageChange(page - 1)}
+          className="rounded-md border border-zinc-300 bg-white px-2 py-1 font-medium text-zinc-800 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          Previous
+        </button>
+        {Array.from({ length: totalPages }, (_, i) => i + 1).map((p) => (
+          <button
+            key={p}
+            type="button"
+            onClick={() => onPageChange(p)}
+            className={`rounded-md px-2 py-1 font-medium ${
+              p === page
+                ? "bg-emerald-600 text-white"
+                : "border border-zinc-300 bg-white text-zinc-800 hover:bg-zinc-50"
+            }`}
+          >
+            {p}
+          </button>
+        ))}
+        <button
+          type="button"
+          disabled={page >= totalPages}
+          onClick={() => onPageChange(page + 1)}
+          className="rounded-md border border-zinc-300 bg-white px-2 py-1 font-medium text-zinc-800 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          Next
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function RowActionsMenu({
+  children,
+}: {
+  children: (close: () => void) => React.ReactNode;
+}) {
+  const [isOpen, setIsOpen] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const onDocMouseDown = (e: MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        setIsOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", onDocMouseDown);
+    return () => document.removeEventListener("mousedown", onDocMouseDown);
+  }, [isOpen]);
+
+  return (
+    <div ref={containerRef} className="relative inline-block text-left">
+      <button
+        type="button"
+        onClick={() => setIsOpen((prev) => !prev)}
+        aria-expanded={isOpen}
+        className="inline-flex items-center gap-1 rounded-md border border-zinc-300 bg-white px-2 py-1 text-[11px] font-medium text-zinc-800 shadow-sm hover:bg-zinc-50"
+      >
+        Actions
+        <svg
+          viewBox="0 0 20 20"
+          fill="currentColor"
+          aria-hidden="true"
+          className={`h-3 w-3 shrink-0 text-zinc-500 transition-transform ${isOpen ? "rotate-180" : ""}`}
+        >
+          <path
+            fillRule="evenodd"
+            d="M5.23 7.21a.75.75 0 011.06.02L10 10.94l3.71-3.71a.75.75 0 111.06 1.06l-4.24 4.24a.75.75 0 01-1.06 0L5.21 8.29a.75.75 0 01.02-1.08z"
+            clipRule="evenodd"
+          />
+        </svg>
+      </button>
+      {isOpen && (
+        <div className="absolute left-0 z-20 mt-1 w-48 rounded-md border border-zinc-200 bg-white py-1 text-xs shadow-lg">
+          {children(() => setIsOpen(false))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CyclesTable({
+  rows,
+  tab,
+  onMarkProduced,
+  onUndoProduced,
+  onBeginComplete,
+  onOpenDelete,
+  onOpenReopen,
+  markingProducedCycleId,
+  undoingProducedCycleId,
+  completingCycleId,
+  loadingReopenCycleId,
+}: {
+  rows: CycleRow[];
+  tab: TabKey;
+  onMarkProduced: (cycle: any) => void;
+  onUndoProduced: (cycle: any) => void;
+  onBeginComplete: (cycle: any) => void;
+  onOpenDelete: (cycle: any) => void;
+  onOpenReopen: (cycle: any) => void;
+  markingProducedCycleId: string | null;
+  undoingProducedCycleId: string | null;
+  completingCycleId: string | null;
+  loadingReopenCycleId: string | null;
+}) {
+  return (
+    <div className="overflow-x-auto">
+      <table className="min-w-full border-collapse text-left text-xs">
+        <thead className="bg-zinc-50 text-[11px] uppercase tracking-wide text-zinc-500">
+          <tr>
+            <th className="px-3 py-2 font-medium">Actions</th>
+            <th className="px-3 py-2 font-medium">Production Cycle</th>
+            <th className="px-3 py-2 font-medium">Start Date</th>
+            <th className="px-3 py-2 font-medium">End Date</th>
+            <th className="px-3 py-2 font-medium">Feasibility Status</th>
+            <th className="px-3 py-2 font-medium">Business</th>
+            <th className="px-3 py-2 font-medium">Targets / Shortages</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map(({ cycle, isMiniLeaf, targetCount, feasibility, shortageCount }) => {
+            const badge = feasibilityBadge(feasibility);
+            const isProduced = Boolean(cycle.raw_materials_deducted_at);
+            return (
+              <tr key={cycle.id} className="border-b border-zinc-100">
+                <td className="px-3 py-2">
+                  <RowActionsMenu>
+                    {(close) => (
+                      <>
+                        <Link
+                          href={`/cycles/${cycle.id}/plan`}
+                          onClick={close}
+                          className="block px-3 py-2 text-zinc-800 hover:bg-zinc-50"
+                        >
+                          Open Planner
+                        </Link>
+                        {tab === "in_progress" && (
+                          <>
+                            {isProduced ? (
+                              <button
+                                type="button"
+                                disabled={undoingProducedCycleId === cycle.id}
+                                onClick={() => {
+                                  onUndoProduced(cycle);
+                                  close();
+                                }}
+                                className="block w-full px-3 py-2 text-left text-amber-700 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-60"
+                              >
+                                {undoingProducedCycleId === cycle.id
+                                  ? "Undoing…"
+                                  : "Undo Mark as Produced"}
+                              </button>
+                            ) : (
+                              <button
+                                type="button"
+                                disabled={markingProducedCycleId === cycle.id}
+                                onClick={() => {
+                                  onMarkProduced(cycle);
+                                  close();
+                                }}
+                                className="block w-full px-3 py-2 text-left text-zinc-800 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-60"
+                              >
+                                {markingProducedCycleId === cycle.id
+                                  ? "Marking…"
+                                  : "Mark as Produced"}
+                              </button>
+                            )}
+                            <button
+                              type="button"
+                              disabled={completingCycleId === cycle.id}
+                              onClick={() => {
+                                onBeginComplete(cycle);
+                                close();
+                              }}
+                              className="block w-full px-3 py-2 text-left text-emerald-700 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-60"
+                            >
+                              {completingCycleId === cycle.id ? "Completing…" : "Complete Production"}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                onOpenDelete(cycle);
+                                close();
+                              }}
+                              className="block w-full px-3 py-2 text-left text-red-600 hover:bg-zinc-50"
+                            >
+                              Delete
+                            </button>
+                          </>
+                        )}
+                        {tab === "completed" && (
+                          <button
+                            type="button"
+                            disabled={loadingReopenCycleId === cycle.id}
+                            onClick={() => {
+                              onOpenReopen(cycle);
+                              close();
+                            }}
+                            className="block w-full px-3 py-2 text-left text-zinc-800 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            {loadingReopenCycleId === cycle.id ? "Loading…" : "Reopen Production"}
+                          </button>
+                        )}
+                      </>
+                    )}
+                  </RowActionsMenu>
+                </td>
+                <td className="px-3 py-2">
+                  <Link
+                    href={`/cycles/${cycle.id}/plan`}
+                    title={cycle.id}
+                    className="inline-flex items-center rounded-md bg-zinc-900 px-2.5 py-1 text-[11px] font-medium text-white hover:bg-zinc-800"
+                  >
+                    {String(cycle.id).slice(0, 8)}
+                  </Link>
+                  {tab === "in_progress" && isProduced && (
+                    <div className="mt-1">
+                      <span className="inline-flex rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-medium text-emerald-800">
+                        Produced
+                      </span>
+                    </div>
+                  )}
+                </td>
+                <td className="px-3 py-2 text-zinc-700">{formatDate(cycle.start_date)}</td>
+                <td className="px-3 py-2 text-zinc-700">{formatDate(cycle.end_date)}</td>
+                <td className="px-3 py-2">
+                  <span
+                    className={`inline-flex rounded-full px-2 py-0.5 text-[11px] font-medium ${badge.className}`}
+                  >
+                    {badge.label}
+                  </span>
+                </td>
+                <td className="px-3 py-2 text-zinc-700">
+                  {isMiniLeaf ? "MiniLeaf" : "BotanIQals"}
+                </td>
+                <td className="px-3 py-2 text-zinc-700">
+                  {targetCount} target{targetCount === 1 ? "" : "s"}
+                  {shortageCount > 0 && (
+                    <span className="ml-2 inline-flex rounded-full bg-red-100 px-2 py-0.5 text-[11px] font-medium text-red-800">
+                      {shortageCount} shortage{shortageCount === 1 ? "" : "s"}
+                    </span>
+                  )}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
   );
 }
