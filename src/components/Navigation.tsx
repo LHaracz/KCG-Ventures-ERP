@@ -41,6 +41,7 @@ export const sections: NavSection[] = [
         items: [
           { href: "/calibration", label: "Freeze Dryer Calibration" },
           { href: "/products", label: "Products & BOM" },
+          { href: "/formulation", label: "Formulation" },
           { href: "/cycles", label: "Production Cycles & Planner" },
           { href: "/production-optimization", label: "Production Optimization" },
         ],

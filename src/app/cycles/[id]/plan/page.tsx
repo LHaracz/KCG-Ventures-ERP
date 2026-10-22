@@ -80,18 +80,20 @@ export default function CyclePlanPage() {
 
   const productOptionsMiniLeaf = useMemo(
     () =>
-      microgreenProducts.map((p: any) => ({
-        value: p.id,
-        label: p.name,
-        product: p,
-      })),
+      microgreenProducts
+        .filter((p: any) => !p.deleted_at)
+        .map((p: any) => ({
+          value: p.id,
+          label: p.name,
+          product: p,
+        })),
     [microgreenProducts]
   );
 
   const productOptionsBotanIQals = useMemo(
     () =>
       products
-        .filter((p: any) => p.is_microgreen !== true)
+        .filter((p: any) => p.is_microgreen !== true && !p.deleted_at)
         .map((p: any) => ({ value: p.id, label: p.name, product: p })),
     [products]
   );

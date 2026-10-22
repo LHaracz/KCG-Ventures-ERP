@@ -19,6 +19,7 @@ type ProductOption = {
   id: string;
   name: string;
   is_microgreen: boolean;
+  deleted_at: string | null;
 };
 
 type MappingComponent = { product_id: string; qty_per_unit: number };
@@ -104,7 +105,7 @@ function VariantMappingPageInner() {
     const [productsResult, mapResult] = await Promise.all([
       supabase
         .from("products")
-        .select("id, name, is_microgreen")
+        .select("id, name, is_microgreen, deleted_at")
         .order("name", { ascending: true }),
       supabase
         .from("variant_component_map")
@@ -304,11 +305,14 @@ function VariantMappingPageInner() {
                           className={`${inputClassName} flex-1`}
                         >
                           <option value="">Select product…</option>
-                          {products.map((p) => (
-                            <option key={p.id} value={p.id}>
-                              {productLabel(p)}
-                            </option>
-                          ))}
+                          {products
+                            .filter((p) => !p.deleted_at || p.id === row.product_id)
+                            .map((p) => (
+                              <option key={p.id} value={p.id}>
+                                {productLabel(p)}
+                                {p.deleted_at ? " (archived)" : ""}
+                              </option>
+                            ))}
                         </select>
                         <input
                           type="number"

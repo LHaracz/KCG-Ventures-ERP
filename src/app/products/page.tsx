@@ -61,6 +61,17 @@ export default function ProductsPage() {
   const [variantError, setVariantError] = useState<string | null>(null);
   const [variantSaving, setVariantSaving] = useState(false);
 
+  const [deleteTarget, setDeleteTarget] = useState<any | null>(null);
+  const [deleteImpact, setDeleteImpact] = useState<{
+    inProgressCycleCount: number;
+    affectedMappings: { id: string; lineitem_name: string }[];
+    formulationProductId: string | null;
+  } | null>(null);
+  const [deleteImpactLoading, setDeleteImpactLoading] = useState(false);
+  const [deleteConfirmText, setDeleteConfirmText] = useState("");
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState(false);
+
   useEffect(() => {
     if (!user) return;
     const load = async () => {
@@ -69,6 +80,7 @@ export default function ProductsPage() {
         supabase
           .from("products")
           .select("*")
+          .is("deleted_at", null)
           .order("name", { ascending: true }),
         supabase
           .from("microgreens")
@@ -151,57 +163,160 @@ export default function ProductsPage() {
     });
   };
 
-  const handleDeleteProduct = async (p: any) => {
+  // Archiving a product is a soft delete (products.deleted_at) — it just
+  // hides the product everywhere, nothing historical (bom_lines,
+  // production_targets, past cycles) is touched or removed, so existing
+  // production history keeps resolving correctly. Opens an impact-review
+  // modal rather than deleting immediately.
+  const handleOpenDeleteModal = async (p: any) => {
     if (!user) return;
-    setProductError(null);
-    const confirmed =
-      typeof window !== "undefined"
-        ? window.confirm(
-            `Delete product "${p.name}"? This will delete its BOM lines and any cycle targets/plan lines that reference it.`,
-          )
-        : true;
-    if (!confirmed) return;
-
+    setDeleteError(null);
+    setDeleteConfirmText("");
+    setDeleteTarget(p);
+    setDeleteImpact(null);
+    setDeleteImpactLoading(true);
     try {
-      const { error: targetError } = await supabase
+      const { data: targets, error: targetsError } = await supabase
         .from("production_targets")
-        .delete()
-        .eq("product", p.id)
-        .eq("user_id", user.id);
-      if (targetError) throw targetError;
+        .select("production_cycle")
+        .eq("product", p.id);
+      if (targetsError) throw targetsError;
+      const cycleIds = Array.from(
+        new Set((targets || []).map((t: any) => t.production_cycle).filter(Boolean)),
+      );
+      let inProgressCycleCount = 0;
+      if (cycleIds.length > 0) {
+        const { data: cycles, error: cyclesError } = await supabase
+          .from("production_cycles")
+          .select("id, status")
+          .in("id", cycleIds)
+          .neq("status", "completed");
+        if (cyclesError) throw cyclesError;
+        inProgressCycleCount = (cycles || []).length;
+      }
 
-      const { error: planError } = await supabase
-        .from("production_plan_lines")
-        .delete()
-        .eq("source_product", p.id)
-        .eq("user_id", user.id);
-      if (planError) throw planError;
+      const { data: mappings, error: mappingsError } = await supabase
+        .from("variant_component_map")
+        .select("id, lineitem_name, components");
+      if (mappingsError) throw mappingsError;
+      const affectedMappings = (mappings || [])
+        .filter((m: any) => (m.components || []).some((c: any) => c.product_id === p.id))
+        .map((m: any) => ({ id: m.id, lineitem_name: m.lineitem_name }));
 
-      const { error: bomError } = await supabase
-        .from("bom_lines")
-        .delete()
-        .eq("product", p.id)
-        .eq("user_id", user.id);
-      if (bomError) throw bomError;
+      const { data: formulationProduct } = await supabase
+        .from("formulation_products")
+        .select("id")
+        .eq("product_id", p.id)
+        .is("deleted_at", null)
+        .maybeSingle();
 
+      setDeleteImpact({
+        inProgressCycleCount,
+        affectedMappings,
+        formulationProductId: formulationProduct?.id ?? null,
+      });
+    } catch (err: any) {
+      setDeleteError(err.message || "Failed to check this product's usage before deleting.");
+    } finally {
+      setDeleteImpactLoading(false);
+    }
+  };
+
+  const handleConfirmDelete = async () => {
+    if (!user || !deleteTarget || !deleteImpact) return;
+    if (deleteImpact.inProgressCycleCount > 0) return;
+    if (deleteConfirmText.trim() !== deleteTarget.name) {
+      setDeleteError("Type the product's exact name to confirm.");
+      return;
+    }
+    setDeleting(true);
+    setDeleteError(null);
+    try {
+      const nowIso = new Date().toISOString();
+
+      // 1) Back up, then strip, any variant mapping components that point
+      //    at this product — reversible via deleted_mapping_components.
+      if (deleteImpact.affectedMappings.length > 0) {
+        const { data: mappings, error: mappingsError } = await supabase
+          .from("variant_component_map")
+          .select("id, lineitem_name, components")
+          .in("id", deleteImpact.affectedMappings.map((m) => m.id));
+        if (mappingsError) throw mappingsError;
+
+        for (const mapping of mappings || []) {
+          const components = (mapping.components || []) as { product_id: string; qty_per_unit: number }[];
+          const removed = components.filter((c) => c.product_id === deleteTarget.id);
+          const remaining = components.filter((c) => c.product_id !== deleteTarget.id);
+          if (removed.length === 0) continue;
+
+          const { error: backupError } = await supabase.from("deleted_mapping_components").insert(
+            removed.map((c) => ({
+              product_id: deleteTarget.id,
+              mapping_id: mapping.id,
+              qty_per_unit: c.qty_per_unit,
+            })),
+          );
+          if (backupError) throw backupError;
+
+          if (remaining.length === 0) {
+            // No components left — this mapping no longer resolves to
+            // anything. Drop it and surface the line item as needing
+            // re-mapping right away rather than waiting for the next
+            // sales import to notice.
+            const { error: deleteMappingError } = await supabase
+              .from("variant_component_map")
+              .delete()
+              .eq("id", mapping.id);
+            if (deleteMappingError) throw deleteMappingError;
+
+            const { error: unmappedError } = await supabase
+              .from("unmapped_line_items")
+              .upsert(
+                { lineitem_name: mapping.lineitem_name, first_seen_at: nowIso, order_count: 0 },
+                { onConflict: "lineitem_name", ignoreDuplicates: true },
+              );
+            if (unmappedError) throw unmappedError;
+          } else {
+            const { error: updateMappingError } = await supabase
+              .from("variant_component_map")
+              .update({ components: remaining })
+              .eq("id", mapping.id);
+            if (updateMappingError) throw updateMappingError;
+          }
+        }
+      }
+
+      // 2) Soft-delete the linked formulation product, if any.
+      if (deleteImpact.formulationProductId) {
+        const { error: fpError } = await supabase
+          .from("formulation_products")
+          .update({ deleted_at: nowIso })
+          .eq("id", deleteImpact.formulationProductId);
+        if (fpError) throw fpError;
+      }
+
+      // 3) Soft-delete the product itself. bom_lines, production_targets,
+      //    and past cycles are left exactly as they were.
       const { error } = await supabase
         .from("products")
-        .delete()
-        .eq("id", p.id)
-        .eq("user_id", user.id);
+        .update({ deleted_at: nowIso })
+        .eq("id", deleteTarget.id);
       if (error) throw error;
 
-      setProducts((prev) => prev.filter((prod: any) => prod.id !== p.id));
-      setBomLines((prev) => prev.filter((b: any) => b.product !== p.id));
-      if (selectedProductId === p.id) {
+      setProducts((prev) => prev.filter((prod: any) => prod.id !== deleteTarget.id));
+      if (selectedProductId === deleteTarget.id) {
         setSelectedProductId("");
         setBomEditing(null);
       }
-      if (editing && editing.id === p.id) {
+      if (editing && editing.id === deleteTarget.id) {
         setEditing(null);
       }
+      setDeleteTarget(null);
+      setDeleteImpact(null);
     } catch (err: any) {
-      setProductError(err.message || "Failed to delete product.");
+      setDeleteError(err.message || "Failed to delete product.");
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -304,6 +419,7 @@ export default function ProductsPage() {
       const { data: refreshed, error: refreshError } = await supabase
         .from("products")
         .select("*")
+        .is("deleted_at", null)
         .order("name", { ascending: true });
       if (refreshError) {
         throw new Error(
@@ -777,7 +893,7 @@ export default function ProductsPage() {
                             className="text-red-600 underline"
                             onClick={(e) => {
                               e.stopPropagation();
-                              handleDeleteProduct(p);
+                              handleOpenDeleteModal(p);
                             }}
                           >
                             Delete
@@ -1509,6 +1625,103 @@ export default function ProductsPage() {
             </div>
           </div>
         </section>
+
+        {deleteTarget && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4">
+            <div className="w-full max-w-md rounded-md bg-white p-4 shadow-lg">
+              <h3 className="mb-2 text-sm font-semibold text-zinc-900">
+                Delete &quot;{deleteTarget.name}&quot;?
+              </h3>
+              {deleteImpactLoading ? (
+                <p className="text-xs text-black">Checking where this product is used…</p>
+              ) : deleteImpact ? (
+                deleteImpact.inProgressCycleCount > 0 ? (
+                  <p className="text-xs text-red-600" role="alert">
+                    Can&apos;t delete — this product has {deleteImpact.inProgressCycleCount} in-progress
+                    production cycle{deleteImpact.inProgressCycleCount === 1 ? "" : "s"}. Complete or
+                    reopen-and-cancel those first.
+                  </p>
+                ) : (
+                  <>
+                    <p className="mb-2 text-xs text-black">
+                      This hides the product everywhere (Products & BOM, planner, Finished
+                      Products Inventory, BotanIQals Optimization, Stats&apos; product list) but
+                      keeps its BOM and production history intact.
+                    </p>
+                    {deleteImpact.affectedMappings.length > 0 && (
+                      <p className="mb-2 text-xs text-black">
+                        {deleteImpact.affectedMappings.length} Sales Data mapping
+                        {deleteImpact.affectedMappings.length === 1 ? "" : "s"} reference this
+                        product ({deleteImpact.affectedMappings.map((m) => m.lineitem_name).join(", ")}
+                        ) — it will be removed from each (backed up first), and any mapping left
+                        with nothing will reappear under &quot;Needs mapping&quot;.
+                      </p>
+                    )}
+                    {deleteImpact.formulationProductId && (
+                      <p className="mb-2 text-xs text-black">
+                        Its Formulation entry will be archived too.
+                      </p>
+                    )}
+                    <label className="mb-1 block text-xs font-medium text-zinc-800">
+                      Type &quot;{deleteTarget.name}&quot; to confirm
+                    </label>
+                    <input
+                      type="text"
+                      value={deleteConfirmText}
+                      onChange={(e) => setDeleteConfirmText(e.target.value)}
+                      className="mb-2 w-full rounded-md border border-gray-300 bg-white px-2 py-1.5 text-xs text-black"
+                    />
+                    {deleteError && (
+                      <p className="mb-2 text-xs text-red-600" role="alert">
+                        {deleteError}
+                      </p>
+                    )}
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={handleConfirmDelete}
+                        disabled={deleting || deleteConfirmText.trim() !== deleteTarget.name}
+                        className="rounded-md bg-red-600 px-3 py-1.5 text-xs font-medium text-white shadow-sm hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {deleting ? "Deleting…" : "Delete product"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setDeleteTarget(null);
+                          setDeleteImpact(null);
+                        }}
+                        className="text-xs text-black underline"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </>
+                )
+              ) : (
+                deleteError && (
+                  <p className="text-xs text-red-600" role="alert">
+                    {deleteError}
+                  </p>
+                )
+              )}
+              {deleteImpact && deleteImpact.inProgressCycleCount > 0 && (
+                <div className="mt-3">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setDeleteTarget(null);
+                      setDeleteImpact(null);
+                    }}
+                    className="text-xs text-black underline"
+                  >
+                    Close
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
       </div>
     </AuthGuard>
   );

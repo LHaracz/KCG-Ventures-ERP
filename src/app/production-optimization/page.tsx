@@ -122,6 +122,7 @@ export default function ProductionOptimizationPage() {
         .from("products")
         .select("id, name, sale_price_per_unit")
         .eq("is_microgreen", false)
+        .is("deleted_at", null)
         .order("name", { ascending: true }),
       supabase.from("bom_lines").select("product, line_type, inventory_item, qty_per_unit"),
       supabase.from("inventory_items").select("id, name, unit, cost_per_unit, quantity_on_hand"),

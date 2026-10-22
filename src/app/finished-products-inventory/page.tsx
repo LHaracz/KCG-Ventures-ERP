@@ -83,7 +83,7 @@ export default function FinishedProductsInventoryPage() {
 
   const loadAll = async () => {
     const [productsResult, inventoryResult] = await Promise.all([
-      supabase.from("products").select("id, name").eq("is_microgreen", false),
+      supabase.from("products").select("id, name").eq("is_microgreen", false).is("deleted_at", null),
       supabase
         .from("finished_products_inventory")
         .select("id, product_id, on_hand_qty, updated_at, products(name)"),
@@ -102,7 +102,13 @@ export default function FinishedProductsInventoryPage() {
       products: { name: string } | { name: string }[] | null;
     }>;
 
-    const existingByProductId = new Map(inventoryRows.map((r) => [r.product_id, r]));
+    // Only ever show rows for products that are still active — an
+    // existing finished_products_inventory row for a now-archived product
+    // stays in the table (nothing is deleted), it's just hidden here.
+    const activeProductIds = new Set(products.map((p) => p.id));
+    const visibleInventoryRows = inventoryRows.filter((r) => activeProductIds.has(r.product_id));
+
+    const existingByProductId = new Map(visibleInventoryRows.map((r) => [r.product_id, r]));
     const missingProducts = products.filter((p) => !existingByProductId.has(p.id));
 
     let backfilledRows: typeof inventoryRows = [];
@@ -119,7 +125,7 @@ export default function FinishedProductsInventoryPage() {
     }
 
     const productNameById = new Map(products.map((p) => [p.id, p.name]));
-    const combined: InventoryListRow[] = [...inventoryRows, ...backfilledRows].map((r) => {
+    const combined: InventoryListRow[] = [...visibleInventoryRows, ...backfilledRows].map((r) => {
       const embeddedName = Array.isArray(r.products) ? r.products[0]?.name : r.products?.name;
       return {
         id: r.id,
