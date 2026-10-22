@@ -650,8 +650,7 @@ export default function SalesDataPage() {
                       <th className="px-3 py-2 font-medium">Total</th>
                       <th className="px-3 py-2 font-medium">Business</th>
                       <th className="px-3 py-2 font-medium">Line Item Name</th>
-                      <th className="px-3 py-2 font-medium">Products</th>
-                      <th className="px-3 py-2 font-medium">Quantity</th>
+                      <th className="px-3 py-2 font-medium">Products (Qty)</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -695,8 +694,16 @@ export default function SalesDataPage() {
                                       ) : (
                                         <div className="space-y-0.5">
                                           {components.map((c, j) => (
-                                            <div key={j}>
-                                              {productNameById.get(c.product_id) ?? "Unknown product"}
+                                            // Name and quantity are rendered together in a single
+                                            // flex row, keyed off the same `components` array the
+                                            // name comes from, so there is no second, independently
+                                            // stacked list that can end up with a different number
+                                            // of rows (or drift out of alignment) from this one.
+                                            <div key={j} className="flex items-baseline justify-between gap-3">
+                                              <span>{productNameById.get(c.product_id) ?? "Unknown product"}</span>
+                                              <span className="shrink-0 tabular-nums text-zinc-500">
+                                                ×{c.qty_per_unit * li.quantity}
+                                              </span>
                                             </div>
                                           ))}
                                         </div>
@@ -704,19 +711,6 @@ export default function SalesDataPage() {
                                     </div>
                                   );
                                 })}
-                              </div>
-                            )}
-                          </td>
-                          <td className="px-3 py-2 align-top text-zinc-700">
-                            {items.length === 0 ? (
-                              "—"
-                            ) : (
-                              <div className="divide-y divide-zinc-100">
-                                {items.map((li, i) => (
-                                  <div key={i} className="py-1 first:pt-0 last:pb-0">
-                                    {li.quantity}
-                                  </div>
-                                ))}
                               </div>
                             )}
                           </td>
