@@ -20,6 +20,7 @@
     "javascript-lp-solver": "^1.0.3",
     "jspdf": "^4.2.1",
     "next": "16.1.6",
+    "pdfjs-dist": "^4.9.155",
     "react": "19.2.3",
     "react-chartjs-2": "^5.3.1",
     "react-dom": "19.2.3",
