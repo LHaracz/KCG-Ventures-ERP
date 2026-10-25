@@ -66,6 +66,7 @@ export const sections: NavSection[] = [
         items: [
           { href: "/compliance/sops", label: "SOPs" },
           { href: "/compliance/logs", label: "Logs" },
+          { href: "/compliance/coas", label: "COAs" },
         ],
       },
     ],
