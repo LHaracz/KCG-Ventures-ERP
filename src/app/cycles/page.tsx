@@ -21,6 +21,8 @@ import {
   feasibilityBadge,
   type Feasibility,
 } from "@/lib/feasibility";
+import { fetchActiveEmployees, type Employee } from "@/lib/employees";
+import { computeReleaseWarnings, type ReleaseWarning } from "@/lib/releaseWarnings";
 
 type BusinessType = "MiniLeaf" | "BotanIQals";
 
@@ -30,6 +32,18 @@ type CycleForm = {
   start_date: string;
   end_date: string;
   status: "draft" | "planned" | "completed";
+};
+
+type ComplianceCheckState = {
+  cycle: any;
+  draft: CompletionActualsDraft;
+  loading: boolean;
+  warnings: ReleaseWarning[] | null;
+  loadError: string | null;
+  acknowledgedByEmployeeId: string;
+  acknowledgedNote: string;
+  saving: boolean;
+  saveError: string | null;
 };
 
 type CompletionActualsDraft = {
@@ -111,6 +125,9 @@ export default function CyclesPage() {
   const [completionDraft, setCompletionDraft] = useState<CompletionActualsDraft | null>(
     null,
   );
+  const [complianceCheck, setComplianceCheck] = useState<ComplianceCheckState | null>(null);
+  const [batchComplianceReviews, setBatchComplianceReviews] = useState<any[]>([]);
+  const [employees, setEmployees] = useState<Employee[]>([]);
 
   const [deleteConfirm, setDeleteConfirm] = useState<DeleteConfirmState | null>(null);
   const [deletingCycleId, setDeletingCycleId] = useState<string | null>(null);
@@ -136,7 +153,7 @@ export default function CyclesPage() {
     if (!user) return;
     const load = async () => {
       setIsLoading(true);
-      const [c, t, b, p, mg, bom, inv, cal, y, v, mach] = await Promise.all([
+      const [c, t, b, p, mg, bom, inv, cal, y, v, mach, reviews, emps] = await Promise.all([
         supabase
           .from("production_cycles")
           .select("*")
@@ -161,6 +178,8 @@ export default function CyclesPage() {
         supabase.from("yield_entries").select("*"),
         supabase.from("product_variants").select("*"),
         supabase.from("freeze_dryer_machine_settings").select("*").maybeSingle(),
+        supabase.from("batch_compliance_reviews").select("*").order("created_at", { ascending: false }),
+        fetchActiveEmployees(supabase).catch(() => [] as Employee[]),
       ]);
       setCycles(c.data || []);
       setTargets(t.data || []);
@@ -173,6 +192,8 @@ export default function CyclesPage() {
       setYieldEntries(y.data || []);
       setVariants(v.data || []);
       setMachine(mach.data || null);
+      setBatchComplianceReviews(reviews.data || []);
+      setEmployees(emps);
       setIsLoading(false);
     };
     load();
@@ -308,7 +329,7 @@ export default function CyclesPage() {
     }
   };
 
-  const beginCompleteProduction = (cycle: any) => {
+  const beginCompleteProduction = async (cycle: any) => {
     const cycleTargets = targets.filter((t: any) => t.production_cycle === cycle.id);
     // If this cycle has been completed before (and reopened), prefill from
     // the actuals already on record for it instead of the planned quantity,
@@ -354,11 +375,100 @@ export default function CyclesPage() {
     const cycleLabel = cycle.harvest_date
       ? `Harvest: ${formatDate(cycle.harvest_date)}`
       : `${formatDate(cycle.start_date)} – ${formatDate(cycle.end_date)}`;
-    setCompletionDraft({
+    const draft: CompletionActualsDraft = {
       cycleId: cycle.id,
       cycleLabel,
       productActuals,
+    };
+
+    // The compliance check is a BotanIQals-only, warnings-only step shown
+    // before this same actuals modal. MiniLeaf cycles skip straight to it,
+    // unchanged.
+    if (displayBusinessType(cycle) !== "BotanIQals") {
+      setCompletionDraft(draft);
+      return;
+    }
+
+    setComplianceCheck({
+      cycle,
+      draft,
+      loading: true,
+      warnings: null,
+      loadError: null,
+      acknowledgedByEmployeeId: "",
+      acknowledgedNote: "",
+      saving: false,
+      saveError: null,
     });
+    try {
+      const warnings = await computeReleaseWarnings(supabase, {
+        id: cycle.id,
+        start_date: cycle.start_date,
+        end_date: cycle.end_date,
+      });
+      setComplianceCheck((prev) => (prev && prev.cycle.id === cycle.id ? { ...prev, loading: false, warnings } : prev));
+    } catch (err: unknown) {
+      setComplianceCheck((prev) =>
+        prev && prev.cycle.id === cycle.id
+          ? {
+              ...prev,
+              loading: false,
+              loadError: err instanceof Error ? err.message : "Failed to run the compliance check.",
+            }
+          : prev,
+      );
+    }
+  };
+
+  const handleContinueFromComplianceCheck = async () => {
+    if (!complianceCheck || complianceCheck.warnings === null) return;
+    const hasWarnings = complianceCheck.warnings.length > 0;
+
+    let acknowledgedByName: string | null = null;
+    if (hasWarnings) {
+      if (!complianceCheck.acknowledgedByEmployeeId) {
+        setComplianceCheck((prev) => (prev ? { ...prev, saveError: "Choose who is acknowledging these warnings." } : prev));
+        return;
+      }
+      if (!complianceCheck.acknowledgedNote.trim()) {
+        setComplianceCheck((prev) => (prev ? { ...prev, saveError: "A short note is required." } : prev));
+        return;
+      }
+      const employee = employees.find((e) => e.id === complianceCheck.acknowledgedByEmployeeId);
+      if (!employee) {
+        setComplianceCheck((prev) => (prev ? { ...prev, saveError: "Selected employee not found." } : prev));
+        return;
+      }
+      acknowledgedByName = employee.full_name;
+    }
+
+    setComplianceCheck((prev) => (prev ? { ...prev, saving: true, saveError: null } : prev));
+    try {
+      const { error: insertError } = await supabase.from("batch_compliance_reviews").insert({
+        production_cycle_id: complianceCheck.cycle.id,
+        warnings: complianceCheck.warnings,
+        acknowledged_by_name: acknowledgedByName,
+        acknowledged_note: hasWarnings ? complianceCheck.acknowledgedNote.trim() : null,
+        acknowledged_at: hasWarnings ? new Date().toISOString() : null,
+      });
+      if (insertError) throw new Error(insertError.message);
+
+      const { data: refreshedReviews } = await supabase
+        .from("batch_compliance_reviews")
+        .select("*")
+        .order("created_at", { ascending: false });
+      setBatchComplianceReviews(refreshedReviews || []);
+
+      const draft = complianceCheck.draft;
+      setComplianceCheck(null);
+      setCompletionDraft(draft);
+    } catch (err: unknown) {
+      setComplianceCheck((prev) =>
+        prev
+          ? { ...prev, saving: false, saveError: err instanceof Error ? err.message : "Failed to save the compliance review." }
+          : prev,
+      );
+    }
   };
 
   const handleCompleteProduction = async (
@@ -800,6 +910,16 @@ export default function CyclesPage() {
     safeCompletedPage * PAGE_SIZE,
   );
 
+  // Latest batch_compliance_reviews row per cycle — rows are append-only
+  // (a new one per completion/re-completion attempt), so the first match
+  // in this desc-by-created_at list is the latest.
+  const latestReviewByCycleId = new Map<string, any>();
+  for (const review of batchComplianceReviews) {
+    if (!latestReviewByCycleId.has(review.production_cycle_id)) {
+      latestReviewByCycleId.set(review.production_cycle_id, review);
+    }
+  }
+
   const batchDetailRows = batches
     .filter((batch: any) => {
       const cycle = cycles.find((cycleRow: any) => cycleRow.id === batch.production_cycle_id);
@@ -808,6 +928,9 @@ export default function CyclesPage() {
     .map((batch: any) => {
       const cycle = cycles.find((cycleRow: any) => cycleRow.id === batch.production_cycle_id);
       const product = products.find((productRow: any) => productRow.id === batch.product_id);
+      const review = latestReviewByCycleId.get(batch.production_cycle_id);
+      const warningCount = Array.isArray(review?.warnings) ? review.warnings.length : 0;
+      const complianceLabel = !review ? "—" : warningCount === 0 ? "Clear" : `Acknowledged (${warningCount})`;
       return {
         cycleId: batch.production_cycle_id,
         cycleLabel: cycle?.harvest_date
@@ -821,6 +944,7 @@ export default function CyclesPage() {
         batchId: batch.batch_id ?? "—",
         start: batch.production_start_at ?? cycle?.start_date ?? null,
         end: batch.production_end_at ?? cycle?.end_date ?? null,
+        complianceLabel,
       };
     })
     .filter((row) => row.quantity > 0);
@@ -1048,6 +1172,7 @@ export default function CyclesPage() {
                     <th className="px-2 py-1 font-medium">Batch ID</th>
                     <th className="px-2 py-1 font-medium">Start</th>
                     <th className="px-2 py-1 font-medium">End</th>
+                    <th className="px-2 py-1 font-medium">Compliance</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1065,12 +1190,115 @@ export default function CyclesPage() {
                       <td className="px-2 py-1">
                         {row.end ? formatDate(row.end) : "—"}
                       </td>
+                      <td className="px-2 py-1">
+                        <span
+                          className={
+                            row.complianceLabel === "Clear"
+                              ? "rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-medium text-emerald-800"
+                              : row.complianceLabel === "—"
+                                ? "text-zinc-400"
+                                : "rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-medium text-amber-800"
+                          }
+                        >
+                          {row.complianceLabel}
+                        </span>
+                      </td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
           </section>
+        )}
+
+        {complianceCheck && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+            <div className="w-full max-w-lg rounded-md border border-zinc-200 bg-white p-4">
+              <h2 className="text-sm font-semibold text-zinc-900">Compliance Check</h2>
+              <p className="mt-1 text-xs text-zinc-600">{complianceCheck.draft.cycleLabel}</p>
+
+              <div className="mt-3 space-y-3">
+                {complianceCheck.loading ? (
+                  <p className="text-xs text-black">Checking compliance logs…</p>
+                ) : complianceCheck.loadError ? (
+                  <p className="text-xs text-red-600" role="alert">
+                    {complianceCheck.loadError}
+                  </p>
+                ) : complianceCheck.warnings && complianceCheck.warnings.length === 0 ? (
+                  <p className="rounded-md border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm font-medium text-emerald-800">
+                    Clear — no compliance warnings for this cycle.
+                  </p>
+                ) : complianceCheck.warnings ? (
+                  <>
+                    <p className="text-sm font-semibold text-amber-800">
+                      Warnings ({complianceCheck.warnings.length})
+                    </p>
+                    <ul className="max-h-48 space-y-1 overflow-y-auto rounded-md border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900">
+                      {complianceCheck.warnings.map((w) => (
+                        <li key={w.key}>• {w.message}</li>
+                      ))}
+                    </ul>
+                    <p className="text-xs text-zinc-600">
+                      This doesn&rsquo;t block completion — acknowledge it to continue.
+                    </p>
+                    <div>
+                      <label className="mb-1 block text-xs font-medium text-zinc-800">Acknowledged by</label>
+                      <select
+                        value={complianceCheck.acknowledgedByEmployeeId}
+                        onChange={(e) =>
+                          setComplianceCheck((prev) => (prev ? { ...prev, acknowledgedByEmployeeId: e.target.value } : prev))
+                        }
+                        className="w-full rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-xs text-black shadow-sm"
+                      >
+                        <option value="">Select…</option>
+                        {employees.map((emp) => (
+                          <option key={emp.id} value={emp.id}>
+                            {emp.full_name}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="mb-1 block text-xs font-medium text-zinc-800">Note</label>
+                      <textarea
+                        value={complianceCheck.acknowledgedNote}
+                        onChange={(e) =>
+                          setComplianceCheck((prev) => (prev ? { ...prev, acknowledgedNote: e.target.value } : prev))
+                        }
+                        rows={2}
+                        className="w-full rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-xs text-black shadow-sm"
+                      />
+                    </div>
+                  </>
+                ) : null}
+
+                {complianceCheck.saveError && (
+                  <p className="text-xs text-red-600" role="alert">
+                    {complianceCheck.saveError}
+                  </p>
+                )}
+              </div>
+
+              <div className="mt-4 flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setComplianceCheck(null)}
+                  disabled={complianceCheck.saving}
+                  className="rounded-md border border-zinc-300 bg-white px-3 py-1.5 text-xs font-medium text-zinc-800 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={handleContinueFromComplianceCheck}
+                  disabled={complianceCheck.loading || !!complianceCheck.loadError || complianceCheck.saving}
+                  className="rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {complianceCheck.saving ? "Saving…" : "Continue"}
+                </button>
+              </div>
+            </div>
+          </div>
         )}
 
         {completionDraft && (

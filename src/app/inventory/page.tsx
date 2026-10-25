@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import { AuthGuard } from "@/components/AuthGuard";
 import { formatDate } from "@/lib/date";
 import { useSupabase } from "@/components/InstantProvider";
@@ -324,6 +325,12 @@ export default function InventoryPage() {
                         </div>
                       </div>
                       <div className="flex flex-col items-end gap-1 text-[11px]">
+                        <Link
+                          href={`/compliance/logs/receiving/new?rawMaterialId=${it.id}`}
+                          className="text-emerald-700 underline"
+                        >
+                          Receive Stock
+                        </Link>
                         <button
                           type="button"
                           className="text-emerald-700 underline"
