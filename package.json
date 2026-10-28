@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@instantdb/react": "^0.22.151",
+    "@react-pdf/renderer": "4.9.0",
     "@supabase/supabase-js": "^2.98.0",
     "chart.js": "^4.5.1",
     "date-fns": "^4.1.0",

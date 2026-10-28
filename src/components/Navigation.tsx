@@ -51,6 +51,7 @@ export const sections: NavSection[] = [
         items: [
           { href: "/finished-products-inventory", label: "Finished Products Inventory" },
           { href: "/inventory", label: "Raw Materials" },
+          { href: "/inventory/purchase-orders", label: "Purchase Orders" },
         ],
       },
       {
