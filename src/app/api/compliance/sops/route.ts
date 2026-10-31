@@ -2,6 +2,18 @@ import { NextResponse } from "next/server";
 import { requireApiUserFromBearerToken } from "@/lib/apiAuth";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { removeSopObject, verifyUploadedPdf } from "@/lib/sopStorage";
+import { blankDocument, productionTemplate } from "@/lib/sopDocument";
+
+type CreateDocumentSopBody = {
+  format: "document";
+  title: string;
+  sopNumber?: string | null;
+  description?: string | null;
+  productId?: string | null;
+  template?: "blank" | "production";
+};
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
  * Step 2 of 2 for a brand-new SOP: the browser has already PUT its file to
@@ -36,7 +48,48 @@ export async function POST(request: Request) {
       );
     }
 
-    const body = (await request.json()) as CreateSopRequestBody;
+    const rawBody = (await request.json()) as CreateSopRequestBody | CreateDocumentSopBody;
+
+    // New SOPs are editable documents. The SOP row starts with a draft and
+    // gets its first version when the user publishes from the editor.
+    if ((rawBody as CreateDocumentSopBody).format === "document") {
+      const doc = rawBody as CreateDocumentSopBody;
+      if (!doc.title?.trim()) return badRequest("Name is required.");
+      let productId: string | null = null;
+      if (doc.productId) {
+        if (!UUID_RE.test(doc.productId)) return badRequest("Invalid product.");
+        const { data: product } = await supabaseAdmin
+          .from("products")
+          .select("id, is_microgreen, deleted_at")
+          .eq("id", doc.productId)
+          .maybeSingle();
+        if (!product || product.deleted_at || product.is_microgreen === true) return badRequest("Choose an active BotanIQals product.");
+        productId = product.id;
+      }
+      const draft = doc.template === "production" ? productionTemplate(doc.title.trim(), productId) : blankDocument();
+      const { data: created, error: createError } = await supabaseAdmin
+        .from("sops")
+        .insert({
+          title: doc.title.trim(),
+          sop_number: doc.sopNumber?.trim() || null,
+          description: doc.description?.trim() || null,
+          created_by: user.id,
+          format: "document",
+          product_id: productId,
+          draft_content: draft,
+          draft_revision: 1,
+          draft_updated_at: new Date().toISOString(),
+          draft_updated_by: user.id,
+        })
+        .select("id")
+        .single();
+      if (createError || !created) {
+        return NextResponse.json({ error: createError?.message || "Failed to create the SOP." }, { status: 500 });
+      }
+      return NextResponse.json({ sopId: created.id });
+    }
+
+    const body = rawBody as CreateSopRequestBody;
     if (!body?.path) return badRequest("Missing uploaded file path.");
     if (!body?.title?.trim()) return badRequest("Name is required.");
     if (!body?.originalFilename) return badRequest("Missing original file name.");

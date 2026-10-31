@@ -8,15 +8,35 @@
     "start": "next start",
     "lint": "eslint",
     "inventory:backfill-units": "node scripts/backfillUnitsPerVariant.mjs",
-    "inventory:backfill-units:dry-run": "node scripts/backfillUnitsPerVariant.mjs --dry-run"
+    "inventory:backfill-units:dry-run": "node scripts/backfillUnitsPerVariant.mjs --dry-run",
+    "check:private": "tsx scripts/check-private-files.ts",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "test:e2e": "playwright test",
+    "sop:inspect": "tsx --env-file=.env.local scripts/sop-phase0-inspect.ts",
+    "sop:plan": "tsx --env-file=.env.local scripts/sop-migration-plan.ts",
+    "sop:stage": "tsx --env-file=.env.local scripts/sop-migration-stage.ts",
+    "sop:apply": "tsx --env-file=.env.local scripts/apply-sop-migration.ts",
+    "sop:rollback": "tsx --env-file=.env.local scripts/rollback-sop-migration.ts"
   },
   "dependencies": {
     "@instantdb/react": "^0.22.151",
     "@react-pdf/renderer": "4.9.0",
     "@supabase/supabase-js": "^2.98.0",
+    "@tiptap/core": "3.31.4",
+    "@tiptap/extension-drag-handle-react": "3.31.4",
+    "@tiptap/extension-highlight": "3.31.4",
+    "@tiptap/extension-image": "3.31.4",
+    "@tiptap/extension-table": "3.31.4",
+    "@tiptap/extension-text-align": "3.31.4",
+    "@tiptap/extension-text-style": "3.31.4",
+    "@tiptap/pm": "3.31.4",
+    "@tiptap/react": "3.31.4",
+    "@tiptap/starter-kit": "3.31.4",
     "chart.js": "^4.5.1",
     "date-fns": "^4.1.0",
     "date-fns-tz": "^3.2.0",
+    "decimal.js": "^10.6.0",
     "html2canvas": "^1.4.1",
     "javascript-lp-solver": "^1.0.3",
     "jspdf": "^4.2.1",
@@ -28,13 +48,20 @@
     "resend": "^6.9.3"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "0.5.8",
+    "@playwright/test": "1.64.0",
     "@tailwindcss/postcss": "^4",
+    "@types/jsdom": "^30.0.0",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "diff": "8.0.4",
     "eslint": "^9",
     "eslint-config-next": "16.1.6",
+    "jsdom": "^26.1.0",
     "tailwindcss": "^4",
-    "typescript": "^5"
+    "tsx": "^4.20.6",
+    "typescript": "^5",
+    "vitest": "^3.2.4"
   }
 }

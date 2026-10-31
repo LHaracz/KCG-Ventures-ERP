@@ -39,3 +39,9 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# confidential SOP / formula work (never commit, never deploy)
+.private/
+test-results/
+playwright-report/
+*.pdf

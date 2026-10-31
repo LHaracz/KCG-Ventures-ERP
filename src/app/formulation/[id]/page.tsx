@@ -69,6 +69,13 @@ export default function FormulationDetailPage() {
   const [finishing, setFinishing] = useState(false);
   const [finishError, setFinishError] = useState<string | null>(null);
 
+  // SOPs whose current version has a formula table for this product.
+  const [sopUsage, setSopUsage] = useState<
+    { sopId: string; title: string; sopNumber: string | null; versionNumber: number | null; upToDate: boolean }[] | null
+  >(null);
+  const [sopSyncFailed, setSopSyncFailed] = useState(false);
+  const [sopRetrying, setSopRetrying] = useState(false);
+
   const [discardConfirmOpen, setDiscardConfirmOpen] = useState(false);
   const [discarding, setDiscarding] = useState(false);
 
@@ -119,6 +126,53 @@ export default function FormulationDetailPage() {
     }
     setIsLoading(false);
   };
+
+  const sopApi = async (path: string, init?: RequestInit) => {
+    const { data } = await supabase.auth.getSession();
+    const token = data.session?.access_token;
+    if (!token) throw new Error("Unable to verify your session.");
+    const res = await fetch(path, { ...init, headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" } });
+    const payload = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(payload.error || "SOP request failed.");
+    return payload;
+  };
+
+  const loadSopUsage = async (productId: string | null) => {
+    if (!productId) {
+      setSopUsage([]);
+      return;
+    }
+    try {
+      const payload = await sopApi(`/api/compliance/sops/by-product/${productId}`);
+      setSopUsage(payload.sops ?? []);
+    } catch {
+      setSopUsage(null);
+    }
+  };
+
+  useEffect(() => {
+    if (fp) loadSopUsage(fp.product_id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fp?.product_id]);
+
+  const retrySopUpdate = async () => {
+    if (!fp?.product_id) return;
+    setSopRetrying(true);
+    try {
+      await sopApi("/api/compliance/sops/reconcile", {
+        method: "POST",
+        body: JSON.stringify({ sopIds: (sopUsage ?? []).map((u) => u.sopId) }),
+      });
+      setSopSyncFailed(false);
+    } catch {
+      setSopSyncFailed(true);
+    } finally {
+      await loadSopUsage(fp.product_id);
+      setSopRetrying(false);
+    }
+  };
+
+  const sopUpdatePending = sopSyncFailed || (sopUsage ?? []).some((u) => !u.upToDate);
 
   useEffect(() => {
     if (!user || !formulationProductId) return;
@@ -426,8 +480,22 @@ export default function FormulationDetailPage() {
         .eq("id", fp.id);
       if (fpUpdateError) throw fpUpdateError;
 
+      // The iteration is committed. Now give every SOP that uses this
+      // product's formula a new version with the updated table. A failure
+      // here never fails the iteration; it shows "SOP update pending".
+      try {
+        await sopApi("/api/compliance/sops/sync-formula", {
+          method: "POST",
+          body: JSON.stringify({ productId, formulationId: draft.id }),
+        });
+        setSopSyncFailed(false);
+      } catch {
+        setSopSyncFailed(true);
+      }
+
       setFinishConfirmOpen(false);
       await load();
+      await loadSopUsage(productId);
     } catch (err: any) {
       setFinishError(
         (err.message || "Failed to finish this iteration.") +
@@ -508,6 +576,42 @@ export default function FormulationDetailPage() {
         {actionError && (
           <p className="text-xs text-red-600" role="alert">
             {actionError}
+          </p>
+        )}
+
+        {fp.product_id && sopUsage && sopUsage.length > 0 && (
+          <section className="rounded-md border border-zinc-200 bg-white p-3 text-xs text-black">
+            <div className="mb-1 flex flex-wrap items-center gap-2">
+              <h2 className="text-sm font-semibold text-black">SOPs using this formula</h2>
+              {sopUpdatePending && (
+                <>
+                  <span className="rounded-full border border-amber-400 bg-amber-50 px-2 py-0.5 font-semibold text-black">SOP update pending</span>
+                  <button type="button" onClick={retrySopUpdate} disabled={sopRetrying} className="text-black underline disabled:opacity-60">
+                    {sopRetrying ? "Updating…" : "Retry now"}
+                  </button>
+                </>
+              )}
+            </div>
+            <ul className="space-y-0.5">
+              {sopUsage.map((u) => (
+                <li key={u.sopId}>
+                  <Link href={`/compliance/sops/${u.sopId}`} className="text-emerald-800 underline">
+                    {u.sopNumber ? `${u.sopNumber} · ` : ""}
+                    {u.title}
+                  </Link>
+                  {u.versionNumber != null ? ` (v${u.versionNumber})` : ""}
+                  {!u.upToDate && " · table not yet updated"}
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
+        {fp.product_id && sopSyncFailed && (!sopUsage || sopUsage.length === 0) && (
+          <p className="text-xs text-black">
+            <span className="rounded-full border border-amber-400 bg-amber-50 px-2 py-0.5 font-semibold">SOP update pending</span>{" "}
+            <button type="button" onClick={retrySopUpdate} disabled={sopRetrying} className="underline">
+              Retry now
+            </button>
           </p>
         )}
 
@@ -817,6 +921,19 @@ export default function FormulationDetailPage() {
                 Production cycles read the BOM live: any in-progress cycle will pick up this
                 new formula from now on, not retroactively.
               </p>
+              {sopUsage && sopUsage.length > 0 && (
+                <div className="mb-3 text-xs text-black">
+                  <p className="font-semibold">These SOPs will receive a new version automatically (only their formula table changes):</p>
+                  <ul className="ml-4 list-disc">
+                    {sopUsage.map((u) => (
+                      <li key={u.sopId}>
+                        {u.sopNumber ? `${u.sopNumber} · ` : ""}
+                        {u.title}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
               {finishError && (
                 <p className="mb-2 text-xs text-red-600" role="alert">
                   {finishError}

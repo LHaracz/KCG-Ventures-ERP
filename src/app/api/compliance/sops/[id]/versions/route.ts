@@ -49,7 +49,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
     const { data: versions, error } = await supabaseAdmin
       .from("sop_versions")
       .select(
-        "id, version_number, original_filename, file_size_bytes, effective_date, change_note, is_current, uploaded_by, uploaded_at",
+        "id, version_number, original_filename, file_size_bytes, effective_date, change_note, is_current, uploaded_by, uploaded_at, source, published_by_name, file_path",
       )
       .eq("sop_id", sopId)
       .order("version_number", { ascending: false });
@@ -68,7 +68,10 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
       }),
     );
 
-    return NextResponse.json({ versions: versions ?? [], uploaderEmails });
+    return NextResponse.json({
+      versions: (versions ?? []).map(({ file_path, ...v }) => ({ ...v, has_file: !!file_path })),
+      uploaderEmails,
+    });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unexpected server error.";
     const status = message === "Unauthorized." || message.includes("bearer token") ? 401 : 500;
@@ -94,11 +97,15 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
 
     const { data: sop, error: sopError } = await supabaseAdmin
       .from("sops")
-      .select("id")
+      .select("id, format")
       .eq("id", sopId)
       .maybeSingle();
     if (sopError) return NextResponse.json({ error: sopError.message }, { status: 500 });
     if (!sop) return badRequest("SOP not found.");
+    if (sop.format === "document") {
+      await removeSopObject(body.path);
+      return badRequest("This SOP is an editable document. Edit and publish it instead of uploading a PDF.");
+    }
 
     const { data: existingVersions, error: listError } = await supabaseAdmin
       .from("sop_versions")

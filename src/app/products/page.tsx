@@ -66,6 +66,7 @@ export default function ProductsPage() {
     inProgressCycleCount: number;
     affectedMappings: { id: string; lineitem_name: string }[];
     formulationProductId: string | null;
+    referencingSops: { id: string; title: string }[];
   } | null>(null);
   const [deleteImpactLoading, setDeleteImpactLoading] = useState(false);
   const [deleteConfirmText, setDeleteConfirmText] = useState("");
@@ -210,10 +211,25 @@ export default function ProductsPage() {
         .is("deleted_at", null)
         .maybeSingle();
 
+      // SOPs whose current version has a formula table for this product.
+      // They keep their last published tables; nothing is changed in them.
+      let referencingSops: { id: string; title: string }[] = [];
+      const { data: sopRefs } = await supabase
+        .from("sop_formula_refs")
+        .select("sop_id")
+        .eq("product_id", p.id)
+        .eq("active", true);
+      const sopIds = Array.from(new Set((sopRefs || []).map((r: any) => r.sop_id)));
+      if (sopIds.length > 0) {
+        const { data: sopRows } = await supabase.from("sops").select("id, title").in("id", sopIds).is("archived_at", null);
+        referencingSops = (sopRows || []) as { id: string; title: string }[];
+      }
+
       setDeleteImpact({
         inProgressCycleCount,
         affectedMappings,
         formulationProductId: formulationProduct?.id ?? null,
+        referencingSops,
       });
     } catch (err: any) {
       setDeleteError(err.message || "Failed to check this product's usage before deleting.");
@@ -1660,6 +1676,14 @@ export default function ProductsPage() {
                     {deleteImpact.formulationProductId && (
                       <p className="mb-2 text-xs text-black">
                         Its Formulation entry will be archived too.
+                      </p>
+                    )}
+                    {deleteImpact.referencingSops.length > 0 && (
+                      <p className="mb-2 text-xs text-black">
+                        {deleteImpact.referencingSops.length} SOP
+                        {deleteImpact.referencingSops.length === 1 ? "" : "s"} use this product&apos;s formula in a
+                        formula table ({deleteImpact.referencingSops.map((s) => s.title).join(", ")}). They keep
+                        their last published tables.
                       </p>
                     )}
                     <label className="mb-1 block text-xs font-medium text-zinc-800">

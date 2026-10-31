@@ -1,0 +1,4 @@
+.private/
+test-results/
+playwright-report/
+*.pdf

@@ -1,13 +1,15 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { AuthGuard } from "@/components/AuthGuard";
 import { useSupabase } from "@/components/InstantProvider";
 import { formatDate } from "@/lib/date";
+import { listBotaniqalsProducts, type BotanicalProduct } from "@/lib/sopFormulaData";
 
 const inputClassName =
-  "w-full rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-xs text-black placeholder:text-zinc-400 shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500";
+  "w-full rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-xs text-black placeholder:text-zinc-500 shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500";
 
 const MAX_FILE_BYTES = 25 * 1024 * 1024;
 
@@ -18,6 +20,8 @@ type SopRow = {
   description: string | null;
   archived_at: string | null;
   created_at: string;
+  format: "pdf" | "document";
+  draft_type: string | null;
 };
 
 type CurrentVersionRow = {
@@ -26,6 +30,7 @@ type CurrentVersionRow = {
   version_number: number;
   effective_date: string | null;
   uploaded_at: string;
+  search_text: string | null;
 };
 
 type UploadModalState =
@@ -46,6 +51,9 @@ function validatePdfFile(file: File): string | null {
   return null;
 }
 
+const rowBtn =
+  "rounded-md border border-zinc-300 bg-white px-2 py-1 text-xs font-medium text-black shadow-sm hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-60";
+
 export default function SopLibraryPage() {
   const { user, supabase } = useSupabase();
 
@@ -57,22 +65,22 @@ export default function SopLibraryPage() {
   const [search, setSearch] = useState("");
   const [showArchived, setShowArchived] = useState(false);
 
-  const [actionsFor, setActionsFor] = useState<SopRow | null>(null);
   const [archiveConfirm, setArchiveConfirm] = useState<SopRow | null>(null);
   const [archiving, setArchiving] = useState(false);
   const [restoringId, setRestoringId] = useState<string | null>(null);
 
   const [uploadModal, setUploadModal] = useState<UploadModalState | null>(null);
+  const [newOpen, setNewOpen] = useState(false);
 
-  const load = async () => {
+  const load = useCallback(async () => {
     setLoading(true);
     setLoadError(null);
     try {
       const [sopsResult, versionsResult] = await Promise.all([
-        supabase.from("sops").select("id, title, sop_number, description, archived_at, created_at"),
+        supabase.from("sops").select("id, title, sop_number, description, archived_at, created_at, format, draft_type:draft_content->>type"),
         supabase
           .from("sop_versions")
-          .select("id, sop_id, version_number, effective_date, uploaded_at")
+          .select("id, sop_id, version_number, effective_date, uploaded_at, search_text")
           .eq("is_current", true),
       ]);
       if (sopsResult.error) throw new Error(sopsResult.error.message);
@@ -88,13 +96,28 @@ export default function SopLibraryPage() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [supabase]);
 
   useEffect(() => {
     if (!user) return;
-    load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user]);
+    load().then(async () => {
+      // Idempotent catch-up for any missed automatic formula-table versions.
+      try {
+        const { data } = await supabase.auth.getSession();
+        const token = data.session?.access_token;
+        if (!token) return;
+        const res = await fetch("/api/compliance/sops/reconcile", {
+          method: "POST",
+          headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+          body: JSON.stringify({}),
+        });
+        const payload = await res.json().catch(() => ({}));
+        if (res.ok && payload.created > 0) await load();
+      } catch {
+        // Non-blocking.
+      }
+    });
+  }, [user, load, supabase]);
 
   const visibleSops = useMemo(() => {
     const term = search.trim().toLowerCase();
@@ -104,11 +127,12 @@ export default function SopLibraryPage() {
         if (!term) return true;
         return (
           s.title.toLowerCase().includes(term) ||
-          (s.sop_number ?? "").toLowerCase().includes(term)
+          (s.sop_number ?? "").toLowerCase().includes(term) ||
+          (currentVersions.get(s.id)?.search_text ?? "").toLowerCase().includes(term)
         );
       })
       .sort((a, b) => a.title.localeCompare(b.title));
-  }, [sops, search, showArchived]);
+  }, [sops, search, showArchived, currentVersions]);
 
   const handleArchive = async () => {
     if (!archiveConfirm) return;
@@ -122,8 +146,6 @@ export default function SopLibraryPage() {
       setArchiveConfirm(null);
       await load();
     } catch (err: any) {
-      // Keep the confirm modal open with inline feedback rather than losing
-      // the user's place.
       setLoadError(err.message || "Failed to archive this SOP.");
     } finally {
       setArchiving(false);
@@ -145,20 +167,18 @@ export default function SopLibraryPage() {
 
   return (
     <AuthGuard>
-      <div className="mx-auto max-w-5xl space-y-4">
+      <div className="mx-auto max-w-5xl space-y-4 text-black">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div>
-            <h1 className="text-2xl font-semibold text-zinc-900">SOP Library</h1>
-            <p className="text-sm text-black">
-              Standard operating procedures — upload, view, and track versions.
-            </p>
+            <h1 className="text-2xl font-semibold text-black">SOP Library</h1>
+            <p className="text-sm text-black">Standard operating procedures: write, edit, publish and track versions.</p>
           </div>
           <button
             type="button"
-            onClick={() => setUploadModal({ mode: "new" })}
-            className="rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white shadow-sm hover:bg-emerald-700"
+            onClick={() => setNewOpen(true)}
+            className="rounded-md bg-emerald-700 px-3 py-1.5 text-xs font-medium text-white shadow-sm hover:bg-emerald-800"
           >
-            Upload SOP
+            New SOP
           </button>
         </div>
 
@@ -166,16 +186,11 @@ export default function SopLibraryPage() {
           <input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search by name or SOP #…"
+            placeholder="Search name, SOP # or text…"
             className={`${inputClassName} max-w-xs`}
           />
           <label className="flex items-center gap-1.5 text-xs text-black">
-            <input
-              type="checkbox"
-              checked={showArchived}
-              onChange={(e) => setShowArchived(e.target.checked)}
-              className="h-3.5 w-3.5"
-            />
+            <input type="checkbox" checked={showArchived} onChange={(e) => setShowArchived(e.target.checked)} className="h-3.5 w-3.5" />
             Show archived
           </label>
         </div>
@@ -187,23 +202,21 @@ export default function SopLibraryPage() {
         )}
 
         <section className="rounded-md border border-zinc-200 bg-white p-4">
-          {loading ? (
+          {loading && sops.length === 0 ? (
             <p className="text-xs text-black">Loading…</p>
           ) : visibleSops.length === 0 ? (
-            <p className="text-xs text-black">
-              {sops.length === 0 ? "No SOPs uploaded yet." : "No SOPs match your filters."}
-            </p>
+            <p className="text-xs text-black">{sops.length === 0 ? "No SOPs yet." : "No SOPs match your filters."}</p>
           ) : (
             <div className="overflow-x-auto">
-              <table className="min-w-full border-collapse text-left text-xs">
-                <thead className="bg-zinc-50 text-[11px] uppercase tracking-wide text-zinc-500">
+              <table className="min-w-full border-collapse text-left text-xs text-black">
+                <thead className="bg-zinc-50 text-[11px] uppercase tracking-wide text-black">
                   <tr>
-                    <th className="px-3 py-2 font-medium">Name</th>
-                    <th className="px-3 py-2 font-medium">SOP #</th>
-                    <th className="px-3 py-2 font-medium">Current Version</th>
-                    <th className="px-3 py-2 font-medium">Effective Date</th>
-                    <th className="px-3 py-2 font-medium">Last Updated</th>
-                    <th className="px-3 py-2 font-medium">Actions</th>
+                    <th className="px-3 py-2 font-semibold">Name</th>
+                    <th className="px-3 py-2 font-semibold">SOP #</th>
+                    <th className="px-3 py-2 font-semibold">Current Version</th>
+                    <th className="px-3 py-2 font-semibold">Effective Date</th>
+                    <th className="px-3 py-2 font-semibold">Last Updated</th>
+                    <th className="px-3 py-2 font-semibold">Actions</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -211,48 +224,49 @@ export default function SopLibraryPage() {
                     const current = currentVersions.get(sop.id);
                     return (
                       <tr key={sop.id} className="border-b border-zinc-100">
-                        <td className="px-3 py-2 text-zinc-900">
+                        <td className="px-3 py-2 text-black">
                           {sop.title}
+                          {sop.format === "pdf" && (
+                            <span className="ml-2 rounded-full bg-zinc-200 px-2 py-0.5 text-[10px] font-semibold text-black">PDF</span>
+                          )}
+                          {sop.draft_type && (
+                            <span className="ml-2 rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-black">Draft pending</span>
+                          )}
                           {sop.archived_at && (
-                            <span className="ml-2 rounded-full bg-zinc-100 px-2 py-0.5 text-[10px] font-medium text-zinc-600">
-                              Archived
-                            </span>
+                            <span className="ml-2 rounded-full bg-zinc-100 px-2 py-0.5 text-[10px] font-semibold text-black">Archived</span>
                           )}
                         </td>
-                        <td className="px-3 py-2 text-zinc-700">{sop.sop_number || "—"}</td>
-                        <td className="px-3 py-2 text-zinc-700">
-                          {current ? `v${current.version_number}` : "—"}
-                        </td>
-                        <td className="px-3 py-2 text-zinc-700">
-                          {current?.effective_date ? formatDate(current.effective_date) : "—"}
-                        </td>
-                        <td className="px-3 py-2 text-zinc-700">
-                          {current ? formatDate(current.uploaded_at) : "—"}
-                        </td>
+                        <td className="px-3 py-2">{sop.sop_number || "—"}</td>
+                        <td className="px-3 py-2">{current ? `v${current.version_number}` : "—"}</td>
+                        <td className="px-3 py-2">{current?.effective_date ? formatDate(current.effective_date) : "—"}</td>
+                        <td className="px-3 py-2">{current ? formatDate(current.uploaded_at) : "—"}</td>
                         <td className="px-3 py-2">
-                          <div className="flex items-center gap-2">
-                            <Link
-                              href={`/compliance/sops/${sop.id}`}
-                              className="rounded-md border border-zinc-300 bg-white px-2 py-1 text-xs font-medium text-zinc-800 shadow-sm hover:bg-zinc-50"
-                            >
+                          <div className="flex flex-wrap items-center gap-2">
+                            <Link href={`/compliance/sops/${sop.id}`} className={rowBtn}>
                               View
                             </Link>
+                            {!sop.archived_at && (
+                              <Link href={`/compliance/sops/${sop.id}/edit`} className={rowBtn}>
+                                Edit
+                              </Link>
+                            )}
                             {sop.archived_at ? (
-                              <button
-                                type="button"
-                                disabled={restoringId === sop.id}
-                                onClick={() => handleRestore(sop)}
-                                className="rounded-md border border-zinc-300 bg-white px-2 py-1 text-xs font-medium text-zinc-800 shadow-sm hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-60"
-                              >
+                              <button type="button" disabled={restoringId === sop.id} onClick={() => handleRestore(sop)} className={rowBtn}>
                                 {restoringId === sop.id ? "Restoring…" : "Restore"}
                               </button>
                             ) : (
+                              <button type="button" onClick={() => setArchiveConfirm(sop)} className={rowBtn}>
+                                Archive
+                              </button>
+                            )}
+                            {!sop.archived_at && sop.format === "pdf" && (
                               <button
                                 type="button"
-                                onClick={() => setActionsFor(sop)}
-                                className="rounded-md border border-zinc-300 bg-white px-2 py-1 text-xs font-medium text-zinc-800 shadow-sm hover:bg-zinc-50"
+                                onClick={() => setUploadModal({ mode: "new-version", sopId: sop.id, sopTitle: sop.title })}
+                                className={rowBtn}
+                                title="Upload a replacement PDF (until this SOP is converted to an editable document)"
                               >
-                                Actions
+                                New PDF version
                               </button>
                             )}
                           </div>
@@ -266,74 +280,16 @@ export default function SopLibraryPage() {
           )}
         </section>
 
-        {actionsFor && (
-          <div
-            className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
-            onClick={() => setActionsFor(null)}
-          >
-            <div
-              className="w-full max-w-xs rounded-md border border-zinc-200 bg-white p-3"
-              onClick={(e) => e.stopPropagation()}
-            >
-              <div className="mb-2 flex items-center justify-between px-1">
-                <h2 className="truncate text-sm font-semibold text-black">{actionsFor.title}</h2>
-                <button
-                  type="button"
-                  onClick={() => setActionsFor(null)}
-                  aria-label="Close"
-                  className="text-zinc-500 hover:text-zinc-700"
-                >
-                  ✕
-                </button>
-              </div>
-              <div className="space-y-1">
-                <Link
-                  href={`/compliance/sops/${actionsFor.id}`}
-                  onClick={() => setActionsFor(null)}
-                  className="block rounded-md px-3 py-2 text-sm font-medium text-black hover:bg-zinc-50"
-                >
-                  View
-                </Link>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setUploadModal({ mode: "new-version", sopId: actionsFor.id, sopTitle: actionsFor.title });
-                    setActionsFor(null);
-                  }}
-                  className="block w-full rounded-md px-3 py-2 text-left text-sm font-medium text-black hover:bg-zinc-50"
-                >
-                  Upload New Version
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setArchiveConfirm(actionsFor);
-                    setActionsFor(null);
-                  }}
-                  className="block w-full rounded-md px-3 py-2 text-left text-sm font-medium text-black hover:bg-zinc-50"
-                >
-                  Archive
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
-
         {archiveConfirm && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
             <div className="w-full max-w-md rounded-md border border-zinc-200 bg-white p-4">
-              <h2 className="text-sm font-semibold text-zinc-900">Archive this SOP?</h2>
-              <p className="mt-1 text-xs text-zinc-600">
-                &ldquo;{archiveConfirm.title}&rdquo; will be hidden from the library by default. It
-                isn&apos;t deleted — compliance documents are retained — and you can restore it
-                anytime with &ldquo;Show archived&rdquo;.
+              <h2 className="text-sm font-semibold text-black">Archive this SOP?</h2>
+              <p className="mt-1 text-xs text-black">
+                &ldquo;{archiveConfirm.title}&rdquo; will be hidden from the library by default. It isn&apos;t deleted — compliance documents are
+                retained — and you can restore it anytime with &ldquo;Show archived&rdquo;.
               </p>
               <div className="mt-4 flex justify-end gap-2">
-                <button
-                  type="button"
-                  onClick={() => setArchiveConfirm(null)}
-                  className="rounded-md border border-zinc-300 bg-white px-3 py-1.5 text-xs font-medium text-zinc-800 hover:bg-zinc-50"
-                >
+                <button type="button" onClick={() => setArchiveConfirm(null)} className={rowBtn}>
                   Cancel
                 </button>
                 <button
@@ -349,6 +305,8 @@ export default function SopLibraryPage() {
           </div>
         )}
 
+        {newOpen && <NewSopModal onClose={() => setNewOpen(false)} />}
+
         {uploadModal && (
           <UploadSopModal
             state={uploadModal}
@@ -361,6 +319,116 @@ export default function SopLibraryPage() {
         )}
       </div>
     </AuthGuard>
+  );
+}
+
+/** New SOPs are editable documents (no PDF upload). Opens the editor after creating. */
+function NewSopModal({ onClose }: { onClose: () => void }) {
+  const { supabase } = useSupabase();
+  const router = useRouter();
+  const [title, setTitle] = useState("");
+  const [sopNumber, setSopNumber] = useState("");
+  const [description, setDescription] = useState("");
+  const [productId, setProductId] = useState("");
+  const [template, setTemplate] = useState<"blank" | "production">("blank");
+  const [products, setProducts] = useState<BotanicalProduct[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    listBotaniqalsProducts(supabase).then(setProducts).catch(() => setProducts([]));
+  }, [supabase]);
+
+  const submit = async () => {
+    if (!title.trim()) return setError("Name is required.");
+    setBusy(true);
+    setError(null);
+    try {
+      const { data } = await supabase.auth.getSession();
+      const token = data.session?.access_token;
+      if (!token) throw new Error("Unable to verify your session.");
+      const res = await fetch("/api/compliance/sops", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          format: "document",
+          title: title.trim(),
+          sopNumber: sopNumber.trim() || null,
+          description: description.trim() || null,
+          productId: productId || null,
+          template,
+        }),
+      });
+      const payload = await res.json();
+      if (!res.ok) throw new Error(payload.error || "Failed to create the SOP.");
+      router.push(`/compliance/sops/${payload.sopId}/edit`);
+    } catch (err: any) {
+      setError(err.message || "Failed to create the SOP.");
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+      <div className="w-full max-w-lg rounded-md border border-zinc-200 bg-white p-4 text-black">
+        <h2 className="text-sm font-semibold text-black">New SOP</h2>
+        <div className="mt-4 space-y-3 text-xs">
+          <div>
+            <label className="mb-1 block font-medium">Name</label>
+            <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="SOP name" className={inputClassName} />
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div>
+              <label className="mb-1 block font-medium">SOP number (optional)</label>
+              <input value={sopNumber} onChange={(e) => setSopNumber(e.target.value)} placeholder="SOP-001" className={inputClassName} />
+            </div>
+            <div>
+              <label className="mb-1 block font-medium">Linked product (optional)</label>
+              <select value={productId} onChange={(e) => setProductId(e.target.value)} className={inputClassName}>
+                <option value="">None</option>
+                {products.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+          <div>
+            <label className="mb-1 block font-medium">Description (optional)</label>
+            <textarea value={description} onChange={(e) => setDescription(e.target.value)} rows={2} className={inputClassName} />
+          </div>
+          <fieldset>
+            <legend className="mb-1 font-medium">Start from</legend>
+            <label className="mr-4 inline-flex items-center gap-1">
+              <input type="radio" checked={template === "blank"} onChange={() => setTemplate("blank")} /> Blank
+            </label>
+            <label className="inline-flex items-center gap-1">
+              <input type="radio" checked={template === "production"} onChange={() => setTemplate("production")} /> Production SOP template
+            </label>
+            {template === "production" && (
+              <p className="mt-1">
+                Title, Purpose, Scope, a Formula section with a formula table{productId ? " for the linked product" : " (choose its product in the editor)"}, Equipment, Procedure and Troubleshooting.
+              </p>
+            )}
+          </fieldset>
+          {error && <p className="text-red-600" role="alert">{error}</p>}
+        </div>
+        <div className="mt-4 flex justify-end gap-2">
+          <button type="button" onClick={onClose} disabled={busy} className={rowBtn}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={submit}
+            disabled={busy}
+            className="rounded-md bg-emerald-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-800 disabled:opacity-60"
+          >
+            {busy ? "Creating…" : "Create and open editor"}
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -500,13 +568,13 @@ function UploadSopModal({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
       <div className="w-full max-w-lg rounded-md border border-zinc-200 bg-white p-4">
-        <h2 className="text-sm font-semibold text-zinc-900">
+        <h2 className="text-sm font-semibold text-black">
           {isNewVersion ? `Upload New Version — ${state.sopTitle}` : "Upload SOP"}
         </h2>
 
         <div className="mt-4 space-y-3">
           <div>
-            <label className="mb-1 block text-xs font-medium text-zinc-800">PDF file</label>
+            <label className="mb-1 block text-xs font-medium text-black">PDF file</label>
             <input
               type="file"
               accept="application/pdf"
@@ -523,7 +591,7 @@ function UploadSopModal({
           {!isNewVersion && (
             <>
               <div>
-                <label className="mb-1 block text-xs font-medium text-zinc-800">Name</label>
+                <label className="mb-1 block text-xs font-medium text-black">Name</label>
                 <input
                   value={title}
                   onChange={(e) => setTitle(e.target.value)}
@@ -533,7 +601,7 @@ function UploadSopModal({
               </div>
               <div className="grid gap-3 sm:grid-cols-2">
                 <div>
-                  <label className="mb-1 block text-xs font-medium text-zinc-800">
+                  <label className="mb-1 block text-xs font-medium text-black">
                     SOP number (optional)
                   </label>
                   <input
@@ -544,7 +612,7 @@ function UploadSopModal({
                   />
                 </div>
                 <div>
-                  <label className="mb-1 block text-xs font-medium text-zinc-800">
+                  <label className="mb-1 block text-xs font-medium text-black">
                     Effective date (optional)
                   </label>
                   <input
@@ -556,7 +624,7 @@ function UploadSopModal({
                 </div>
               </div>
               <div>
-                <label className="mb-1 block text-xs font-medium text-zinc-800">
+                <label className="mb-1 block text-xs font-medium text-black">
                   Description (optional)
                 </label>
                 <textarea
@@ -572,7 +640,7 @@ function UploadSopModal({
           {isNewVersion && (
             <>
               <div>
-                <label className="mb-1 block text-xs font-medium text-zinc-800">
+                <label className="mb-1 block text-xs font-medium text-black">
                   Effective date (optional)
                 </label>
                 <input
@@ -583,7 +651,7 @@ function UploadSopModal({
                 />
               </div>
               <div>
-                <label className="mb-1 block text-xs font-medium text-zinc-800">
+                <label className="mb-1 block text-xs font-medium text-black">
                   What changed?
                 </label>
                 <textarea
@@ -597,7 +665,7 @@ function UploadSopModal({
             </>
           )}
 
-          {progress && <p className="text-xs text-zinc-600">{progress}</p>}
+          {progress && <p className="text-xs text-black">{progress}</p>}
           {submitError && (
             <p className="text-xs text-red-600" role="alert">
               {submitError}
@@ -610,7 +678,7 @@ function UploadSopModal({
             type="button"
             onClick={onClose}
             disabled={submitting}
-            className="rounded-md border border-zinc-300 bg-white px-3 py-1.5 text-xs font-medium text-zinc-800 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-60"
+            className="rounded-md border border-zinc-300 bg-white px-3 py-1.5 text-xs font-medium text-black hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-60"
           >
             Cancel
           </button>

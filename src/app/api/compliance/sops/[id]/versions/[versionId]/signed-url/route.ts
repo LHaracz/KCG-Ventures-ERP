@@ -32,12 +32,16 @@ export async function GET(
     if (!version || version.sop_id !== sopId) {
       return NextResponse.json({ error: "Version not found." }, { status: 404 });
     }
+    if (!version.file_path) {
+      // Document versions have no stored file; they render in the page.
+      return NextResponse.json({ error: "This version is an editable document, not a PDF." }, { status: 400 });
+    }
 
     const url = new URL(request.url);
     const wantsDownload = url.searchParams.get("download") === "1";
     const signedUrl = await createSignedViewUrl(
       version.file_path,
-      wantsDownload ? version.original_filename : undefined,
+      wantsDownload ? version.original_filename ?? undefined : undefined,
     );
 
     return NextResponse.json({ url: signedUrl, expiresInSeconds: SIGNED_VIEW_URL_TTL_SECONDS });
