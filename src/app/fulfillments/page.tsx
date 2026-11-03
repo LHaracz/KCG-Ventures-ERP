@@ -11,6 +11,8 @@ import {
   fulfillmentStatusLabel,
   type FulfillmentStatus,
 } from "@/lib/fulfillmentStatus";
+import { LastUpdatedNote } from "@/components/fulfillment/WarehouseUi";
+import type { LoaderMeta } from "@/lib/fulfillmentOrdersLoader";
 
 type FulfillmentListRow = {
   orderId: string;
@@ -24,6 +26,7 @@ type FulfillmentListRow = {
   status: FulfillmentStatus;
   isFlagged: boolean;
   flaggedReason: string | null;
+  boxLabel: string | null;
 };
 
 const flaggedBadgeClassName =
@@ -49,6 +52,7 @@ export default function FulfillmentsPage() {
   const [orders, setOrders] = useState<FulfillmentListRow[]>([]);
   const [ordersLoading, setOrdersLoading] = useState(true);
   const [ordersError, setOrdersError] = useState<string | null>(null);
+  const [ordersMeta, setOrdersMeta] = useState<LoaderMeta | null>(null);
 
   const [orderIdFilter, setOrderIdFilter] = useState("");
   const [customerFilter, setCustomerFilter] = useState("");
@@ -74,12 +78,16 @@ export default function FulfillmentsPage() {
         });
         const payload = (await response.json()) as {
           orders?: FulfillmentListRow[];
+          meta?: LoaderMeta;
           error?: string;
         };
         if (!response.ok) {
           throw new Error(payload.error || "Failed to load unfulfilled orders.");
         }
-        if (!cancelled) setOrders(payload.orders || []);
+        if (!cancelled) {
+          setOrders(payload.orders || []);
+          setOrdersMeta(payload.meta ?? null);
+        }
       } catch (err: any) {
         if (!cancelled) setOrdersError(err.message || "Failed to load unfulfilled orders.");
       } finally {
@@ -133,6 +141,14 @@ export default function FulfillmentsPage() {
     });
   }, [orders, orderIdFilter, customerFilter, dateAfter, dateBefore, statusFilter, sortDirection]);
 
+  // Orders past picking and not yet fulfilled (what Shipping Assignments shows).
+  const pickedNotFulfilledCount = useMemo(
+    () =>
+      orders.filter((o) => o.status === "picked" || o.status === "label_generated" || o.status === "label_printed")
+        .length,
+    [orders],
+  );
+
   return (
     <AuthGuard>
       <div className="mx-auto max-w-6xl space-y-6">
@@ -142,6 +158,21 @@ export default function FulfillmentsPage() {
             Unfulfilled Shopify orders, oldest first, with product weight for label
             planning.
           </p>
+          <div className="mt-2">
+            <LastUpdatedNote meta={ordersMeta} />
+          </div>
+        </section>
+
+        <section>
+          <Link
+            href="/fulfillments/shipping-assignments"
+            className="inline-flex items-center gap-2 rounded-md bg-emerald-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-emerald-700"
+          >
+            Shipping Assignments
+            <span className="rounded-full bg-white/25 px-2 py-0.5 text-xs" title="Orders picked and not yet fulfilled">
+              {ordersLoading ? "…" : pickedNotFulfilledCount}
+            </span>
+          </Link>
         </section>
 
         <section className="rounded-lg border border-zinc-200 bg-white p-4 shadow-sm">
@@ -151,7 +182,7 @@ export default function FulfillmentsPage() {
               href="/fulfillments/package-presets"
               className="rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white shadow-sm hover:bg-emerald-700"
             >
-              Package Presets
+              Packaging Setup
             </Link>
             <Link
               href="/fulfillments/settings"
@@ -172,8 +203,9 @@ export default function FulfillmentsPage() {
           <h2 className="mb-3 text-sm font-semibold text-zinc-900">Filter &amp; Sort</h2>
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
             <div>
-              <label className="mb-1 block text-xs font-medium text-zinc-800">Order #</label>
+              <label htmlFor="fulfillments-order-filter" className="mb-1 block text-xs font-medium text-zinc-800">Order #</label>
               <input
+                id="fulfillments-order-filter"
                 value={orderIdFilter}
                 onChange={(e) => setOrderIdFilter(e.target.value)}
                 placeholder="#1082"
@@ -208,8 +240,9 @@ export default function FulfillmentsPage() {
               />
             </div>
             <div>
-              <label className="mb-1 block text-xs font-medium text-zinc-800">Status</label>
+              <label htmlFor="fulfillments-status-filter" className="mb-1 block text-xs font-medium text-zinc-800">Status</label>
               <select
+                id="fulfillments-status-filter"
                 value={statusFilter}
                 onChange={(e) =>
                   setStatusFilter(e.target.value as FulfillmentStatus | "all" | "flagged")
@@ -262,6 +295,7 @@ export default function FulfillmentsPage() {
                     <th className="px-3 py-2 font-medium">Product Weight</th>
                     <th className="px-3 py-2 font-medium">Order Total</th>
                     <th className="px-3 py-2 font-medium">Status</th>
+                    <th className="px-3 py-2 font-medium">Box</th>
                     <th className="px-3 py-2 font-medium"></th>
                   </tr>
                 </thead>
@@ -292,6 +326,7 @@ export default function FulfillmentsPage() {
                             <span className={badge.className}>{badge.label}</span>
                           )}
                         </td>
+                        <td className="px-3 py-2 font-medium text-zinc-900">{o.boxLabel ?? ""}</td>
                         <td className="px-3 py-2">
                           <Link
                             href={`/fulfillments/${o.orderId}`}

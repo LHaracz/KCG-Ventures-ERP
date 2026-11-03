@@ -5,9 +5,10 @@ import { refundEasyPostShipment } from "@/lib/easypost";
 
 /**
  * Fulfillments Part 2b — voids the most recent (not-yet-voided) label for an
- * order via EasyPost's refund endpoint, reverts local status back to
- * preparing_shipment, and stamps voided_at on the fulfillment_log row. The
- * row itself is never deleted — it stays as a record.
+ * order via EasyPost's refund endpoint, stamps voided_at on the
+ * fulfillment_log row, and sets the local status to 'picked' when the order
+ * still holds a staging box (otherwise preparing_shipment). The row itself
+ * is never deleted — it stays as a record.
  */
 
 function badRequest(message: string) {
@@ -54,18 +55,21 @@ export async function POST(
 
     await refundEasyPostShipment(logRow.easypost_shipment_id);
 
-    const nowIso = new Date().toISOString();
-
-    await supabaseAdmin.from("fulfillment_log").update({ voided_at: nowIso }).eq("id", logRow.id);
-
-    await supabaseAdmin
-      .from("order_status")
-      .upsert(
-        { shopify_order_id: orderId, status: "preparing_shipment", updated_at: nowIso },
-        { onConflict: "shopify_order_id" },
+    // Stamp voided_at and set the status in one transaction: back to Picked
+    // if the order still holds a staging box, otherwise Preparing Shipment.
+    const finished = await supabaseAdmin.rpc("finish_label_void", {
+      p_order_id: orderId,
+      p_log_id: logRow.id,
+    });
+    if (finished.error) {
+      return NextResponse.json(
+        { error: `The label was voided in EasyPost but the ERP could not be updated: ${finished.error.message}` },
+        { status: 500 },
       );
+    }
+    const newStatus = (finished.data as { status?: string } | null)?.status ?? "preparing_shipment";
 
-    return NextResponse.json({ voided: true });
+    return NextResponse.json({ voided: true, status: newStatus });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unexpected server error.";
     const status =

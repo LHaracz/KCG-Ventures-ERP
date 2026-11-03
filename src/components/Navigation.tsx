@@ -58,16 +58,9 @@ export const sections: NavSection[] = [
         title: "Fulfillment",
         items: [
           { href: "/fulfillments", label: "Fulfillments" },
+          { href: "/fulfillments/pick-list", label: "Pick List" },
           { href: "/sales-data", label: "Sales Data" },
           { href: "/stats", label: "Sales Stats" },
-        ],
-      },
-      {
-        title: "Compliance",
-        items: [
-          { href: "/compliance/sops", label: "SOPs" },
-          { href: "/compliance/logs", label: "Logs" },
-          { href: "/compliance/coas", label: "COAs" },
         ],
       },
     ],

@@ -8,11 +8,17 @@ import { useSupabase } from "@/components/InstantProvider";
 import { formatDate } from "@/lib/date";
 import { fulfillmentStatusBadge, type FulfillmentStatus } from "@/lib/fulfillmentStatus";
 import type { CanonicalAddress } from "@/lib/fulfillmentOrder";
+import type { VariantMapRow } from "@/lib/salesAttribution";
+import { buildComponentResolver, resolveOrderComponents } from "@/lib/orderComponents";
 import {
-  buildComponentsByLineitemName,
-  resolveLineItemComponents,
-  type VariantMapRow,
-} from "@/lib/salesAttribution";
+  NEEDS_REVIEW_KEY,
+  effectivePackage,
+  sizedPresets,
+  suggestPackage,
+  type PackagingOverride,
+  type PackagingRuleInput,
+} from "@/lib/packagingEngine";
+import { Modal, PackageBadge } from "@/components/fulfillment/WarehouseUi";
 
 const inputClassName =
   "rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-xs text-black shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500";
@@ -56,12 +62,6 @@ type FulfillmentOrderDetail = {
   totalProductWeightOz: number;
 };
 
-type ResolvedComponent = {
-  productId: string;
-  productName: string;
-  qty: number;
-};
-
 type PackagePreset = {
   id: string;
   nickname: string;
@@ -69,6 +69,7 @@ type PackagePreset = {
   width_in: number;
   height_in: number;
   tare_weight_oz: number;
+  max_points: number | string | null;
 };
 
 export default function FulfillmentOrderDetailPage() {
@@ -88,6 +89,17 @@ export default function FulfillmentOrderDetailPage() {
   // (src/lib/salesAttribution.ts) — reused as-is, not reimplemented.
   const [variantMap, setVariantMap] = useState<VariantMapRow[]>([]);
   const [productNamesById, setProductNamesById] = useState<Map<string, string>>(new Map());
+
+  // Packaging (picking build): rules, this order's override and staging box.
+  const [packagingRules, setPackagingRules] = useState<PackagingRuleInput[]>([]);
+  const [packagingOverride, setPackagingOverride] = useState<PackagingOverride | null>(null);
+  const [stagingBoxLabel, setStagingBoxLabel] = useState<string | null>(null);
+  const [packagingReloadKey, setPackagingReloadKey] = useState(0);
+  const [overrideChoice, setOverrideChoice] = useState<string>("");
+  const [packagingBusy, setPackagingBusy] = useState(false);
+  const [packagingError, setPackagingError] = useState<string | null>(null);
+  const [returnConfirmOpen, setReturnConfirmOpen] = useState(false);
+  const [presetTouched, setPresetTouched] = useState(false);
 
   const [status, setStatus] = useState<FulfillmentStatus>("preparing_shipment");
   const [fulfillmentLog, setFulfillmentLog] = useState<FulfillmentLogRow | null>(null);
@@ -173,10 +185,10 @@ export default function FulfillmentOrderDetailPage() {
     if (!user) return;
     let cancelled = false;
     const loadPresets = async () => {
+      // Package presets are shared by every logged-in user.
       const { data } = await supabase
         .from("package_presets")
         .select("*")
-        .eq("user_id", user.id)
         .order("nickname", { ascending: true });
       if (!cancelled) setPresets(data || []);
     };
@@ -206,6 +218,44 @@ export default function FulfillmentOrderDetailPage() {
       cancelled = true;
     };
   }, [user, supabase]);
+
+  useEffect(() => {
+    if (!user || !orderId) return;
+    let cancelled = false;
+    const loadPackaging = async () => {
+      const [rulesResult, overrideResult, boxResult] = await Promise.all([
+        supabase.from("product_packaging_rules").select("product_id, points, min_package_id"),
+        supabase
+          .from("order_packaging")
+          .select("override_target, override_preset_id, override_preset_name")
+          .eq("order_id", orderId)
+          .maybeSingle(),
+        supabase
+          .from("staging_box_assignments")
+          .select("staging_boxes(label)")
+          .eq("order_id", orderId)
+          .is("released_at", null)
+          .maybeSingle(),
+      ]);
+      if (cancelled) return;
+      setPackagingRules(
+        ((rulesResult.data as any[]) || []).map((r) => ({
+          productId: String(r.product_id),
+          points: r.points ?? null,
+          minPackageId: r.min_package_id ?? null,
+        })),
+      );
+      const o = overrideResult.data as any;
+      setPackagingOverride(
+        o ? { target: o.override_target, presetId: o.override_preset_id, presetName: o.override_preset_name } : null,
+      );
+      setStagingBoxLabel(((boxResult.data as any)?.staging_boxes?.label as string | undefined) ?? null);
+    };
+    loadPackaging();
+    return () => {
+      cancelled = true;
+    };
+  }, [user, supabase, orderId, packagingReloadKey]);
 
   useEffect(() => {
     if (!user || !orderId) return;
@@ -247,17 +297,6 @@ export default function FulfillmentOrderDetailPage() {
     [presets, selectedPresetId],
   );
 
-  // "Smallest reasonably-fitting preset" — the app has no per-product
-  // dimension data (only weight per line item), so there's no true fit
-  // check possible. Read as smallest by volume (L×W×H), a sensible always-
-  // visible-and-editable default rather than a real fit calculation.
-  const smallestPreset = useMemo(() => {
-    if (presets.length === 0) return null;
-    return [...presets].sort(
-      (a, b) => a.length_in * a.width_in * a.height_in - b.length_in * b.width_in * b.height_in,
-    )[0];
-  }, [presets]);
-
   const totalParcelWeightOz = useMemo(() => {
     const productWeight = order?.totalProductWeightOz ?? 0;
     const tare = selectedPreset?.tare_weight_oz ?? 0;
@@ -270,23 +309,44 @@ export default function FulfillmentOrderDetailPage() {
   // Shopify's own per-line-item weight (unitWeightOz/extendedWeightOz,
   // already correct) is shown once per line item, matching how the order's
   // Total Product Weight is already calculated server-side.
-  const componentsByLineitemName = useMemo(
-    () => buildComponentsByLineitemName(variantMap),
-    [variantMap],
+  // One shared resolver (src/lib/orderComponents.ts) used by every
+  // fulfillment screen, so the Pick List and this page always agree.
+  const componentResolver = useMemo(
+    () =>
+      buildComponentResolver(
+        variantMap,
+        Array.from(productNamesById.entries()).map(([id, name]) => ({ id, name })),
+      ),
+    [variantMap, productNamesById],
   );
 
-  const resolvedLineItems = useMemo(() => {
-    if (!order) return [];
-    return order.lineItems.map((li) => {
-      const mapped = resolveLineItemComponents(li.name, componentsByLineitemName);
-      const components: ResolvedComponent[] = mapped.map((c) => ({
-        productId: c.product_id,
-        productName: productNamesById.get(c.product_id) ?? "Unknown product",
-        qty: c.qty_per_unit * li.quantity,
-      }));
-      return { ...li, components };
+  const resolvedOrder = useMemo(
+    () => (order ? resolveOrderComponents(order.lineItems, componentResolver) : null),
+    [order, componentResolver],
+  );
+  const resolvedLineItems = useMemo(() => resolvedOrder?.lineItems ?? [], [resolvedOrder]);
+
+  // Effective package: the override if one exists, otherwise the live
+  // suggestion from the packaging engine.
+  const presetInputs = useMemo(
+    () => presets.map((p) => ({ id: p.id, nickname: p.nickname, maxPoints: p.max_points })),
+    [presets],
+  );
+  const sizedPresetList = useMemo(() => sizedPresets(presetInputs), [presetInputs]);
+  const packaging = useMemo(() => {
+    if (!resolvedOrder) return null;
+    const suggestion = suggestPackage({
+      components: resolvedOrder.components,
+      unmappedLineItems: resolvedOrder.unmappedLineItems,
+      rules: packagingRules,
+      presets: presetInputs,
     });
-  }, [order, componentsByLineitemName, productNamesById]);
+    return effectivePackage(suggestion, packagingOverride, presetInputs);
+  }, [resolvedOrder, packagingRules, presetInputs, packagingOverride]);
+
+  useEffect(() => {
+    if (packaging) setOverrideChoice(packaging.key);
+  }, [packaging]);
 
   // Keeps the editable address form in sync with whatever Shopify actually
   // has — resets on initial load and again after a successful save (the
@@ -328,7 +388,9 @@ export default function FulfillmentOrderDetailPage() {
 
   const handleOpenGenerateLabel = () => {
     if (!order) return;
-    if (!selectedPresetId && smallestPreset) setSelectedPresetId(smallestPreset.id);
+    // Preselect the order's effective package (nothing for Needs Review),
+    // unless someone already chose a package on this page. Still editable.
+    if (!presetTouched) setSelectedPresetId(packaging?.presetId && packaging.key !== NEEDS_REVIEW_KEY ? packaging.presetId : "");
     setModalOpen(true);
     setModalError(null);
     setModalRates([]);
@@ -435,9 +497,10 @@ export default function FulfillmentOrderDetailPage() {
     setVoidingLabel(true);
     setVoidLabelError(null);
     try {
-      await authedFetch(`/api/fulfillments/${orderId}/void-label`, {});
+      const payload = await authedFetch(`/api/fulfillments/${orderId}/void-label`, {});
       setFulfillmentLog(null);
-      setStatus("preparing_shipment");
+      // Back to Picked if the order still holds a staging box.
+      setStatus((payload?.status as FulfillmentStatus) || "preparing_shipment");
     } catch (err: any) {
       setVoidLabelError(err.message || "Failed to void this label.");
     } finally {
@@ -452,10 +515,52 @@ export default function FulfillmentOrderDetailPage() {
     try {
       await authedFetch(`/api/fulfillments/${orderId}/mark-fulfilled`, {});
       setStatus("fulfilled");
+      setPackagingReloadKey((k) => k + 1);
     } catch (err: any) {
       setMarkFulfilledError(err.message || "Failed to mark this order fulfilled.");
     } finally {
       setMarkingFulfilled(false);
+    }
+  };
+
+  // --- Packaging override / return to picking ------------------------------
+
+  const handlePackagingOverride = async (clear: boolean) => {
+    if (!orderId || !packaging) return;
+    setPackagingBusy(true);
+    setPackagingError(null);
+    try {
+      if (clear) {
+        await authedFetch(`/api/fulfillments/${orderId}/packaging`, { action: "clear" });
+      } else {
+        await authedFetch(`/api/fulfillments/${orderId}/packaging`, {
+          action: "set",
+          target: overrideChoice === NEEDS_REVIEW_KEY ? "needs_review" : "preset",
+          presetId: overrideChoice === NEEDS_REVIEW_KEY ? null : overrideChoice,
+          previousLabel: packaging.label,
+        });
+      }
+      setPackagingReloadKey((k) => k + 1);
+    } catch (err: any) {
+      setPackagingError(err.message || "Couldn't change the package.");
+    } finally {
+      setPackagingBusy(false);
+    }
+  };
+
+  const handleReturnToPicking = async () => {
+    if (!orderId) return;
+    setPackagingBusy(true);
+    setPackagingError(null);
+    try {
+      await authedFetch(`/api/fulfillments/${orderId}/return-to-picking`, {});
+      setStatus("preparing_shipment");
+      setReturnConfirmOpen(false);
+      setPackagingReloadKey((k) => k + 1);
+    } catch (err: any) {
+      setPackagingError(err.message || "Couldn't return this order to picking.");
+    } finally {
+      setPackagingBusy(false);
     }
   };
 
@@ -889,6 +994,122 @@ export default function FulfillmentOrderDetailPage() {
               </div>
             </section>
 
+            {packaging && (
+              <section
+                className="rounded-lg border border-zinc-200 bg-white p-4 text-black shadow-sm"
+                aria-label="Packaging"
+                data-testid="packaging-card"
+              >
+                <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                  <h2 className="text-sm font-semibold text-black">Packaging</h2>
+                  <span className="text-xs text-black">
+                    Staging box:{" "}
+                    <strong data-testid="packaging-box">{stagingBoxLabel ?? (status === "preparing_shipment" ? "Not picked yet" : "—")}</strong>
+                  </span>
+                </div>
+                <div className="flex flex-wrap items-center gap-2 text-sm">
+                  <PackageBadge pkg={packaging} />
+                </div>
+                <p className="mt-1 text-xs text-black">{packaging.reason}</p>
+                {packaging.overridden && (
+                  <p className="mt-1 text-xs text-black">
+                    Original suggestion: {packaging.suggestionLabel} ({packaging.suggestion.reason})
+                  </p>
+                )}
+                <table className="mt-3 text-left text-xs text-black">
+                  <thead>
+                    <tr>
+                      <th className="pr-4 font-medium">Product</th>
+                      <th className="pr-4 font-medium">Qty</th>
+                      <th className="pr-4 font-medium">Points each</th>
+                      <th className="pr-4 font-medium">Points</th>
+                      <th className="font-medium">Smallest allowed</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {packaging.suggestion.breakdown.map((b) => (
+                      <tr key={b.productId}>
+                        <td className="pr-4">{b.productName}</td>
+                        <td className="pr-4">{b.qty}</td>
+                        <td className="pr-4">{b.pointsEach ?? "Not set"}</td>
+                        <td className="pr-4">{b.subtotal ?? "—"}</td>
+                        <td>{b.minPackageName ?? "Any"}</td>
+                      </tr>
+                    ))}
+                    <tr>
+                      <td colSpan={3} className="pr-4 pt-1 font-medium">
+                        Total
+                      </td>
+                      <td className="pt-1 font-medium">{packaging.suggestion.totalPoints}</td>
+                      <td />
+                    </tr>
+                  </tbody>
+                </table>
+
+                {(status === "picked" || status === "label_generated" || status === "label_printed") && (
+                  <div className="mt-4 flex flex-wrap items-end gap-2">
+                    <div>
+                      <label htmlFor="override-choice" className="mb-1 block text-xs font-medium text-black">
+                        Change package
+                      </label>
+                      <select
+                        id="override-choice"
+                        value={overrideChoice}
+                        onChange={(e) => setOverrideChoice(e.target.value)}
+                        className="rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-xs text-black shadow-sm"
+                      >
+                        {sizedPresetList.map((p) => (
+                          <option key={p.id} value={p.id}>
+                            {p.nickname}
+                          </option>
+                        ))}
+                        <option value={NEEDS_REVIEW_KEY}>Needs Review</option>
+                      </select>
+                    </div>
+                    <button
+                      type="button"
+                      disabled={packagingBusy || overrideChoice === packaging.key}
+                      onClick={() => handlePackagingOverride(false)}
+                      className="rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white shadow-sm hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      Save package
+                    </button>
+                    {packaging.overridden && (
+                      <button
+                        type="button"
+                        disabled={packagingBusy}
+                        onClick={() => handlePackagingOverride(true)}
+                        className="rounded-md border border-zinc-300 bg-white px-3 py-1.5 text-xs font-medium text-black hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        Clear override
+                      </button>
+                    )}
+                    {status === "picked" && (
+                      <button
+                        type="button"
+                        disabled={packagingBusy}
+                        onClick={() => {
+                          setPackagingError(null);
+                          setReturnConfirmOpen(true);
+                        }}
+                        className="rounded-md border border-red-300 bg-white px-3 py-1.5 text-xs font-medium text-red-700 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        Return to Picking
+                      </button>
+                    )}
+                  </div>
+                )}
+                {(status === "label_generated" || status === "label_printed") && (
+                  <p className="mt-2 text-[11px] text-black">To return this order to picking, void the label first.</p>
+                )}
+                {packagingError && (
+                  <p className="mt-2 text-xs text-red-700" role="alert">
+                    {packagingError}
+                  </p>
+                )}
+              </section>
+            )}
+
             <section className="rounded-lg border border-zinc-200 bg-white p-4 shadow-sm">
               <h2 className="mb-3 text-sm font-semibold text-zinc-900">Package</h2>
               {presets.length === 0 ? (
@@ -906,7 +1127,10 @@ export default function FulfillmentOrderDetailPage() {
                   </label>
                   <select
                     value={selectedPresetId}
-                    onChange={(e) => setSelectedPresetId(e.target.value)}
+                    onChange={(e) => {
+                      setSelectedPresetId(e.target.value);
+                      setPresetTouched(true);
+                    }}
                     className="w-full rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-xs text-black shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
                   >
                     <option value="">Select a package…</option>
@@ -916,9 +1140,9 @@ export default function FulfillmentOrderDetailPage() {
                       </option>
                     ))}
                   </select>
-                  <p className="mt-1 text-[11px] text-zinc-500">
-                    This also drives the Generate Label popup — it pre-selects the smallest
-                    preset by default, and you can change it there too.
+                  <p className="mt-1 text-[11px] text-black">
+                    This also drives the Generate Label popup — it pre-selects the suggested
+                    package (see Packaging above), and you can change it there too.
                   </p>
                 </div>
               )}
@@ -946,16 +1170,24 @@ export default function FulfillmentOrderDetailPage() {
                     <button
                       type="button"
                       onClick={handleOpenGenerateLabel}
-                      disabled={presets.length === 0}
+                      disabled={presets.length === 0 || status === "preparing_shipment"}
                       className="rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white shadow-sm hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
                     >
                       Generate Label
                     </button>
-                    {presets.length === 0 && (
+                    {status === "preparing_shipment" ? (
+                      <p className="mt-1 text-[11px] text-black">
+                        Pick this order first: assign a staging box on the{" "}
+                        <Link href="/fulfillments/pick-list" className="font-medium text-emerald-800 underline">
+                          Pick List
+                        </Link>
+                        .
+                      </p>
+                    ) : presets.length === 0 ? (
                       <p className="mt-1 text-[11px] text-zinc-600">
                         Add a package preset above first.
                       </p>
-                    )}
+                    ) : null}
                   </div>
                 ) : (
                   <div className="rounded-md border border-zinc-200 bg-white p-3 text-xs">
@@ -1042,7 +1274,10 @@ export default function FulfillmentOrderDetailPage() {
                   </label>
                   <select
                     value={selectedPresetId}
-                    onChange={(e) => setSelectedPresetId(e.target.value)}
+                    onChange={(e) => {
+                      setSelectedPresetId(e.target.value);
+                      setPresetTouched(true);
+                    }}
                     className="w-full rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-xs text-black shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
                   >
                     <option value="">Select a package…</option>
@@ -1052,6 +1287,16 @@ export default function FulfillmentOrderDetailPage() {
                       </option>
                     ))}
                   </select>
+                  {packaging && packaging.key !== NEEDS_REVIEW_KEY && packaging.presetId !== selectedPresetId && (
+                    <p className="mt-1 text-[11px] text-black" data-testid="suggested-package-note">
+                      Suggested: {packaging.label}
+                    </p>
+                  )}
+                  {packaging && packaging.key === NEEDS_REVIEW_KEY && (
+                    <p className="mt-1 text-[11px] text-black">
+                      Needs Review: {packaging.reason}. Choose the package yourself.
+                    </p>
+                  )}
                 </div>
 
                 <div>
@@ -1112,6 +1357,37 @@ export default function FulfillmentOrderDetailPage() {
               </div>
             </div>
           </div>
+        )}
+
+        {returnConfirmOpen && order && (
+          <Modal title="Return to picking" onClose={() => setReturnConfirmOpen(false)}>
+            <p className="text-sm text-black">
+              Return order {order.name} to picking? The items need to go back on the shelves and{" "}
+              {stagingBoxLabel ?? "its staging box"} will be freed.
+            </p>
+            {packagingError && (
+              <p className="mt-2 text-sm text-red-700" role="alert">
+                {packagingError}
+              </p>
+            )}
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setReturnConfirmOpen(false)}
+                className="rounded-md border border-zinc-300 bg-white px-3 py-1.5 text-xs font-medium text-black hover:bg-zinc-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={packagingBusy}
+                onClick={handleReturnToPicking}
+                className="rounded-md border border-red-300 bg-white px-3 py-1.5 text-xs font-medium text-red-700 hover:bg-red-50 disabled:opacity-50"
+              >
+                {packagingBusy ? "Returning…" : "Return to picking"}
+              </button>
+            </div>
+          </Modal>
         )}
 
         {flagModalOpen && (

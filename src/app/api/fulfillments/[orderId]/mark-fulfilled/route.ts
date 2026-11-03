@@ -143,6 +143,17 @@ export async function POST(
       .eq("shopify_order_id", orderId)
       .is("fulfilled_at", null);
 
+    // Free the staging box. Never fails the fulfillment: if this errors, the
+    // reconcile on the Pick List / Shipping Assignments load releases it.
+    try {
+      const release = await supabaseAdmin.rpc("release_assignment_on_fulfilled", { p_order_id: orderId });
+      if (release.error) {
+        console.error(`[mark-fulfilled] Box release failed for order ${orderId}: ${release.error.message}`);
+      }
+    } catch (releaseError) {
+      console.error(`[mark-fulfilled] Box release failed for order ${orderId}:`, releaseError);
+    }
+
     return NextResponse.json({ ok: true });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unexpected server error.";

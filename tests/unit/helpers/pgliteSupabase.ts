@@ -5,7 +5,7 @@
  */
 import type { PGlite } from "@electric-sql/pglite";
 
-type Result = { data: any; error: { message: string } | null };
+type Result = { data: any; error: { message: string; hint?: string | null } | null };
 
 const ident = (s: string) => `"${s.replace(/"/g, '""')}"`;
 
@@ -46,7 +46,8 @@ class Query implements PromiseLike<Result> {
   private lim: number | null = null;
   private off = 0;
   private cols = "*";
-  private mode: "select" | "update" | "insert" = "select";
+  private mode: "select" | "update" | "insert" | "delete" = "select";
+  private conflict: string | null = null;
   private payload: Record<string, unknown> | Record<string, unknown>[] | null = null;
   private returning: string | null = null;
   private single: "one" | "maybe" | null = null;
@@ -68,12 +69,31 @@ class Query implements PromiseLike<Result> {
     this.payload = payload;
     return this;
   }
+  upsert(payload: Record<string, unknown> | Record<string, unknown>[], opts?: { onConflict?: string }) {
+    this.mode = "insert";
+    this.payload = payload;
+    this.conflict = opts?.onConflict ?? "id";
+    return this;
+  }
+  delete() {
+    this.mode = "delete";
+    return this;
+  }
   eq(col: string, value: unknown) {
     this.filters.push({ sql: `${ident(col)} = $?`, value });
     return this;
   }
   in(col: string, values: unknown[]) {
     this.filters.push({ sql: `${ident(col)} = any($?)`, value: values });
+    return this;
+  }
+  // Only the form the app uses: .not(col, "is", null)
+  not(col: string, _op: "is", _value: null) {
+    this.filters.push({ sql: `${ident(col)} is not null` });
+    return this;
+  }
+  gte(col: string, value: unknown) {
+    this.filters.push({ sql: `${ident(col)} >= $?`, value });
     return this;
   }
   is(col: string, value: null) {
@@ -138,11 +158,19 @@ class Query implements PromiseLike<Result> {
       params.push(...p2);
       sql = `update ${ident(this.table)} set ${setSql.join(", ")}${whereSql ? ` where ${whereSql}` : ""}`;
       sql += ` returning ${this.returning ? selectList(this.returning) : "*"}`;
+    } else if (this.mode === "delete") {
+      sql = `delete from ${ident(this.table)}${where} returning *`;
     } else {
       const rows = Array.isArray(this.payload) ? this.payload : [this.payload!];
       const keys = Object.keys(rows[0]);
       const values = rows.map((r) => `(${keys.map((k) => { params.push(toParam(r[k])); return `$${params.length}`; }).join(", ")})`);
-      sql = `insert into ${ident(this.table)} (${keys.map(ident).join(", ")}) values ${values.join(", ")} returning ${this.returning ? selectList(this.returning) : "*"}`;
+      const onConflict = this.conflict
+        ? ` on conflict (${this.conflict.split(",").map((c) => ident(c.trim())).join(", ")}) do update set ${keys
+            .filter((k) => !this.conflict!.split(",").map((c) => c.trim()).includes(k))
+            .map((k) => `${ident(k)} = excluded.${ident(k)}`)
+            .join(", ")}`
+        : "";
+      sql = `insert into ${ident(this.table)} (${keys.map(ident).join(", ")}) values ${values.join(", ")}${onConflict} returning ${this.returning ? selectList(this.returning) : "*"}`;
     }
     try {
       const res = await this.db.query(sql, params);
@@ -176,7 +204,9 @@ export function pgliteSupabase(db: PGlite) {
         const res = await db.query<{ r: unknown }>(sql, params);
         return { data: res.rows[0]?.r ?? null, error: null };
       } catch (e) {
-        return { data: null, error: { message: e instanceof Error ? e.message : String(e) } };
+        // Like PostgREST: the raised message plus the HINT (used for error codes).
+        const hint = (e as { hint?: string } | null)?.hint ?? null;
+        return { data: null, error: { message: e instanceof Error ? e.message : String(e), hint } };
       }
     },
     auth: { admin: { getUserById: async () => ({ data: { user: { email: "finalizer@example.com", user_metadata: { full_name: "Test Finalizer" } } } }) } },

@@ -8,6 +8,7 @@
 
 export const FULFILLMENT_STATUSES = [
   "preparing_shipment",
+  "picked",
   "label_generated",
   "label_printed",
   "fulfilled",
@@ -17,6 +18,7 @@ export type FulfillmentStatus = (typeof FULFILLMENT_STATUSES)[number];
 
 const LABELS: Record<FulfillmentStatus, string> = {
   preparing_shipment: "Preparing Shipment",
+  picked: "Picked",
   label_generated: "Label Generated",
   label_printed: "Label Printed",
   fulfilled: "Fulfilled",
@@ -24,6 +26,7 @@ const LABELS: Record<FulfillmentStatus, string> = {
 
 const COLORS: Record<FulfillmentStatus, string> = {
   preparing_shipment: "bg-zinc-500 text-white",
+  picked: "bg-violet-600 text-white",
   label_generated: "bg-amber-500 text-white",
   label_printed: "bg-blue-500 text-white",
   fulfilled: "bg-emerald-600 text-white",

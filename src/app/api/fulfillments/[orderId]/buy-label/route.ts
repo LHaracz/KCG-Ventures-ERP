@@ -8,6 +8,10 @@ import { buyEasyPostRate } from "@/lib/easypost";
  * creation + pre-selection suggestion) now happens in the sibling /rates
  * route, called from the Generate Label popup. This route only ever buys
  * the rate the employee confirmed in that popup.
+ *
+ * Picking build: purchases are refused while the order is still Preparing
+ * Shipment (not picked), and a second purchase is refused while an active
+ * (non-voided) label exists or another purchase is in flight.
  */
 
 type BuyLabelRequestBody = {
@@ -33,29 +37,56 @@ export async function POST(
       return badRequest("Missing shipment or rate selection.");
     }
 
-    const bought = await buyEasyPostRate(body.easypostShipmentId, body.rateId);
+    if (!supabaseAdmin) {
+      return NextResponse.json({ error: "Server is not configured." }, { status: 500 });
+    }
+
+    // Gate before any money is spent: the order must be picked, must not be
+    // fulfilled, must not already have an active label, and no other
+    // purchase for it may be in flight (begin_label_purchase, one transaction).
+    const gate = await supabaseAdmin.rpc("begin_label_purchase", { p_order_id: orderId });
+    if (gate.error) {
+      const code = gate.error.hint || null;
+      return NextResponse.json({ error: gate.error.message, code }, { status: code ? 409 : 500 });
+    }
+
+    let bought: Awaited<ReturnType<typeof buyEasyPostRate>>;
+    try {
+      bought = await buyEasyPostRate(body.easypostShipmentId, body.rateId);
+    } catch (err) {
+      await supabaseAdmin.rpc("cancel_label_purchase", { p_order_id: orderId });
+      throw err;
+    }
     if (!bought.postage_label?.label_url || !bought.selected_rate) {
+      await supabaseAdmin.rpc("cancel_label_purchase", { p_order_id: orderId });
       return NextResponse.json({ error: "EasyPost did not return a label." }, { status: 500 });
     }
 
-    if (supabaseAdmin) {
-      await supabaseAdmin.from("fulfillment_log").insert({
-        shopify_order_id: orderId,
+    // Log row + status label_generated in one transaction.
+    const recorded = await supabaseAdmin.rpc("complete_label_purchase", {
+      p_order_id: orderId,
+      p_log: {
         tracking_number: bought.tracking_code,
         carrier: bought.selected_rate.carrier,
         service: bought.selected_rate.service,
         label_url: bought.postage_label.label_url,
         easypost_shipment_id: bought.id,
-        rate_amount: bought.selected_rate.rate ? Number(bought.selected_rate.rate) : null,
+        rate_amount: bought.selected_rate.rate ? String(Number(bought.selected_rate.rate)) : null,
         rate_currency: bought.selected_rate.currency ?? null,
-      });
-
-      await supabaseAdmin
-        .from("order_status")
-        .upsert(
-          { shopify_order_id: orderId, status: "label_generated", updated_at: new Date().toISOString() },
-          { onConflict: "shopify_order_id" },
-        );
+      },
+    });
+    if (recorded.error) {
+      // The label was bought but couldn't be recorded. Surface it loudly with
+      // the tracking number so it can be voided in EasyPost by hand.
+      console.error(
+        `[buy-label] Label bought for order ${orderId} (shipment ${bought.id}, tracking ${bought.tracking_code}) but recording failed: ${recorded.error.message}`,
+      );
+      return NextResponse.json(
+        {
+          error: `The label was bought (tracking ${bought.tracking_code}) but could not be saved: ${recorded.error.message}. Void it in EasyPost before trying again.`,
+        },
+        { status: 500 },
+      );
     }
 
     return NextResponse.json({
