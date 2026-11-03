@@ -63,6 +63,14 @@ export const sections: NavSection[] = [
           { href: "/stats", label: "Sales Stats" },
         ],
       },
+      {
+        title: "Compliance",
+        items: [
+          { href: "/compliance/sops", label: "SOPs" },
+          { href: "/compliance/logs", label: "Logs" },
+          { href: "/compliance/coas", label: "COAs" },
+        ],
+      },
     ],
   },
   {
