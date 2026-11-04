@@ -11,10 +11,6 @@ import {
   undoRawMaterialDeductionForCycle,
 } from "@/lib/rawMaterialDeduction";
 import {
-  preloadInventoryCache,
-  recordInventoryTransaction,
-} from "@/lib/finishedGoodsInventory";
-import {
   computeMinileafAggregate,
   computeFeasibility,
   computeShortages,
@@ -59,17 +55,14 @@ type CompletionActualsDraft = {
 
 type TabKey = "in_progress" | "completed";
 
-type ReopenWarning = {
-  productId: string;
-  productName: string;
-  projectedQty: number;
-};
-
-type ReopenConfirmState = {
+// Last step before completing a BotanIQals cycle: the batches that will be
+// created (codes are previewed; the real ones are assigned on confirm).
+type BatchConfirmState = {
   cycle: any;
-  isBotaniqals: boolean;
-  batchRows: Array<{ product_id: string; quantity_produced: number }>;
-  warnings: ReopenWarning[];
+  actualQtyByProductId: Record<string, number>;
+  lines: Array<{ productId: string; productName: string; qty: number; code: string | null }>;
+  loading: boolean;
+  error: string | null;
 };
 
 type DeleteConfirmState = {
@@ -132,9 +125,7 @@ export default function CyclesPage() {
   const [deleteConfirm, setDeleteConfirm] = useState<DeleteConfirmState | null>(null);
   const [deletingCycleId, setDeletingCycleId] = useState<string | null>(null);
 
-  const [reopenConfirm, setReopenConfirm] = useState<ReopenConfirmState | null>(null);
-  const [loadingReopenCycleId, setLoadingReopenCycleId] = useState<string | null>(null);
-  const [reopening, setReopening] = useState(false);
+  const [batchConfirm, setBatchConfirm] = useState<BatchConfirmState | null>(null);
 
   const [actionsFor, setActionsFor] = useState<{ cycle: any; tab: TabKey } | null>(null);
 
@@ -199,19 +190,19 @@ export default function CyclesPage() {
     load();
   }, [user, supabase]);
 
-  // Close any open Actions/Delete/Reopen popup on Escape.
+  // Close any open Actions/Delete/batch confirmation popup on Escape.
   useEffect(() => {
-    if (!deleteConfirm && !reopenConfirm && !actionsFor) return;
+    if (!deleteConfirm && !batchConfirm && !actionsFor) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         setDeleteConfirm(null);
-        setReopenConfirm(null);
+        setBatchConfirm(null);
         setActionsFor(null);
       }
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [deleteConfirm, reopenConfirm, actionsFor]);
+  }, [deleteConfirm, batchConfirm, actionsFor]);
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
@@ -331,10 +322,9 @@ export default function CyclesPage() {
 
   const beginCompleteProduction = async (cycle: any) => {
     const cycleTargets = targets.filter((t: any) => t.production_cycle === cycle.id);
-    // If this cycle has been completed before (and reopened), prefill from
-    // the actuals already on record for it instead of the planned quantity,
-    // so a correction starts from what was last entered rather than from
-    // scratch. Only BotanIQals cycles ever get a batch row.
+    // Prefill from any actuals already on record for this cycle (only
+    // possible for cycles reopened before Reopen Production was removed);
+    // otherwise from the planned quantity.
     const previousActualByProductId = new Map<string, number>();
     for (const batch of batches) {
       if (batch.production_cycle_id !== cycle.id) continue;
@@ -492,34 +482,6 @@ export default function CyclesPage() {
         return;
       }
 
-      if (displayBusinessType(cycle) === "BotanIQals") {
-        const {
-          data: { session },
-        } = await supabase.auth.getSession();
-        const token = session?.access_token;
-        if (!token) {
-          throw new Error("Unable to verify your session for Sheets production notify.");
-        }
-        const syncResponse = await fetch("/api/production/complete-botaniqals", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${token}`,
-          },
-          body: JSON.stringify({ cycleId: cycle.id, actualQtyByProductId }),
-        });
-        const syncPayload = (await syncResponse.json()) as {
-          error?: string;
-          sent?: number;
-          missingProductIds?: string[];
-        };
-        if (!syncResponse.ok) {
-          throw new Error(
-            syncPayload.error || "Failed to notify Google Sheets of production.",
-          );
-        }
-      }
-
       if (!cycle.raw_materials_deducted_at) {
         const deductResult = await deductRawMaterialsForCycle({
           supabase,
@@ -534,85 +496,53 @@ export default function CyclesPage() {
       }
 
       if (displayBusinessType(cycle) === "BotanIQals") {
-        type BotaniqalsBatchRow = {
-          user_id: string;
-          production_cycle_id: string;
-          product_id: string;
-          quantity_produced: number;
-          production_start_at: string | null;
-          production_end_at: string;
-          completed_at: string;
+        // Server: Google Sheet write, then batches + completion snapshot +
+        // cycle completion in one database transaction. The batch receipt
+        // replaces the old finished-goods increment.
+        const {
+          data: { session },
+        } = await supabase.auth.getSession();
+        const token = session?.access_token;
+        if (!token) {
+          throw new Error("Unable to verify your session.");
+        }
+        const response = await fetch("/api/production/complete-botaniqals", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({ cycleId: cycle.id, actualQtyByProductId }),
+        });
+        const payload = (await response.json()) as {
+          error?: string;
+          completedAt?: string;
+          batches?: Array<{ batch_code: string }>;
         };
-
-        const nowIso = new Date().toISOString();
-        const batchByProductId = new Map<string, BotaniqalsBatchRow>();
-        for (const target of cycleTargets) {
-          const productId = target.product ? String(target.product) : "";
-          if (!productId) continue;
-          const qty =
-            Number(actualQtyByProductId[productId] ?? 0) || 0;
-          if (qty <= 0) continue;
-          const existing = batchByProductId.get(productId);
-          if (existing) {
-            existing.quantity_produced += qty;
-          } else {
-            batchByProductId.set(productId, {
-              user_id: user.id,
-              production_cycle_id: cycle.id,
-              product_id: productId,
-              quantity_produced: qty,
-              production_start_at: cycle.start_date ?? null,
-              production_end_at: nowIso,
-              completed_at: nowIso,
-            });
-          }
+        if (!response.ok) {
+          throw new Error(payload.error || "Failed to complete production.");
         }
-
-        const batchRows = Array.from(batchByProductId.values());
-        if (batchRows.length > 0) {
-          // Conflict target matches uq_botaniqals_batches_cycle_product_null_variant
-          // (product_variant_id omitted / NULL). On a re-completion after a
-          // reopen, this updates the existing row's quantity_produced in
-          // place instead of inserting a second one.
-          const { error: upsertBatchErr } = await supabase
-            .from("botaniqals_production_batches")
-            .upsert(batchRows, {
-              onConflict: "production_cycle_id,product_id",
-              ignoreDuplicates: false,
-            });
-          if (upsertBatchErr) throw upsertBatchErr;
-        }
-
-        // Finished-goods inventory increment — claimed the same way raw
-        // material deduction is (a conditional update on a nullable
-        // timestamp column), so a retried completion never double-credits
-        // on-hand quantity. Reopen Production clears this column back to
-        // NULL so a corrected re-completion can claim and apply again.
-        const { data: claimedFinishedGoodsRows, error: claimFinishedGoodsErr } = await supabase
-          .from("production_cycles")
-          .update({ finished_goods_applied_at: nowIso })
-          .eq("id", cycle.id)
-          .is("finished_goods_applied_at", null)
-          .select("id");
-        if (claimFinishedGoodsErr) throw claimFinishedGoodsErr;
-
-        if (claimedFinishedGoodsRows && claimedFinishedGoodsRows.length > 0 && batchRows.length > 0) {
-          const inventoryCache = await preloadInventoryCache(supabase);
-          for (const batchRow of batchRows) {
-            if (batchRow.quantity_produced <= 0) continue;
-            await recordInventoryTransaction(supabase, {
-              productId: batchRow.product_id,
-              type: "production_increase",
-              quantityDelta: batchRow.quantity_produced,
-              referenceType: "production_cycle",
-              referenceId: cycle.id,
-              createdBy: user.id,
-              cache: inventoryCache,
-            });
-          }
-        }
+        const completedAt = payload.completedAt ?? new Date().toISOString();
+        const { data: refreshedBatches, error: batchesErr } = await supabase
+          .from("botaniqals_production_batches")
+          .select(
+            "id, production_cycle_id, product_id, product_variant_id, batch_id, quantity_produced, production_start_at, production_end_at, completed_at, created_at, products(name)",
+          )
+          .eq("user_id", user.id)
+          .order("created_at", { ascending: false });
+        if (batchesErr) throw batchesErr;
+        setBatches(refreshedBatches || []);
+        setCycles((prev) =>
+          prev.map((c) =>
+            c.id === cycle.id
+              ? { ...c, status: "completed", completed_at: completedAt, raw_materials_deducted_at: c.raw_materials_deducted_at ?? completedAt }
+              : c,
+          ),
+        );
+        return;
       }
 
+      // MiniLeaf cycles: unchanged (no batches, no finished goods).
       const nowIso = new Date().toISOString();
       const { error: cycleErr } = await supabase
         .from("production_cycles")
@@ -620,16 +550,6 @@ export default function CyclesPage() {
         .eq("id", cycle.id)
         .eq("user_id", user.id);
       if (cycleErr) throw cycleErr;
-
-      const { data: refreshedBatches, error: batchesErr } = await supabase
-        .from("botaniqals_production_batches")
-        .select(
-          "id, production_cycle_id, product_id, product_variant_id, batch_id, quantity_produced, production_start_at, production_end_at, completed_at, created_at, products(name)",
-        )
-        .eq("user_id", user.id)
-        .order("created_at", { ascending: false });
-      if (batchesErr) throw batchesErr;
-      setBatches(refreshedBatches || []);
 
       setCycles((prev) =>
         prev.map((c) =>
@@ -731,6 +651,42 @@ export default function CyclesPage() {
       return;
     }
     setCompletionDraft(null);
+    if (displayBusinessType(cycle) !== "BotanIQals") {
+      await handleCompleteProduction(cycle, actualQtyByProductId);
+      return;
+    }
+    const lines = completionDraft.productActuals
+      .filter((line) => (actualQtyByProductId[line.productId] ?? 0) > 0)
+      .map((line) => ({ productId: line.productId, productName: line.productName, qty: actualQtyByProductId[line.productId], code: null as string | null }));
+    setBatchConfirm({ cycle, actualQtyByProductId, lines, loading: lines.length > 0, error: null });
+    if (lines.length === 0) return;
+    try {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+      const response = await fetch(`/api/production/next-batch-codes?count=${lines.length}`, {
+        headers: { Authorization: `Bearer ${session?.access_token ?? ""}` },
+      });
+      const payload = (await response.json()) as { codes?: string[]; error?: string };
+      if (!response.ok) throw new Error(payload.error || "Couldn't preview the batch codes.");
+      setBatchConfirm((prev) =>
+        prev && prev.cycle.id === cycle.id
+          ? { ...prev, loading: false, lines: prev.lines.map((l, i) => ({ ...l, code: payload.codes?.[i] ?? null })) }
+          : prev,
+      );
+    } catch (err: unknown) {
+      setBatchConfirm((prev) =>
+        prev && prev.cycle.id === cycle.id
+          ? { ...prev, loading: false, error: err instanceof Error ? err.message : "Couldn't preview the batch codes." }
+          : prev,
+      );
+    }
+  };
+
+  const confirmBatches = async () => {
+    if (!batchConfirm) return;
+    const { cycle, actualQtyByProductId } = batchConfirm;
+    setBatchConfirm(null);
     await handleCompleteProduction(cycle, actualQtyByProductId);
   };
 
@@ -739,100 +695,6 @@ export default function CyclesPage() {
       ? formatDate(cycle.harvest_date)
       : `${formatDate(cycle.start_date)} – ${formatDate(cycle.end_date)}`;
     setDeleteConfirm({ cycleId: cycle.id, cycleLabel: label });
-  };
-
-  const openReopenConfirm = async (cycle: any) => {
-    setError(null);
-    setLoadingReopenCycleId(cycle.id);
-    try {
-      const isBotaniqals = displayBusinessType(cycle) === "BotanIQals";
-      const batchRows = isBotaniqals
-        ? batches
-            .filter(
-              (b: any) =>
-                b.production_cycle_id === cycle.id && (Number(b.quantity_produced) || 0) > 0,
-            )
-            .map((b: any) => ({
-              product_id: b.product_id as string,
-              quantity_produced: Number(b.quantity_produced) || 0,
-            }))
-        : [];
-
-      let warnings: ReopenWarning[] = [];
-      if (batchRows.length > 0) {
-        const productIds = batchRows.map((b) => b.product_id);
-        const { data: invRows, error: invErr } = await supabase
-          .from("finished_products_inventory")
-          .select("product_id, on_hand_qty")
-          .in("product_id", productIds);
-        if (invErr) throw invErr;
-        const onHandByProduct = new Map<string, number>(
-          (invRows || []).map((r: any) => [r.product_id, Number(r.on_hand_qty) || 0]),
-        );
-        warnings = batchRows
-          .map((b) => {
-            const current = onHandByProduct.get(b.product_id) ?? 0;
-            const projectedQty = current - b.quantity_produced;
-            if (projectedQty >= 0) return null;
-            const productName =
-              products.find((p: any) => p.id === b.product_id)?.name ?? "Unknown product";
-            return { productId: b.product_id, productName, projectedQty };
-          })
-          .filter((row): row is ReopenWarning => row !== null);
-      }
-
-      setReopenConfirm({ cycle, isBotaniqals, batchRows, warnings });
-    } catch (err: unknown) {
-      setError(
-        err instanceof Error ? err.message : "Failed to prepare reopen for this cycle.",
-      );
-    } finally {
-      setLoadingReopenCycleId(null);
-    }
-  };
-
-  const confirmReopen = async () => {
-    if (!reopenConfirm || !user) return;
-    const { cycle, isBotaniqals, batchRows } = reopenConfirm;
-    setReopening(true);
-    setError(null);
-    try {
-      if (isBotaniqals && batchRows.length > 0) {
-        const cache = await preloadInventoryCache(supabase);
-        for (const batchRow of batchRows) {
-          await recordInventoryTransaction(supabase, {
-            productId: batchRow.product_id,
-            type: "production_reversal",
-            quantityDelta: -batchRow.quantity_produced,
-            referenceType: "production_cycle",
-            referenceId: cycle.id,
-            note: "Cycle reopened, reversal of completion",
-            createdBy: user.id,
-            cache,
-          });
-        }
-      }
-
-      const { error: updateErr } = await supabase
-        .from("production_cycles")
-        .update({ status: "planned", completed_at: null, finished_goods_applied_at: null })
-        .eq("id", cycle.id)
-        .eq("user_id", user.id);
-      if (updateErr) throw updateErr;
-
-      setCycles((prev) =>
-        prev.map((c) =>
-          c.id === cycle.id
-            ? { ...c, status: "planned", completed_at: null, finished_goods_applied_at: null }
-            : c,
-        ),
-      );
-      setReopenConfirm(null);
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Failed to reopen production cycle.");
-    } finally {
-      setReopening(false);
-    }
   };
 
   const cycleRows: CycleRow[] = useMemo(() => {
@@ -1387,13 +1249,15 @@ export default function CyclesPage() {
                 </button>
               </div>
               <div className="space-y-1">
-                <Link
-                  href={`/cycles/${actionsFor.cycle.id}/plan`}
-                  onClick={() => setActionsFor(null)}
-                  className="block rounded-md px-3 py-2 text-sm font-medium text-black hover:bg-zinc-50"
-                >
-                  Open Planner
-                </Link>
+                {actionsFor.tab === "in_progress" && (
+                  <Link
+                    href={`/cycles/${actionsFor.cycle.id}/plan`}
+                    onClick={() => setActionsFor(null)}
+                    className="block rounded-md px-3 py-2 text-sm font-medium text-black hover:bg-zinc-50"
+                  >
+                    Open Planner
+                  </Link>
+                )}
                 {actionsFor.tab === "in_progress" && (
                   <>
                     {actionsFor.cycle.raw_materials_deducted_at ? (
@@ -1451,17 +1315,13 @@ export default function CyclesPage() {
                   </>
                 )}
                 {actionsFor.tab === "completed" && (
-                  <button
-                    type="button"
-                    disabled={loadingReopenCycleId === actionsFor.cycle.id}
-                    onClick={() => {
-                      openReopenConfirm(actionsFor.cycle);
-                      setActionsFor(null);
-                    }}
-                    className="block w-full rounded-md px-3 py-2 text-left text-sm font-medium text-black hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-60"
+                  <Link
+                    href={`/cycles/${actionsFor.cycle.id}/summary`}
+                    onClick={() => setActionsFor(null)}
+                    className="block rounded-md px-3 py-2 text-sm font-medium text-black hover:bg-zinc-50"
                   >
-                    {loadingReopenCycleId === actionsFor.cycle.id ? "Loading…" : "Reopen Production"}
-                  </button>
+                    View Production
+                  </Link>
                 )}
               </div>
             </div>
@@ -1505,59 +1365,51 @@ export default function CyclesPage() {
           </div>
         )}
 
-        {reopenConfirm && (
+        {batchConfirm && (
           <div
             className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
-            onClick={() => setReopenConfirm(null)}
+            onClick={() => setBatchConfirm(null)}
           >
             <div
-              className="w-full max-w-md rounded-md border border-zinc-200 bg-white p-4"
+              role="dialog"
+              aria-modal="true"
+              aria-label="Confirm batches"
+              className="w-full max-w-md rounded-md border border-zinc-200 bg-white p-4 text-black"
               onClick={(e) => e.stopPropagation()}
             >
-              <h2 className="text-sm font-semibold text-zinc-900">
-                Reopen this production cycle?
-              </h2>
-              <p className="mt-2 text-xs text-zinc-700">
-                Cycle {String(reopenConfirm.cycle.id).slice(0, 8)} will move back to In
-                Progress. Any finished products it added to inventory will be reversed,
-                and you&apos;ll enter actuals again when you complete it.
+              <h2 className="text-sm font-semibold text-black">Create these batches?</h2>
+              {batchConfirm.lines.length === 0 ? (
+                <p className="mt-2 text-sm text-black">No product has an actual quantity above 0, so no batch will be created.</p>
+              ) : (
+                <ul className="mt-2 space-y-1 text-sm text-black" data-testid="batch-confirm-list">
+                  {batchConfirm.lines.map((line) => (
+                    <li key={line.productId}>
+                      <span className="font-semibold">
+                        Batch {batchConfirm.loading ? "…" : line.code ?? "(assigned on confirm)"}
+                      </span>
+                      : {line.qty} {line.productName}
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {batchConfirm.error && <p className="mt-2 text-xs text-red-700">{batchConfirm.error} The codes will be assigned when you confirm.</p>}
+              <p className="mt-3 rounded-md bg-amber-50 px-3 py-2 text-xs text-black ring-1 ring-amber-300">
+                Completed productions cannot be reopened. Fix quantity mistakes with a batch count.
               </p>
-              {reopenConfirm.isBotaniqals && (
-                <p className="mt-2 text-[11px] text-zinc-600">
-                  The Google Sheet row from the original completion will not be removed
-                  automatically.
-                </p>
-              )}
-              {reopenConfirm.warnings.length > 0 && (
-                <div className="mt-2 rounded border border-amber-300 bg-amber-50 p-2 text-[11px] text-amber-800">
-                  <p className="font-medium">
-                    This will take on-hand inventory negative for:
-                  </p>
-                  <ul className="mt-1 list-disc pl-4">
-                    {reopenConfirm.warnings.map((w) => (
-                      <li key={w.productId}>
-                        {w.productName}: projected {w.projectedQty}
-                      </li>
-                    ))}
-                  </ul>
-                  <p className="mt-1">Fix the count with a cycle count afterward.</p>
-                </div>
-              )}
               <div className="mt-4 flex justify-end gap-2">
                 <button
                   type="button"
-                  onClick={() => setReopenConfirm(null)}
-                  className="rounded-md border border-zinc-300 bg-white px-3 py-1.5 text-xs font-medium text-zinc-800 hover:bg-zinc-50"
+                  onClick={() => setBatchConfirm(null)}
+                  className="rounded-md border border-zinc-300 bg-white px-3 py-1.5 text-xs font-medium text-black hover:bg-zinc-50"
                 >
-                  Keep Completed
+                  Cancel
                 </button>
                 <button
                   type="button"
-                  disabled={reopening}
-                  onClick={confirmReopen}
-                  className="rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-70"
+                  onClick={confirmBatches}
+                  className="rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-700"
                 >
-                  {reopening ? "Reopening…" : "Reopen Cycle"}
+                  Confirm and complete
                 </button>
               </div>
             </div>
@@ -1664,7 +1516,7 @@ function CyclesTable({
                 </td>
                 <td className="px-3 py-2">
                   <Link
-                    href={`/cycles/${cycle.id}/plan`}
+                    href={tab === "completed" ? `/cycles/${cycle.id}/summary` : `/cycles/${cycle.id}/plan`}
                     title={cycle.id}
                     className="inline-flex items-center rounded-md bg-zinc-900 px-2.5 py-1 text-[11px] font-medium text-white hover:bg-zinc-800"
                   >

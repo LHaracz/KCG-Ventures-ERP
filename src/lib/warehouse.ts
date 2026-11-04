@@ -17,6 +17,8 @@ import {
   type PackagingRuleInput,
 } from "@/lib/packagingEngine";
 import type { VariantMapRow } from "@/lib/salesAttribution";
+import type { OrderPlan } from "@/lib/batchAllocation";
+import { computeBatchPlan, syncOutOfStockFlags, type BatchRow } from "@/lib/batchPlan";
 
 type Db = { from(table: string): any };
 
@@ -47,6 +49,8 @@ export type WarehouseOrder = FulfillmentListRow & {
   boxLabel: string | null;
   pickedAt: string | null;
   packaging: EffectivePackage;
+  /** Batch instructions for an unpicked order (null once picked). */
+  batchPlan: OrderPlan | null;
 };
 
 export type RecentPick = {
@@ -115,6 +119,8 @@ export type WarehouseSnapshot = {
   /** Presets with max points, smallest first: one Shipping Assignments tab each. */
   tabs: Array<{ id: string; nickname: string; maxPoints: string }>;
   recentPicks: RecentPick[];
+  /** Active batches with stock, oldest first, for "Picked from a different batch". */
+  batchesByProduct: Record<string, Array<Pick<BatchRow, "id" | "batchCode" | "remainingQty" | "submittedAt" | "productName">>>;
 };
 
 export async function loadWarehouseSnapshot(db: Db, orders: FulfillmentListRow[]): Promise<WarehouseSnapshot> {
@@ -129,6 +135,17 @@ export async function loadWarehouseSnapshot(db: Db, orders: FulfillmentListRow[]
       .order("assigned_at", { ascending: false })
       .limit(20),
   ]);
+
+  // Batch plan + automatic out-of-stock flags (patches `orders` in place).
+  const plan = await computeBatchPlan(db as any, orders, config.resolver);
+  await syncOutOfStockFlags(db as any, plan, orders);
+  const batchesByProduct: WarehouseSnapshot["batchesByProduct"] = {};
+  for (const [pid, list] of plan.allocation.batchOrderByProductId) {
+    batchesByProduct[pid] = list.map((b) => {
+      const row = plan.batches.find((x) => x.id === b.id)!;
+      return { id: b.id, batchCode: b.batchCode, remainingQty: b.remainingQty, submittedAt: b.submittedAt, productName: row?.productName ?? "" };
+    });
+  }
 
   const boxRows = (must(boxesRes, "staging boxes") ?? []) as Array<{ id: string; box_number: number; label: string; archived_at: string | null }>;
   const open = (must(openRes, "staging assignments") ?? []) as Array<{ order_id: string; order_name: string | null; staging_box_id: string; assigned_at: string }>;
@@ -167,6 +184,7 @@ export async function loadWarehouseSnapshot(db: Db, orders: FulfillmentListRow[]
       boxLabel: a ? boxLabelById.get(a.staging_box_id) ?? null : null,
       pickedAt: a ? toIso(a.assigned_at) : null,
       packaging,
+      batchPlan: o.status === "preparing_shipment" ? plan.allocation.byOrderId.get(o.orderId) ?? null : null,
     };
   });
 
@@ -183,6 +201,7 @@ export async function loadWarehouseSnapshot(db: Db, orders: FulfillmentListRow[]
   });
 
   return {
+    batchesByProduct,
     orders: warehouseOrders,
     boxes,
     presets: config.presets,

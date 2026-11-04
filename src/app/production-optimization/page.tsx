@@ -346,6 +346,21 @@ export default function ProductionOptimizationPage() {
       for (const [productId, row] of inventoryCache.entries()) {
         onHandByProduct.set(productId, row.on_hand_qty);
       }
+      // Batch-tracked products: use Available (in boxes minus awaiting pick,
+      // not floored at 0) from the same allocation the Pick List uses.
+      {
+        const {
+          data: { session },
+        } = await supabase.auth.getSession();
+        const fgResponse = await fetch("/api/finished-goods/overview", {
+          headers: { Authorization: `Bearer ${session?.access_token ?? ""}` },
+        });
+        const fg = (await fgResponse.json()) as { products?: Array<{ productId: string; batchTracked: boolean; available: number | null }>; error?: string };
+        if (!fgResponse.ok) throw new Error(fg.error || "Failed to load finished goods availability.");
+        for (const p of fg.products ?? []) {
+          if (p.batchTracked && p.available != null) onHandByProduct.set(p.productId, p.available);
+        }
+      }
 
       const targetRows = computeTargetQuantities({
         products,

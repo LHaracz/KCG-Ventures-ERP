@@ -17,11 +17,19 @@ type CompletionTargetRow = {
 type CompletionApiResponse = {
   ok: boolean;
   sent: number;
+  completedAt: string;
+  batches: Array<{ product_id: string; batch_id: string; batch_code: string; qty: number }>;
+  alreadyCompleted: boolean;
 };
 
 /**
- * BotanIQals production completion server step: push produced quantities to Google Sheets.
- * Does not touch Shopify or the ERP finished-goods inventory table.
+ * BotanIQals production completion (server):
+ *  1. Push produced quantities to Google Sheets (unchanged).
+ *  2. In one database transaction (complete_botaniqals_production): create
+ *     one finished-goods batch per product with actual > 0, write the
+ *     completion snapshot (ingredient quantities, costs and sale prices as of
+ *     now) and mark the cycle completed. The batch receipt replaces the old
+ *     finished-goods increment. Does not touch Shopify.
  */
 export async function POST(request: Request) {
   try {
@@ -114,16 +122,11 @@ export async function POST(request: Request) {
       );
     }
 
-    if (quantityByProductId.size === 0) {
-      const empty: CompletionApiResponse = { ok: true, sent: 0 };
-      return NextResponse.json(empty);
-    }
-
-    const productIds = Array.from(quantityByProductId.keys());
+    const productIds = Array.from(validProductIds);
     const { data: productRows, error: productRowsError } = await supabaseAdmin
       .from("products")
-      .select("id, name")
-      .in("id", productIds);
+      .select("id, name, sale_price_per_unit")
+      .in("id", productIds.length ? productIds : ["00000000-0000-0000-0000-000000000000"]);
 
     if (productRowsError) {
       return NextResponse.json({ error: productRowsError.message }, { status: 500 });
@@ -136,7 +139,7 @@ export async function POST(request: Request) {
     }
 
     const missingNameProductIds: string[] = [];
-    for (const productId of productIds) {
+    for (const productId of quantityByProductId.keys()) {
       if (!productNameById.get(productId)) {
         missingNameProductIds.push(productId);
       }
@@ -168,9 +171,88 @@ export async function POST(request: Request) {
       });
     }
 
-    await notifySheetsProductionIn(records);
+    if (records.length > 0) await notifySheetsProductionIn(records);
 
-    const response: CompletionApiResponse = { ok: true, sent: records.length };
+    // Snapshot of what this production used and cost, at today's prices
+    // (same math as the cycle planner: BOM qty_per_unit x quantity x the raw
+    // material's cost_per_unit).
+    const [{ data: bomRows, error: bomError }, { data: itemRows, error: itemError }] = await Promise.all([
+      supabaseAdmin
+        .from("bom_lines")
+        .select("product, inventory_item, qty_per_unit, unit_label")
+        .in("product", productIds.length ? productIds : ["00000000-0000-0000-0000-000000000000"]),
+      supabaseAdmin.from("inventory_items").select("id, name, unit, cost_per_unit"),
+    ]);
+    if (bomError || itemError) {
+      return NextResponse.json({ error: bomError?.message || itemError?.message }, { status: 500 });
+    }
+    const itemsById = new Map((itemRows ?? []).map((i: any) => [String(i.id), i]));
+    const priceById = new Map((productRows ?? []).map((p: any) => [String(p.id), p.sale_price_per_unit == null ? null : Number(p.sale_price_per_unit)]));
+    const lines: Array<Record<string, unknown>> = [];
+    const perProduct: Array<Record<string, unknown>> = [];
+    let totalCost = 0;
+    for (const productId of productIds) {
+      const qty = quantityByProductId.get(productId) ?? 0;
+      let productCost = 0;
+      for (const line of (bomRows ?? []) as any[]) {
+        if (String(line.product) !== productId || !line.inventory_item) continue;
+        const item = itemsById.get(String(line.inventory_item));
+        if (!item) continue;
+        const qtyUsed = qty * Number(line.qty_per_unit || 0);
+        const costPerUnit = Number(item.cost_per_unit || 0);
+        const lineCost = qtyUsed * costPerUnit;
+        productCost += lineCost;
+        lines.push({
+          product_id: productId,
+          product: productNameById.get(productId) ?? null,
+          ingredient: item.name,
+          unit: line.unit_label || item.unit || "",
+          qty_used: qtyUsed,
+          cost_per_unit: costPerUnit,
+          line_cost: lineCost,
+        });
+      }
+      totalCost += productCost;
+      perProduct.push({
+        product_id: productId,
+        name: productNameById.get(productId) ?? null,
+        qty,
+        sale_price_per_unit: priceById.get(productId) ?? null,
+        cost: productCost,
+      });
+    }
+    const produced = perProduct.filter((p) => Number(p.qty) > 0);
+    const snapshot = {
+      lines,
+      total_cost: totalCost,
+      sale_price_per_unit: produced.length === 1 ? produced[0].sale_price_per_unit : null,
+      per_product: perProduct,
+    };
+
+    const completedAt = new Date().toISOString();
+    const actuals: Record<string, number> = {};
+    for (const productId of productIds) actuals[productId] = quantityByProductId.get(productId) ?? 0;
+    const { data: completion, error: completionError } = await supabaseAdmin.rpc("complete_botaniqals_production", {
+      p_cycle_id: cycleId,
+      p_actuals: actuals,
+      p_snapshot: snapshot,
+      p_completed_at: completedAt,
+    });
+    if (completionError) {
+      return NextResponse.json(
+        { error: completionError.message, code: (completionError as { hint?: string }).hint ?? null },
+        { status: (completionError as { hint?: string }).hint ? 409 : 500 },
+      );
+    }
+
+    const result = completion as { already_completed: boolean; batches: CompletionApiResponse["batches"] };
+    const response: CompletionApiResponse = {
+      ok: true,
+      sent: records.length,
+      completedAt,
+      batches: result.batches ?? [],
+      alreadyCompleted: !!result.already_completed,
+    };
     return NextResponse.json(response);
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unexpected server error.";

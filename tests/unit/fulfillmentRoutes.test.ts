@@ -4,7 +4,8 @@
 // formulas or inventory are touched.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { PGlite } from "@electric-sql/pglite";
-import { createFulfillmentDb, createTestBoxes, FIX } from "./helpers/fulfillmentDb";
+import { createTestBoxes, FIX } from "./helpers/fulfillmentDb";
+import { createBatchDb as createFulfillmentDb, seedBatch, trackProducts } from "./helpers/batchDb";
 
 const h = vi.hoisted(() => ({
   db: null as any,
@@ -53,6 +54,7 @@ import { POST as voidLabel } from "@/app/api/fulfillments/[orderId]/void-label/r
 import { POST as markFulfilled } from "@/app/api/fulfillments/[orderId]/mark-fulfilled/route";
 import { POST as pick } from "@/app/api/fulfillments/[orderId]/pick/route";
 import { POST as setPackaging } from "@/app/api/fulfillments/[orderId]/packaging/route";
+import { GET as warehouse } from "@/app/api/fulfillments/warehouse/route";
 import { loadWarehouseSnapshot } from "@/lib/warehouse";
 import { loadFulfillmentOrders } from "@/lib/fulfillmentOrdersLoader";
 
@@ -93,6 +95,8 @@ beforeEach(async () => {
   await seedOrder("TEST-1", "[TEST] #1", [{ name: "[TEST] Gum", quantity: 2 }]);
   await seedOrder("TEST-2", "[TEST] #2", [{ name: "[TEST] Gum", quantity: 2 }, { name: "[TEST] Spray", quantity: 1 }]);
   await seedOrder("TEST-U", "[TEST] #U", [{ name: "[TEST] Unmapped Thing", quantity: 1 }]);
+  // The order list comes from the cache; keep the loader from refreshing.
+  await pg.query(`update fulfillment_orders_cache_state set last_refreshed_at = now(), last_attempt_at = now() + interval '1 hour'`);
 });
 
 describe("pick route", () => {
@@ -221,5 +225,74 @@ describe("Shipping Assignments tabs and overrides", () => {
   it("refuses overrides before the order is picked", async () => {
     const r = await setPackaging(req({ action: "set", target: "needs_review" }), ctx("TEST-1"));
     expect(r.status).toBe(409);
+  });
+});
+
+describe("pick route with finished-goods batches", () => {
+  let bOld: string;
+  let bNew: string;
+  beforeEach(async () => {
+    bOld = await seedBatch(pg, FIX.gum, "000038", 3, "2026-10-18T20:00:00Z");
+    bNew = await seedBatch(pg, FIX.gum, "000039", 10, "2026-10-31T14:00:00Z");
+    await trackProducts(pg, [FIX.gum]);
+  });
+  const getWarehouse = async () => {
+    const res = await (await warehouse(new Request("http://test.local/api", { headers: { Authorization: "Bearer t" } }))).json();
+    if (!res.orders) throw new Error(`warehouse: ${JSON.stringify(res)}`);
+    return res;
+  };
+
+  it("the Pick List shows the planned batches, and picking with them decrements the boxes", async () => {
+    const w = await getWarehouse();
+    const o1 = w.orders.find((o: any) => o.orderId === "TEST-1");
+    const o2 = w.orders.find((o: any) => o.orderId === "TEST-2");
+    // TEST-1 (2 Gum) is older: 2 from 000038. TEST-2 (2 Gum): 1 from 000038 + 1 from 000039.
+    expect(o1.batchPlan.lines[0].parts).toEqual([{ batchId: bOld, batchCode: "000038", qty: 2 }]);
+    expect(o2.batchPlan.lines[0].parts).toEqual([
+      { batchId: bOld, batchCode: "000038", qty: 1 },
+      { batchId: bNew, batchCode: "000039", qty: 1 },
+    ]);
+    expect(o2.batchPlan.emptiesBatchIds).toEqual([bOld]);
+    const r = await pick(req({ boxId: boxes[901], allocations: [{ product_id: FIX.gum, batch_id: bOld, qty: 2 }] }), ctx("TEST-1"));
+    expect(r.status).toBe(200);
+    expect((await pg.query<any>(`select remaining_qty from finished_goods_batches where id = '${bOld}'`)).rows[0].remaining_qty).toBe(1);
+  });
+
+  it("rejects stale instructions with the new plan, then accepts the new ones", async () => {
+    // The picker saw "2 from 000038" for TEST-2, but TEST-1 (older) was picked first.
+    await pick(req({ boxId: boxes[901], allocations: [{ product_id: FIX.gum, batch_id: bOld, qty: 2 }] }), ctx("TEST-1"));
+    const stale = await pick(req({ boxId: boxes[902], allocations: [{ product_id: FIX.gum, batch_id: bOld, qty: 2 }] }), ctx("TEST-2"));
+    expect(stale.status).toBe(409);
+    const body = await stale.json();
+    expect(body).toMatchObject({ code: "plan_changed", error: "Batch instructions changed. Reloaded." });
+    expect(body.plan.lines[0].parts.map((p: any) => [p.batchCode, p.qty])).toEqual([["000038", 1], ["000039", 1]]);
+    const ok = await pick(req({ boxId: boxes[902], allocations: body.plan.lines[0].parts.map((p: any) => ({ product_id: FIX.gum, batch_id: p.batchId, qty: p.qty })) }), ctx("TEST-2"));
+    expect(ok.status).toBe(200);
+  });
+
+  it("Picked from a different batch skips the plan comparison, needs a reason, and still checks stock", async () => {
+    const noReason = await pick(req({ boxId: boxes[901], allocations: [{ product_id: FIX.gum, batch_id: bNew, qty: 2 }], override: { reason: " " } }), ctx("TEST-1"));
+    expect(noReason.status).toBe(400);
+    const tooMuch = await pick(req({ boxId: boxes[901], allocations: [{ product_id: FIX.gum, batch_id: bOld, qty: 2 }, { product_id: FIX.gum, batch_id: bOld, qty: 2 }] , override: { reason: "Grabbed wrong box" } }), ctx("TEST-1"));
+    expect(tooMuch.status).toBe(409);
+    const ok = await pick(req({ boxId: boxes[901], allocations: [{ product_id: FIX.gum, batch_id: bNew, qty: 2 }], override: { reason: "Mislabeled box" } }), ctx("TEST-1"));
+    expect(ok.status).toBe(200);
+    const p = (await pg.query<any>(`select batch_id, is_override, override_reason from order_batch_picks where order_id = 'TEST-1'`)).rows[0];
+    expect(p).toEqual({ batch_id: bNew, is_override: true, override_reason: "Mislabeled box" });
+  });
+
+  it("out-of-stock orders are auto-flagged on refresh, refused at pick, and auto-cleared after a count", async () => {
+    // 13 in boxes; TEST-1 (2) and TEST-2 (2+spray) fit; an order for 20 does not.
+    await seedOrder("TEST-BIG", "[TEST] #BIG", [{ name: "[TEST] Gum", quantity: 20 }]);
+    let w = await getWarehouse();
+    const big = w.orders.find((o: any) => o.orderId === "TEST-BIG");
+    expect(big).toMatchObject({ isFlagged: true, flagSource: "auto_out_of_stock", flaggedReason: "Item(s) out of stock" });
+    expect(big.flagDetail).toEqual([{ product_id: FIX.gum, product: "Test Gum", needed: 20, available: 9, short_by: 11 }]);
+    const r = await pick(req({ boxId: boxes[902], allocations: [] }), ctx("TEST-BIG"));
+    expect(r.status).toBe(409);
+    // Count the 000039 box at 30: the order is covered and the flag clears.
+    await pg.query(`select count_batches('[{"batch_id":"${bNew}","expected_remaining":10,"counted_qty":30,"reason":"Recount"}]'::jsonb, 'Test')`);
+    w = await getWarehouse();
+    expect(w.orders.find((o: any) => o.orderId === "TEST-BIG")).toMatchObject({ isFlagged: false, flagSource: null });
   });
 });

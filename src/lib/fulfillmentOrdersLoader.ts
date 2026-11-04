@@ -32,10 +32,16 @@ export type CachedOrder = {
   lineItems: CachedOrderLineItem[];
 };
 
+export type FlagDetailLine = { product_id: string; product: string; needed: number; available: number; short_by: number };
+
 export type FulfillmentListRow = CachedOrder & {
   status: FulfillmentStatus;
   isFlagged: boolean;
   flaggedReason: string | null;
+  /** 'manual' | 'auto_out_of_stock' (null when not flagged). */
+  flagSource: string | null;
+  flagDetail: FlagDetailLine[] | null;
+  flaggedAt: string | null;
 };
 
 export type OrdersSourceResult = { live: CachedOrder[]; recentlyFulfilled: CachedOrder[] };
@@ -304,11 +310,14 @@ export async function loadFulfillmentOrders(
   }
 
   const orderIds = rows.map((r) => r.shopify_order_id);
-  const statusMap = new Map<string, { status: FulfillmentStatus; isFlagged: boolean; flaggedReason: string | null }>();
+  const statusMap = new Map<
+    string,
+    { status: FulfillmentStatus; isFlagged: boolean; flaggedReason: string | null; flagSource: string | null; flagDetail: FlagDetailLine[] | null; flaggedAt: string | null }
+  >();
   if (orderIds.length > 0) {
     const { data, error } = await db
       .from("order_status")
-      .select("shopify_order_id, status, is_flagged, flagged_reason")
+      .select("shopify_order_id, status, is_flagged, flagged_reason, flag_source, flag_detail, flagged_at")
       .in("shopify_order_id", orderIds);
     if (!error && data) {
       for (const row of data as any[]) {
@@ -316,6 +325,9 @@ export async function loadFulfillmentOrders(
           status: row.status as FulfillmentStatus,
           isFlagged: !!row.is_flagged,
           flaggedReason: (row.flagged_reason as string | null) ?? null,
+          flagSource: (row.flag_source as string | null) ?? null,
+          flagDetail: (row.flag_detail as FlagDetailLine[] | null) ?? null,
+          flaggedAt: row.flagged_at ? new Date(row.flagged_at).toISOString() : null,
         });
       }
     }
@@ -331,6 +343,9 @@ export async function loadFulfillmentOrders(
       status: s?.status ?? "preparing_shipment",
       isFlagged: s?.isFlagged ?? false,
       flaggedReason: s?.flaggedReason ?? null,
+      flagSource: s?.flagSource ?? null,
+      flagDetail: s?.flagDetail ?? null,
+      flaggedAt: s?.flaggedAt ?? null,
     };
   });
 

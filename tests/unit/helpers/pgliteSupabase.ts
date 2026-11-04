@@ -196,7 +196,7 @@ export function pgliteSupabase(db: PGlite) {
       (q as any).single = () => q.singleRow();
       return q as any;
     },
-    async rpc(fn: string, args: Record<string, unknown>): Promise<Result> {
+    async rpc(fn: string, args: Record<string, unknown> = {}): Promise<Result> {
       const keys = Object.keys(args);
       const params = keys.map((k) => toParam(args[k]));
       const sql = `select ${ident(fn)}(${keys.map((k, i) => `${k} => $${i + 1}`).join(", ")}) as r`;

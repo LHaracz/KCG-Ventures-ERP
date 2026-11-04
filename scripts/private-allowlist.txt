@@ -1,2 +1,4 @@
 # One repo-relative path per line. Lists files that check:private would otherwise
 # flag (for example a PDF the repo intentionally tracks). Lines starting with # are ignored.
+# SQL script that creates backup tables inside Supabase; contains no data.
+supabase-opening-batches/00-backup.sql

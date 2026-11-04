@@ -3,7 +3,7 @@
 // Shopify is replaced by fakes at its boundary; invented orders only.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { PGlite } from "@electric-sql/pglite";
-import { createFulfillmentDb } from "./helpers/fulfillmentDb";
+import { createBatchDb as createFulfillmentDb } from "./helpers/batchDb";
 import {
   createShopifyOrdersSource,
   loadFulfillmentOrders,

@@ -17,6 +17,13 @@ import {
 import { ApiError, useAuthedApi, useWarehouseData } from "@/lib/useWarehouse";
 import { formatNyDate, formatNyDateTime, formatNyTime } from "@/lib/nyTime";
 import type { StagingBox, WarehouseOrder } from "@/lib/warehouse";
+import { planAllocations, type AllocLine } from "@/lib/batchAllocation";
+
+type Override = { reason: string; note: string; byProduct: Record<string, Record<string, string>> };
+type RowMessage = { tone: "error" | "notice"; text: string; link?: { href: string; label: string } };
+
+const COUNT_BOXES_HREF = "/finished-products-inventory?view=batches&count=1";
+const OVERRIDE_REASONS = ["Mislabeled box", "Grabbed wrong box", "Other"] as const;
 
 const BOX_ERROR_CODES = new Set(["box_in_use", "box_retired", "box_not_found"]);
 
@@ -30,7 +37,9 @@ export default function PickListPage() {
 
   // Per-row state survives refreshes (keyed by order id).
   const [selections, setSelections] = useState<Record<string, string>>({});
-  const [rowMessages, setRowMessages] = useState<Record<string, { tone: "error" | "notice"; text: string }>>({});
+  const [rowMessages, setRowMessages] = useState<Record<string, RowMessage>>({});
+  const [overrides, setOverrides] = useState<Record<string, Override>>({});
+  const [overrideEditor, setOverrideEditor] = useState<{ order: WarehouseOrder; line: AllocLine } | null>(null);
   const [submitting, setSubmitting] = useState<Record<string, boolean>>({});
   const [pickedLocally, setPickedLocally] = useState<Set<string>>(new Set());
   const [returnTarget, setReturnTarget] = useState<{ orderId: string; orderName: string; boxLabel: string } | null>(null);
@@ -103,7 +112,7 @@ export default function PickListPage() {
     [data],
   );
 
-  const setRowMessage = (orderId: string, msg: { tone: "error" | "notice"; text: string } | null) =>
+  const setRowMessage = (orderId: string, msg: RowMessage | null) =>
     setRowMessages((m) => {
       const next = { ...m };
       if (msg) next[orderId] = msg;
@@ -116,8 +125,30 @@ export default function PickListPage() {
     if (!boxId) return;
     setSubmitting((s) => ({ ...s, [order.orderId]: true }));
     setRowMessage(order.orderId, null);
+    // The batch instructions shown on the row (or the picker's override).
+    const planned = order.batchPlan && order.batchPlan.state === "covered" ? planAllocations(order.batchPlan) : [];
+    const ov = overrides[order.orderId];
+    let allocations = planned;
+    let override: { reason: string } | null = null;
+    if (ov) {
+      const overridden = new Set(Object.keys(ov.byProduct));
+      allocations = [
+        ...planned.filter((a) => !overridden.has(a.product_id)),
+        ...Object.entries(ov.byProduct).flatMap(([productId, parts]) =>
+          Object.entries(parts)
+            .filter(([, q]) => Number(q) > 0)
+            .map(([batchId, q]) => ({ product_id: productId, batch_id: batchId, qty: Number(q) })),
+        ),
+      ];
+      override = { reason: ov.reason === "Other" ? `Other: ${ov.note.trim()}` : [ov.reason, ov.note.trim()].filter(Boolean).join(": ") };
+    }
     try {
-      await api(`/api/fulfillments/${order.orderId}/pick`, { body: { boxId } });
+      await api(`/api/fulfillments/${order.orderId}/pick`, { body: { boxId, allocations, override } });
+      setOverrides((m) => {
+        const next = { ...m };
+        delete next[order.orderId];
+        return next;
+      });
       setPickedLocally((s) => new Set(s).add(order.orderId));
       setSelections((s) => {
         const next = { ...s };
@@ -127,7 +158,16 @@ export default function PickListPage() {
       refresh();
     } catch (err) {
       const e = err as ApiError;
-      setRowMessage(order.orderId, { tone: "error", text: e.message || "Couldn't mark this order picked." });
+      setRowMessage(order.orderId, {
+        tone: "error",
+        text: e.message || "Couldn't mark this order picked.",
+        link: e.code === "batch_short" ? { href: COUNT_BOXES_HREF, label: "Count boxes" } : undefined,
+      });
+      if (e.code === "plan_changed") {
+        // New instructions are on the refreshed row; the box choice stays.
+        refresh();
+        return;
+      }
       if (!e.code || BOX_ERROR_CODES.has(e.code)) {
         setSelections((s) => {
           const next = { ...s };
@@ -259,10 +299,53 @@ export default function PickListPage() {
                       </div>
                       <div>
                         <p className="mb-1 text-xs font-medium uppercase tracking-wide text-black">Pull from shelves</p>
-                        <ul className="space-y-0.5 text-sm text-black">
-                          {o.componentLines.map((line) => (
-                            <li key={line}>{line}</li>
-                          ))}
+                        {o.batchPlan?.emptiesBatchIds.length ? (
+                          <span className="mb-1 inline-flex rounded-full bg-amber-200 px-2 py-0.5 text-[11px] font-medium text-black" data-testid="box-empties">
+                            Box empties with this order
+                          </span>
+                        ) : null}
+                        <ul className="space-y-1 text-sm text-black">
+                          {o.components.map((c) => {
+                            const line = o.batchPlan?.lines.find((l) => l.productId === c.productId);
+                            const ov = overrides[o.orderId]?.byProduct[c.productId];
+                            const short = o.flagDetail?.find((d) => d.product_id === c.productId);
+                            const qtyText = Number.isInteger(c.qty) ? c.qty : c.qty.toFixed(2);
+                            if (line && o.batchPlan?.state === "covered") {
+                              const parts = ov
+                                ? Object.entries(ov)
+                                    .filter(([, q]) => Number(q) > 0)
+                                    .map(([batchId, q]) => ({ batchCode: data?.batchesByProduct[c.productId]?.find((b) => b.id === batchId)?.batchCode ?? "?", qty: Number(q) }))
+                                : line.parts;
+                              return (
+                                <li key={c.productId} data-testid={`pick-line-${c.productName}`}>
+                                  <span className="font-medium">
+                                    {qtyText}x {c.productName}:
+                                  </span>{" "}
+                                  {parts.length === 1 ? `pull from Batch ${parts[0].batchCode}` : parts.map((p) => `Batch ${p.batchCode} x${p.qty}`).join(", ")}
+                                  {ov && <span className="ml-1 rounded-full bg-violet-100 px-2 py-0.5 text-[11px] font-medium text-black">Different batch</span>}
+                                  <button
+                                    type="button"
+                                    className="ml-2 text-xs text-emerald-800 underline"
+                                    onClick={() => setOverrideEditor({ order: o, line })}
+                                  >
+                                    Picked from a different batch
+                                  </button>
+                                </li>
+                              );
+                            }
+                            if (short) {
+                              return (
+                                <li key={c.productId} className="rounded bg-red-50 px-1">
+                                  {qtyText}x {c.productName}: short by {short.short_by} (needs {short.needed}, available {short.available})
+                                </li>
+                              );
+                            }
+                            return (
+                              <li key={c.productId}>
+                                {qtyText}x {c.productName}
+                              </li>
+                            );
+                          })}
                           {o.unmappedLineItems.map((name) => (
                             <li key={`u-${name}`} className="rounded bg-amber-50 px-1 text-black">
                               ⚠ Unmapped: {name}
@@ -305,6 +388,13 @@ export default function PickListPage() {
                               Variant Mapping
                             </Link>
                           </p>
+                        ) : o.isFlagged && o.flagSource === "auto_out_of_stock" ? (
+                          <p className="text-xs text-black">
+                            Item(s) out of stock. Picking unlocks once stock is counted or added.{" "}
+                            <Link href={COUNT_BOXES_HREF} className="font-medium text-emerald-800 underline">
+                              Count boxes
+                            </Link>
+                          </p>
                         ) : o.isFlagged ? (
                           <p className="text-xs text-black">Unflag this order before picking.</p>
                         ) : !selectedBox ? (
@@ -316,6 +406,14 @@ export default function PickListPage() {
                             role={msg.tone === "error" ? "alert" : "status"}
                           >
                             {msg.text}
+                            {msg.link && (
+                              <>
+                                {" "}
+                                <Link href={msg.link.href} className="font-medium text-emerald-800 underline">
+                                  {msg.link.label}
+                                </Link>
+                              </>
+                            )}
                           </p>
                         )}
                       </div>
@@ -326,6 +424,39 @@ export default function PickListPage() {
             </ul>
           )}
         </section>
+
+        {overrideEditor && (
+          <OverrideEditor
+            order={overrideEditor.order}
+            line={overrideEditor.line}
+            batches={data?.batchesByProduct[overrideEditor.line.productId] ?? []}
+            existing={overrides[overrideEditor.order.orderId]}
+            onClose={() => setOverrideEditor(null)}
+            onClear={() => {
+              setOverrides((m) => {
+                const cur = m[overrideEditor.order.orderId];
+                if (!cur) return m;
+                const byProduct = { ...cur.byProduct };
+                delete byProduct[overrideEditor.line.productId];
+                const next = { ...m };
+                if (Object.keys(byProduct).length === 0) delete next[overrideEditor.order.orderId];
+                else next[overrideEditor.order.orderId] = { ...cur, byProduct };
+                return next;
+              });
+              setOverrideEditor(null);
+            }}
+            onApply={(parts, reason, note) => {
+              setOverrides((m) => {
+                const cur = m[overrideEditor.order.orderId] ?? { reason, note, byProduct: {} };
+                return {
+                  ...m,
+                  [overrideEditor.order.orderId]: { reason, note, byProduct: { ...cur.byProduct, [overrideEditor.line.productId]: parts } },
+                };
+              });
+              setOverrideEditor(null);
+            }}
+          />
+        )}
 
         <RecentlyPicked
           picks={data?.recentPicks ?? []}
@@ -628,5 +759,124 @@ function ManageBoxes({ boxes, onChanged }: { boxes: StagingBox[]; onChanged: () 
         </Modal>
       )}
     </section>
+  );
+}
+
+function OverrideEditor({
+  order,
+  line,
+  batches,
+  existing,
+  onClose,
+  onApply,
+  onClear,
+}: {
+  order: WarehouseOrder;
+  line: AllocLine;
+  batches: Array<{ id: string; batchCode: string; remainingQty: number }>;
+  existing: Override | undefined;
+  onClose: () => void;
+  onApply: (parts: Record<string, string>, reason: string, note: string) => void;
+  onClear: () => void;
+}) {
+  const [parts, setParts] = useState<Record<string, string>>(
+    existing?.byProduct[line.productId] ?? Object.fromEntries(line.parts.map((p) => [p.batchId, String(p.qty)])),
+  );
+  const [reason, setReason] = useState(existing?.reason ?? "");
+  const [note, setNote] = useState(existing?.note ?? "");
+  const [error, setError] = useState<{ text: string; count?: boolean } | null>(null);
+
+  const apply = () => {
+    let total = 0;
+    for (const [batchId, q] of Object.entries(parts)) {
+      if (q.trim() === "") continue;
+      if (!/^\d+$/.test(q.trim())) return setError({ text: "Quantities must be whole numbers." });
+      const b = batches.find((x) => x.id === batchId);
+      if (b && Number(q) > b.remainingQty) {
+        return setError({ text: `Batch ${b.batchCode} shows ${b.remainingQty} units. Count the box first.`, count: true });
+      }
+      total += Number(q);
+    }
+    if (total !== line.qty) return setError({ text: `Quantities must add up to ${line.qty}.` });
+    if (!reason) return setError({ text: "Choose a reason." });
+    if (reason === "Other" && !note.trim()) return setError({ text: "Add a note for Other." });
+    onApply(Object.fromEntries(Object.entries(parts).filter(([, q]) => Number(q) > 0)), reason, note);
+  };
+
+  return (
+    <Modal title={`${order.name}: picked ${line.qty}x ${line.productName} from a different batch`} onClose={onClose}>
+      <div className="space-y-3 text-sm">
+        <p>Enter how many units came from each box you actually pulled from.</p>
+        <table className="min-w-full text-left text-sm">
+          <thead className="text-xs uppercase tracking-wide">
+            <tr>
+              <th className="pr-3 font-medium">Batch</th>
+              <th className="pr-3 font-medium">In box</th>
+              <th className="font-medium">Took</th>
+            </tr>
+          </thead>
+          <tbody>
+            {batches.map((b) => (
+              <tr key={b.id}>
+                <td className="pr-3 font-semibold">{b.batchCode}</td>
+                <td className="pr-3">{b.remainingQty}</td>
+                <td className="py-1">
+                  <input
+                    inputMode="numeric"
+                    aria-label={`Units from batch ${b.batchCode}`}
+                    value={parts[b.id] ?? ""}
+                    onChange={(e) => setParts((p) => ({ ...p, [b.id]: e.target.value }))}
+                    className={`${inputClassName} w-20`}
+                  />
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        <div>
+          <label htmlFor="override-reason" className="mb-1 block text-xs font-medium">
+            Reason
+          </label>
+          <select id="override-reason" value={reason} onChange={(e) => setReason(e.target.value)} className={inputClassName}>
+            <option value="">Choose…</option>
+            {OVERRIDE_REASONS.map((r) => (
+              <option key={r} value={r}>
+                {r}
+              </option>
+            ))}
+          </select>
+          <input
+            aria-label="Override note"
+            placeholder={reason === "Other" ? "Note (required)" : "Note (optional)"}
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+            className={`${inputClassName} mt-1`}
+          />
+        </div>
+        {error && (
+          <p className="text-sm text-red-700" role="alert">
+            {error.text}{" "}
+            {error.count && (
+              <Link href={COUNT_BOXES_HREF} className="font-medium underline">
+                Count boxes
+              </Link>
+            )}
+          </p>
+        )}
+        <div className="flex flex-wrap justify-between gap-2">
+          <button type="button" className={secondaryButton} onClick={onClear}>
+            Use the planned batch
+          </button>
+          <div className="flex gap-2">
+            <button type="button" className={secondaryButton} onClick={onClose}>
+              Cancel
+            </button>
+            <button type="button" className={primaryButton} onClick={apply}>
+              Use these batches
+            </button>
+          </div>
+        </div>
+      </div>
+    </Modal>
   );
 }

@@ -101,6 +101,16 @@ export default function FulfillmentOrderDetailPage() {
   const [returnConfirmOpen, setReturnConfirmOpen] = useState(false);
   const [presetTouched, setPresetTouched] = useState(false);
 
+  // Finished-goods batches: planned batch per component (unpicked) or the
+  // batches actually picked; automatic out-of-stock flag detail.
+  const [flagSource, setFlagSource] = useState<string | null>(null);
+  const [flagDetail, setFlagDetail] = useState<Array<{ product: string; needed: number; available: number; short_by: number }> | null>(null);
+  const [unflagError, setUnflagError] = useState<string | null>(null);
+  const [batchInfo, setBatchInfo] = useState<{
+    picks: Array<{ id: string; productName: string; batchCode: string; qty: number; isOverride: boolean; overrideReason: string | null; reversedAt: string | null }>;
+    plan: { state: string; lines: Array<{ productId: string; productName: string; qty: number; shortBy: number; parts: Array<{ batchCode: string; qty: number }> }> } | null;
+  } | null>(null);
+
   const [status, setStatus] = useState<FulfillmentStatus>("preparing_shipment");
   const [fulfillmentLog, setFulfillmentLog] = useState<FulfillmentLogRow | null>(null);
 
@@ -264,7 +274,7 @@ export default function FulfillmentOrderDetailPage() {
       const [statusResult, logResult] = await Promise.all([
         supabase
           .from("order_status")
-          .select("status, is_flagged, flagged_reason, flagged_at, flagged_by")
+          .select("status, is_flagged, flagged_reason, flagged_at, flagged_by, flag_source, flag_detail")
           .eq("shopify_order_id", orderId)
           .maybeSingle(),
         supabase
@@ -283,6 +293,8 @@ export default function FulfillmentOrderDetailPage() {
         setFlaggedReason((statusResult.data.flagged_reason as string | null) ?? null);
         setFlaggedAt((statusResult.data.flagged_at as string | null) ?? null);
         setFlaggedBy((statusResult.data.flagged_by as string | null) ?? null);
+        setFlagSource(((statusResult.data as any).flag_source as string | null) ?? null);
+        setFlagDetail(((statusResult.data as any).flag_detail as any[] | null) ?? null);
       }
       if (logResult.data) setFulfillmentLog(logResult.data as FulfillmentLogRow);
     };
@@ -291,6 +303,28 @@ export default function FulfillmentOrderDetailPage() {
       cancelled = true;
     };
   }, [user, supabase, orderId]);
+
+  useEffect(() => {
+    if (!user || !orderId) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const {
+          data: { session },
+        } = await supabase.auth.getSession();
+        const response = await fetch(`/api/fulfillments/${orderId}/batches`, {
+          headers: { Authorization: `Bearer ${session?.access_token ?? ""}` },
+        });
+        const payload = await response.json();
+        if (!cancelled && response.ok) setBatchInfo({ picks: payload.picks ?? [], plan: payload.plan ?? null });
+      } catch {
+        if (!cancelled) setBatchInfo(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [user, supabase, orderId, status, packagingReloadKey]);
 
   const selectedPreset = useMemo(
     () => presets.find((p) => p.id === selectedPresetId) || null,
@@ -636,6 +670,8 @@ export default function FulfillmentOrderDetailPage() {
       if (error) throw new Error(error.message);
       setIsFlagged(true);
       setFlaggedReason(reason);
+      // A new flag, or an edited reason on an automatic flag, is a manual flag.
+      setFlagSource("manual");
       setFlaggedAt(nowIso);
       setFlaggedBy(user?.email ?? null);
       setFlagModalOpen(false);
@@ -649,6 +685,24 @@ export default function FulfillmentOrderDetailPage() {
   const handleUnflag = async () => {
     if (!orderId) return;
     setUnflagSubmitting(true);
+    setUnflagError(null);
+    if (flagSource === "auto_out_of_stock") {
+      try {
+        await authedFetch(`/api/fulfillments/${orderId}/unflag`, {});
+        setIsFlagged(false);
+        setFlaggedReason(null);
+        setFlaggedAt(null);
+        setFlaggedBy(null);
+        setFlagSource(null);
+        setFlagDetail(null);
+      } catch (err: any) {
+        setUnflagError(err.message || "Couldn't unflag this order.");
+      } finally {
+        setUnflagSubmitting(false);
+        setUnflagConfirming(false);
+      }
+      return;
+    }
     try {
       const nowIso = new Date().toISOString();
       const { error } = await supabase.from("order_status").upsert(
@@ -756,10 +810,20 @@ export default function FulfillmentOrderDetailPage() {
               role="alert"
             >
               <p className="font-semibold">Flagged: {flaggedReason}</p>
+              {flagSource === "auto_out_of_stock" && flagDetail?.length ? (
+                <ul className="mt-1 list-disc pl-4 text-black" data-testid="out-of-stock-detail">
+                  {flagDetail.map((d) => (
+                    <li key={d.product}>
+                      {d.product}: needs {d.needed}, available {d.available}, short by {d.short_by}
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
               <p className="mt-0.5 text-red-700">
                 {flaggedBy ? `By ${flaggedBy}` : "By an unknown user"}
                 {flaggedAt ? ` on ${formatDate(flaggedAt)}` : ""}
               </p>
+              {unflagError && <p className="mt-1 font-medium text-black">{unflagError}</p>}
             </div>
           )}
         </section>
@@ -993,6 +1057,43 @@ export default function FulfillmentOrderDetailPage() {
                 </table>
               </div>
             </section>
+
+            {batchInfo && (batchInfo.plan || batchInfo.picks.length > 0) && (
+              <section className="rounded-lg border border-zinc-200 bg-white p-4 text-black shadow-sm" aria-label="Batches" data-testid="batches-card">
+                <div className="mb-2 flex flex-wrap items-center gap-2">
+                  <h2 className="text-sm font-semibold text-black">Finished goods batches</h2>
+                  {batchInfo.picks.some((p) => p.isOverride && !p.reversedAt) && (
+                    <span className="rounded-full bg-violet-100 px-2 py-0.5 text-[11px] font-medium text-black">Picked from different batch</span>
+                  )}
+                </div>
+                {batchInfo.picks.some((p) => !p.reversedAt) ? (
+                  <ul className="space-y-0.5 text-sm">
+                    {batchInfo.picks
+                      .filter((p) => !p.reversedAt)
+                      .map((p) => (
+                        <li key={p.id}>
+                          Picked {p.qty}x {p.productName} from Batch {p.batchCode}
+                          {p.isOverride && p.overrideReason ? ` (${p.overrideReason})` : ""}
+                        </li>
+                      ))}
+                  </ul>
+                ) : batchInfo.plan ? (
+                  <ul className="space-y-0.5 text-sm">
+                    {batchInfo.plan.lines.map((l) => (
+                      <li key={l.productId}>
+                        {l.qty}x {l.productName}:{" "}
+                        {l.shortBy > 0
+                          ? `short by ${l.shortBy}`
+                          : l.parts.length === 1
+                            ? `pull from Batch ${l.parts[0].batchCode}`
+                            : l.parts.map((part) => `Batch ${part.batchCode} x${part.qty}`).join(", ")}
+                      </li>
+                    ))}
+                    {batchInfo.plan.lines.length === 0 && <li>No batch-tracked items on this order.</li>}
+                  </ul>
+                ) : null}
+              </section>
+            )}
 
             {packaging && (
               <section

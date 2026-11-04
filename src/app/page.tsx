@@ -12,6 +12,7 @@ import {
   computeShortages,
   feasibilityBadge,
 } from "@/lib/feasibility";
+import { FlaggedOrdersCard } from "@/components/fulfillment/FlaggedOrdersCard";
 // Reuse the sidebar's own BotanIQals category groupings (Production /
 // Inventory / Fulfillment) so the dashboard's dropdowns always show exactly
 // the same pages as the side nav, with one definition to keep in sync.
@@ -161,6 +162,8 @@ export default function Home() {
         </section>
 
         <ActiveCyclesTable rows={cycleRows} loading={dataLoading} />
+
+        <FlaggedOrdersCard />
 
         <section className="rounded-lg border border-zinc-200 bg-white p-4 shadow-sm">
           <div className="flex flex-wrap gap-2">

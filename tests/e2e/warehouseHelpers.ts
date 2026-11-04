@@ -113,6 +113,10 @@ export async function seedWarehouse(userId: string): Promise<WarehouseTestData> 
     );
     products[key] = { id: p.id, name, lineitem };
   }
+  // Products are batch tracked once the opening batches are applied; give
+  // each invented product one batch with plenty of units so no test order is
+  // flagged out of stock.
+  await stockTestProducts(Object.values(products).map((p) => p.id), 100);
 
   const boxes: WarehouseTestData["boxes"] = [];
   const base = 800000 + Math.floor(Math.random() * 90000) * 10;
@@ -171,11 +175,33 @@ export async function cleanupWarehouse(t: WarehouseTestData | null) {
   const db = admin();
   const { error } = await db.rpc("fulfillment_test_cleanup", { p_order_ids: t.orders.map((o) => o.id), p_box_ids: t.boxes.map((b) => b.id) });
   if (error) throw new Error(`cleanup orders/boxes failed: ${error.message}`);
+  await cleanupTestBatches(Object.values(t.products).map((p) => p.id), t.orders.map((o) => o.id));
   await db.from("variant_component_map").delete().in("lineitem_name", Object.values(t.products).map((p) => p.lineitem));
   await db.from("product_packaging_rules").delete().in("product_id", Object.values(t.products).map((p) => p.id));
   await db.from("products").delete().in("id", Object.values(t.products).map((p) => p.id));
   await db.from("package_presets").delete().in("id", Object.values(t.presets).map((p) => p.id));
   await db.from("fulfillment_orders_cache_state").update({ last_attempt_at: null }).eq("id", 1);
+}
+
+/** Batch-track invented products and add one batch of `qty` units to each. */
+export async function stockTestProducts(productIds: string[], qty: number) {
+  const db = admin();
+  for (const id of productIds) {
+    const { error: invError } = await db.from("finished_products_inventory").upsert({ product_id: id, batch_tracked: true }, { onConflict: "product_id" });
+    if (invError) throw new Error(`track test product: ${invError.message}`);
+    if (qty > 0) {
+      const { error: batchError } = await db.rpc("add_manual_batch", {
+        p_product_id: id, p_qty: qty, p_produced_date: "2020-01-01", p_note: "[TEST] stock", p_name: "[TEST] Runner",
+      });
+      if (batchError) throw new Error(`test batch: ${batchError.message}`);
+    }
+  }
+}
+
+/** Remove batches, picks and transactions of invented "[TEST]" products and TEST- orders. */
+export async function cleanupTestBatches(productIds: string[], orderIds: string[]) {
+  const { error } = await admin().rpc("fg_test_cleanup", { p_product_ids: productIds, p_order_ids: orderIds });
+  if (error) throw new Error(`cleanup batches failed: ${error.message}`);
 }
 
 /** The tab (preset nickname or "Needs Review") each test order should land on, using every preset in the dev DB. */

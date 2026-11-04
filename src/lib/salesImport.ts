@@ -208,6 +208,17 @@ async function processNormalizedOrders(
   if (botaniqalsProductsError) throw new Error(botaniqalsProductsError.message);
   const botaniqalsProductIds = new Set((botaniqalsProductRows || []).map((p) => p.id));
 
+  // Batch-tracked products never get a sales decrement: their count is the
+  // sum of their batch boxes, which goes down when an order is picked (and
+  // is corrected with a box count after market/POS sales). Products not yet
+  // tracked keep the existing decrement and inventory_applied logic.
+  const { data: trackedRows, error: trackedError } = await admin
+    .from("finished_products_inventory")
+    .select("product_id")
+    .eq("batch_tracked", true);
+  if (trackedError) throw new Error(trackedError.message);
+  const batchTrackedProductIds = new Set((trackedRows || []).map((r: { product_id: string }) => r.product_id));
+
   const inventoryCache: InventoryRowCache = await preloadInventoryCache(admin);
 
   // Market matching: preload active markets + the business timezone once
@@ -323,6 +334,7 @@ async function processNormalizedOrders(
 
       for (const component of mapping) {
         if (!botaniqalsProductIds.has(component.product_id)) continue; // MiniLeaf — no transaction
+        if (batchTrackedProductIds.has(component.product_id)) continue; // batch tracked: picking decrements
         const key = `${component.product_id}::${li.name}`;
         if (alreadyProcessedKeys!.has(key)) continue; // already decremented in a prior partial run
 
