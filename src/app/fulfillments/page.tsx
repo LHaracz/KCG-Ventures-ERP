@@ -27,6 +27,7 @@ type FulfillmentListRow = {
   isFlagged: boolean;
   flaggedReason: string | null;
   boxLabel: string | null;
+  needsNewLabel?: boolean;
 };
 
 const flaggedBadgeClassName =
@@ -58,7 +59,7 @@ export default function FulfillmentsPage() {
   const [customerFilter, setCustomerFilter] = useState("");
   const [dateAfter, setDateAfter] = useState("");
   const [dateBefore, setDateBefore] = useState("");
-  const [statusFilter, setStatusFilter] = useState<FulfillmentStatus | "all" | "flagged">("all");
+  const [statusFilter, setStatusFilter] = useState<FulfillmentStatus | "all" | "flagged" | "needs_new_label">("all");
   const [sortDirection, setSortDirection] = useState<"asc" | "desc">("asc");
 
   useEffect(() => {
@@ -112,6 +113,8 @@ export default function FulfillmentsPage() {
       if (customerNeedle && !o.customerName.toLowerCase().includes(customerNeedle)) return false;
       if (statusFilter === "flagged") {
         if (!o.isFlagged) return false;
+      } else if (statusFilter === "needs_new_label") {
+        if (!o.needsNewLabel) return false;
       } else if (statusFilter !== "all" && o.status !== statusFilter) {
         return false;
       }
@@ -245,12 +248,13 @@ export default function FulfillmentsPage() {
                 id="fulfillments-status-filter"
                 value={statusFilter}
                 onChange={(e) =>
-                  setStatusFilter(e.target.value as FulfillmentStatus | "all" | "flagged")
+                  setStatusFilter(e.target.value as FulfillmentStatus | "all" | "flagged" | "needs_new_label")
                 }
                 className={inputClassName}
               >
                 <option value="all">All</option>
                 <option value="flagged">Flagged</option>
+                <option value="needs_new_label">Needs new label</option>
                 {FULFILLMENT_STATUSES.map((s) => (
                   <option key={s} value={s}>
                     {fulfillmentStatusLabel(s)}
@@ -324,6 +328,11 @@ export default function FulfillmentsPage() {
                             </span>
                           ) : (
                             <span className={badge.className}>{badge.label}</span>
+                          )}
+                          {o.needsNewLabel && (
+                            <span className="ml-1 inline-flex rounded-full bg-amber-200 px-2 py-0.5 text-[11px] font-medium text-black" data-testid="needs-new-label">
+                              Needs new label
+                            </span>
                           )}
                         </td>
                         <td className="px-3 py-2 font-medium text-zinc-900">{o.boxLabel ?? ""}</td>

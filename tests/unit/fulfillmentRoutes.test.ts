@@ -22,7 +22,12 @@ vi.mock("@/lib/supabaseAdmin", () => ({
 vi.mock("@/lib/apiAuth", () => ({
   requireApiUserFromBearerToken: async () => ({ id: "00000000-0000-4000-8000-000000000001" }),
 }));
-vi.mock("@/lib/easypost", () => ({
+vi.mock("@/lib/easypost", async (orig) => ({
+  requestRefundOutcome: async (id: string) =>
+    (await orig<typeof import("@/lib/easypost")>()).requestRefundOutcome(id, async () => {
+      h.easypostRefunds += 1;
+      return { id, refund_status: "submitted" };
+    }),
   buyEasyPostRate: async (shipmentId: string) => {
     h.easypostBuys += 1;
     return {

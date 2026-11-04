@@ -19,6 +19,7 @@ import {
   type PackagingRuleInput,
 } from "@/lib/packagingEngine";
 import { Modal, PackageBadge } from "@/components/fulfillment/WarehouseUi";
+import { LabelHistory, VoidLabelModal, sentence, voidOutcomeText, type LabelRow } from "@/components/fulfillment/LabelHistory";
 
 const inputClassName =
   "rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-xs text-black shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500";
@@ -33,11 +34,15 @@ type EasyPostRateOption = {
 };
 
 type FulfillmentLogRow = {
+  id?: string;
   tracking_number: string | null;
   carrier: string | null;
   service: string | null;
   label_url: string | null;
 };
+
+const LABEL_COLUMNS =
+  "id, tracking_number, carrier, service, label_url, rate_amount, rate_currency, created_at, printed_at, voided_at, fulfilled_at, refund_status, refund_message, void_note, is_replacement, shopify_tracking_synced_at, shopify_sync_error";
 
 type FulfillmentOrderDetail = {
   orderId: string;
@@ -142,6 +147,13 @@ export default function FulfillmentOrderDetailPage() {
   const [printingLabel, setPrintingLabel] = useState(false);
   const [voidingLabel, setVoidingLabel] = useState(false);
   const [voidLabelError, setVoidLabelError] = useState<string | null>(null);
+  const [labels, setLabels] = useState<LabelRow[]>([]);
+  const [voidModalOpen, setVoidModalOpen] = useState(false);
+  const [labelNotice, setLabelNotice] = useState<{ tone: "ok" | "warn"; text: string } | null>(null);
+  const [labelBusyId, setLabelBusyId] = useState<string | null>(null);
+  const [labelActionError, setLabelActionError] = useState<string | null>(null);
+  const [notifyCustomer, setNotifyCustomer] = useState(true);
+  const [shopifyRetrying, setShopifyRetrying] = useState(false);
   const [markingFulfilled, setMarkingFulfilled] = useState(false);
   const [markFulfilledError, setMarkFulfilledError] = useState<string | null>(null);
 
@@ -279,12 +291,9 @@ export default function FulfillmentOrderDetailPage() {
           .maybeSingle(),
         supabase
           .from("fulfillment_log")
-          .select("tracking_number, carrier, service, label_url")
+          .select(LABEL_COLUMNS)
           .eq("shopify_order_id", orderId)
-          .is("voided_at", null)
-          .order("created_at", { ascending: false })
-          .limit(1)
-          .maybeSingle(),
+          .order("created_at", { ascending: false }),
       ]);
       if (cancelled) return;
       if (statusResult.data?.status) setStatus(statusResult.data.status as FulfillmentStatus);
@@ -296,7 +305,11 @@ export default function FulfillmentOrderDetailPage() {
         setFlagSource(((statusResult.data as any).flag_source as string | null) ?? null);
         setFlagDetail(((statusResult.data as any).flag_detail as any[] | null) ?? null);
       }
-      if (logResult.data) setFulfillmentLog(logResult.data as FulfillmentLogRow);
+      if (logResult.data) {
+        const rows = logResult.data as unknown as LabelRow[];
+        setLabels(rows);
+        setFulfillmentLog((rows.find((l) => !l.voided_at) as FulfillmentLogRow | undefined) ?? null);
+      }
     };
     loadStatusAndLog();
     return () => {
@@ -398,6 +411,22 @@ export default function FulfillmentOrderDetailPage() {
   }, [order]);
 
   const labelAlreadyPurchased = status === "label_generated" || status === "label_printed";
+  const activeLabel = labels.find((l) => !l.voided_at) ?? null;
+  // Fulfilled, had a label, and every label is voided: buy a replacement.
+  const needsNewLabel = status === "fulfilled" && labels.length > 0 && !activeLabel;
+  const shopifyTrackingNumber = (labels.find((l) => l.voided_at && l.tracking_number) ?? null)?.tracking_number ?? null;
+
+  const reloadLabels = async () => {
+    if (!orderId) return;
+    const { data } = await supabase
+      .from("fulfillment_log")
+      .select(LABEL_COLUMNS)
+      .eq("shopify_order_id", orderId)
+      .order("created_at", { ascending: false });
+    const rows = (data ?? []) as unknown as LabelRow[];
+    setLabels(rows);
+    setFulfillmentLog((rows.find((l) => !l.voided_at) as FulfillmentLogRow | undefined) ?? null);
+  };
 
   const authedFetch = async (path: string, body: unknown) => {
     const {
@@ -493,15 +522,26 @@ export default function FulfillmentOrderDetailPage() {
       const payload = await authedFetch(`/api/fulfillments/${orderId}/buy-label`, {
         easypostShipmentId: modalShipmentId,
         rateId: modalSelectedRateId,
+        ...(needsNewLabel ? { notifyCustomer } : {}),
       });
       setFulfillmentLog({
+        id: payload.logId,
         tracking_number: payload.trackingNumber,
         carrier: payload.carrier,
         service: payload.service,
         label_url: payload.labelUrl,
       });
-      setStatus("label_generated");
+      // A replacement label on a fulfilled order never changes its status.
+      if (!payload.replacement) setStatus("label_generated");
+      setLabelNotice(
+        payload.replacement
+          ? payload.shopify?.ok
+            ? { tone: "ok", text: `Replacement label created. Shopify now shows tracking number ${payload.trackingNumber}.` }
+            : { tone: "warn", text: "The new label was created, but Shopify still shows the old tracking number." }
+          : null,
+      );
       setModalOpen(false);
+      await reloadLabels();
     } catch (err: any) {
       setModalError(err.message || "Failed to generate the label.");
     } finally {
@@ -510,31 +550,80 @@ export default function FulfillmentOrderDetailPage() {
   };
 
   const handlePrintLabel = async () => {
-    if (!fulfillmentLog?.label_url || !orderId) return;
+    if (!fulfillmentLog?.label_url || !orderId || !activeLabel) return;
     setPrintingLabel(true);
+    setLabelActionError(null);
     try {
       window.open(fulfillmentLog.label_url, "_blank", "noopener,noreferrer");
-      const { error } = await supabase
-        .from("order_status")
-        .upsert(
-          { shopify_order_id: orderId, status: "label_printed", updated_at: new Date().toISOString() },
-          { onConflict: "shopify_order_id" },
-        );
-      if (!error) setStatus("label_printed");
+      // Records printed_at; Label Generated becomes Label Printed. A
+      // replacement label on a fulfilled order keeps the order fulfilled.
+      const payload = await authedFetch(`/api/fulfillments/${orderId}/print-label`, { logId: activeLabel.id });
+      if (payload?.status) setStatus(payload.status as FulfillmentStatus);
+      await reloadLabels();
+    } catch (err) {
+      setLabelActionError((err as Error).message || "Couldn't record the print.");
     } finally {
       setPrintingLabel(false);
     }
   };
 
-  const handleVoidLabel = async () => {
+  const handleRefundAction = async (label: LabelRow, action: "retry" | "check") => {
+    if (!orderId) return;
+    setLabelBusyId(label.id);
+    setLabelActionError(null);
+    try {
+      const payload = await authedFetch(`/api/fulfillments/${orderId}/refund`, { logId: label.id, action });
+      const r = payload.refund as { status: string; message: string | null };
+      setLabelNotice({
+        tone: r.status === "rejected" || r.status === "error" ? "warn" : "ok",
+        text:
+          r.status === "submitted"
+            ? "Refund requested."
+            : r.status === "refunded"
+              ? "Postage refunded."
+              : r.status === "rejected"
+                ? `EasyPost rejected the refund: ${sentence(r.message, "no reason given")} You may not get this postage back.`
+                : r.status === "not_applicable"
+                  ? "No refund was needed."
+                  : `The refund request failed: ${sentence(r.message, "unknown error")}`,
+      });
+      await reloadLabels();
+    } catch (err) {
+      setLabelActionError((err as Error).message || "Couldn't reach EasyPost.");
+    } finally {
+      setLabelBusyId(null);
+    }
+  };
+
+  const handleRetryShopify = async () => {
+    if (!orderId || !activeLabel) return;
+    setShopifyRetrying(true);
+    setLabelActionError(null);
+    try {
+      await authedFetch(`/api/fulfillments/${orderId}/shopify-tracking`, { logId: activeLabel.id });
+      setLabelNotice({ tone: "ok", text: `Shopify now shows tracking number ${activeLabel.tracking_number}.` });
+    } catch (err) {
+      setLabelActionError((err as Error).message || "Shopify could not be updated.");
+    } finally {
+      setShopifyRetrying(false);
+      await reloadLabels();
+    }
+  };
+
+  const handleVoidLabel = async (note: string) => {
     if (!orderId) return;
     setVoidingLabel(true);
     setVoidLabelError(null);
     try {
-      const payload = await authedFetch(`/api/fulfillments/${orderId}/void-label`, {});
+      const payload = await authedFetch(`/api/fulfillments/${orderId}/void-label`, { note });
       setFulfillmentLog(null);
-      // Back to Picked if the order still holds a staging box.
+      setVoidModalOpen(false);
+      // Not fulfilled: back to Picked if the order still holds a staging box,
+      // otherwise Preparing Shipment. Fulfilled: stays fulfilled.
       setStatus((payload?.status as FulfillmentStatus) || "preparing_shipment");
+      const refund = payload?.refund ?? { status: null, message: null };
+      setLabelNotice({ tone: refund.status === "submitted" || refund.status === "refunded" || refund.status === "not_applicable" ? "ok" : "warn", text: voidOutcomeText(refund) });
+      await reloadLabels();
     } catch (err: any) {
       setVoidLabelError(err.message || "Failed to void this label.");
     } finally {
@@ -746,6 +835,11 @@ export default function FulfillmentOrderDetailPage() {
               {order && (
                 <span className={fulfillmentStatusBadge(status).className}>
                   {fulfillmentStatusBadge(status).label}
+                </span>
+              )}
+              {order && needsNewLabel && (
+                <span className="rounded-full bg-amber-200 px-2 py-0.5 text-[11px] font-medium text-black" data-testid="needs-new-label-badge">
+                  Needs new label
                 </span>
               )}
             </div>
@@ -1266,12 +1360,31 @@ export default function FulfillmentOrderDetailPage() {
               </div>
 
               <div className="mt-4 space-y-3">
+                {needsNewLabel && (
+                  <p className="rounded-md bg-amber-50 px-3 py-2 text-xs text-black ring-1 ring-amber-300" data-testid="needs-new-label-banner">
+                    Label voided. Shopify still shows tracking number {shopifyTrackingNumber ?? "—"}. Generate a replacement label.
+                  </p>
+                )}
+                {labelNotice && (
+                  <p
+                    className={`rounded-md px-3 py-2 text-xs text-black ring-1 ${labelNotice.tone === "ok" ? "bg-emerald-50 ring-emerald-300" : "bg-amber-50 ring-amber-300"}`}
+                    role="status"
+                    data-testid="label-notice"
+                  >
+                    {labelNotice.text}
+                  </p>
+                )}
+                {labelActionError && (
+                  <p className="text-xs text-red-700" role="alert">
+                    {labelActionError}
+                  </p>
+                )}
                 {!fulfillmentLog?.label_url ? (
                   <div>
                     <button
                       type="button"
                       onClick={handleOpenGenerateLabel}
-                      disabled={presets.length === 0 || status === "preparing_shipment"}
+                      disabled={presets.length === 0 || status === "preparing_shipment" || (status === "fulfilled" && !needsNewLabel)}
                       className="rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white shadow-sm hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
                     >
                       Generate Label
@@ -1307,23 +1420,29 @@ export default function FulfillmentOrderDetailPage() {
                       </button>
                       <button
                         type="button"
-                        onClick={handleVoidLabel}
-                        disabled={voidingLabel || status === "fulfilled"}
+                        onClick={() => {
+                          setVoidLabelError(null);
+                          setVoidModalOpen(true);
+                        }}
+                        disabled={voidingLabel}
                         className="rounded-md border border-red-300 px-3 py-1.5 text-xs font-medium text-red-700 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
                       >
                         {voidingLabel ? "Voiding…" : "Void Label"}
                       </button>
                     </div>
-                    {status === "fulfilled" && (
-                      <p className="mt-1 text-[11px] text-zinc-600">
-                        This order is already fulfilled in Shopify, so its label can&apos;t be
-                        voided from here.
-                      </p>
-                    )}
-                    {voidLabelError && (
-                      <p className="mt-1 text-xs text-red-600" role="alert">
-                        {voidLabelError}
-                      </p>
+                    {activeLabel?.is_replacement && activeLabel.shopify_sync_error && !activeLabel.shopify_tracking_synced_at && (
+                      <div className="mt-2 rounded-md bg-amber-50 px-2 py-1.5 text-[11px] text-black ring-1 ring-amber-300" data-testid="shopify-sync-warning">
+                        The new label was created, but Shopify still shows the old tracking number.
+                        <div className="mt-0.5">Shopify said: {activeLabel.shopify_sync_error}</div>
+                        <button
+                          type="button"
+                          onClick={handleRetryShopify}
+                          disabled={shopifyRetrying}
+                          className="mt-1 rounded-md border border-zinc-300 bg-white px-2 py-1 text-[11px] font-medium text-black hover:bg-zinc-50 disabled:opacity-50"
+                        >
+                          {shopifyRetrying ? "Updating Shopify…" : "Retry Shopify update"}
+                        </button>
+                      </div>
                     )}
                   </div>
                 )}
@@ -1357,6 +1476,28 @@ export default function FulfillmentOrderDetailPage() {
               </div>
             </section>
           </>
+        )}
+
+        {order && (
+          <div className="mt-6">
+            <LabelHistory
+              labels={labels}
+              busyId={labelBusyId}
+              onRetryRefund={(l) => handleRefundAction(l, "retry")}
+              onCheckRefund={(l) => handleRefundAction(l, "check")}
+            />
+          </div>
+        )}
+
+        {voidModalOpen && (
+          <VoidLabelModal
+            fulfilled={status === "fulfilled"}
+            trackingNumber={activeLabel?.tracking_number ?? fulfillmentLog?.tracking_number ?? null}
+            busy={voidingLabel}
+            error={voidLabelError}
+            onCancel={() => setVoidModalOpen(false)}
+            onConfirm={(note) => handleVoidLabel(note)}
+          />
         )}
 
         {modalOpen && order && (
@@ -1431,6 +1572,21 @@ export default function FulfillmentOrderDetailPage() {
                     </p>
                   )}
                 </div>
+
+                {needsNewLabel && (
+                  <div>
+                    <label className="flex items-center gap-2 text-xs text-black">
+                      <input
+                        type="checkbox"
+                        checked={notifyCustomer}
+                        onChange={(e) => setNotifyCustomer(e.target.checked)}
+                        className="h-4 w-4"
+                      />
+                      Notify customer of the new tracking number
+                    </label>
+                    <p className="mt-1 text-[11px] text-black">The customer was already emailed the old tracking number.</p>
+                  </div>
+                )}
 
                 {modalError && (
                   <p className="text-xs text-red-600" role="alert">

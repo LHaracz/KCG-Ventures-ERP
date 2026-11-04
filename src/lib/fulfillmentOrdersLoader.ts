@@ -184,10 +184,30 @@ export function createShopifyOrdersSource(
         return Array.from(new Set((data as any[]).map((row) => String(row.shopify_order_id))));
       };
 
-      const [liveData, ids] = await Promise.all([
+      // Orders the ERP is still working on (picked, label made or printed, or
+      // holding a staging box). They must stay visible until the ERP marks
+      // them fulfilled, even when Shopify no longer lists them as unfulfilled
+      // (fulfilled or closed in Shopify directly, or beyond the first 50).
+      const inProgressIds = async (): Promise<string[]> => {
+        const [st, open] = await Promise.all([
+          db.from("order_status").select("shopify_order_id").in("status", ["picked", "label_generated", "label_printed"]),
+          db.from("staging_box_assignments").select("order_id").is("released_at", null),
+        ]);
+        const all = [
+          ...((st.data ?? []) as Array<{ shopify_order_id: string }>).map((r) => String(r.shopify_order_id)),
+          ...((open.data ?? []) as Array<{ order_id: string }>).map((r) => String(r.order_id)),
+        ];
+        // Invented test orders live in the cache already and are not Shopify ids.
+        return all.filter((id) => !id.startsWith("TEST-"));
+      };
+
+      const [liveData, fulfilledIds, workingIds] = await Promise.all([
         graphql<OrdersQueryResponse>(ORDERS_QUERY, { first: 50 }),
         recentlyFulfilledIds(),
+        inProgressIds(),
       ]);
+      const liveIds = new Set(liveData.orders.edges.map(({ node }) => orderGidToNumericId(node.id)));
+      const ids = Array.from(new Set([...fulfilledIds, ...workingIds])).filter((id) => !liveIds.has(id)).slice(0, 250);
       let recentlyFulfilled: CachedOrder[] = [];
       if (ids.length > 0) {
         const nodesData = await graphql<NodesQueryResponse>(NODES_QUERY, { ids: ids.map((id) => toOrderGid(id)) });

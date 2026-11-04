@@ -60,6 +60,7 @@ export async function createBatchDb(opts: { beforeMigration?: (pg: PGlite) => Pr
   `);
   if (opts.beforeMigration) await opts.beforeMigration(pg);
   await pg.exec(sql("finished_goods_batches.sql"));
+  await pg.exec(sql("label_void_any_stage.sql"));
   return { pg, client };
 }
 

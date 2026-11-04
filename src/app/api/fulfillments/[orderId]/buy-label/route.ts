@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { requireApiUserFromBearerToken } from "@/lib/apiAuth";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { buyEasyPostRate } from "@/lib/easypost";
+import { syncReplacementTracking } from "@/lib/shopifyTracking";
 
 /**
  * Fulfillments Part 2b — purchase-only route. The rates quote (shipment
@@ -12,11 +13,18 @@ import { buyEasyPostRate } from "@/lib/easypost";
  * Picking build: purchases are refused while the order is still Preparing
  * Shipment (not picked), and a second purchase is refused while an active
  * (non-voided) label exists or another purchase is in flight.
+ *
+ * Replacement labels: a fulfilled order whose labels are all voided may buy
+ * one new label. Its status stays fulfilled, and the new tracking number is
+ * put on the existing Shopify fulfillment (never a second fulfillment, never
+ * Mark Fulfilled). If Shopify fails, the label is kept and the error is
+ * recorded so the order page can offer "Retry Shopify update".
  */
 
 type BuyLabelRequestBody = {
   easypostShipmentId: string;
   rateId: string;
+  notifyCustomer?: boolean;
 };
 
 function badRequest(message: string) {
@@ -73,6 +81,8 @@ export async function POST(
         easypost_shipment_id: bought.id,
         rate_amount: bought.selected_rate.rate ? String(Number(bought.selected_rate.rate)) : null,
         rate_currency: bought.selected_rate.currency ?? null,
+        tracking_url: bought.tracker?.public_url ?? null,
+        notify_customer: body.notifyCustomer !== false,
       },
     });
     if (recorded.error) {
@@ -89,8 +99,19 @@ export async function POST(
       );
     }
 
+    const rec = recorded.data as { log_id: string; replacement: boolean };
+    let shopify: { ok: boolean; error?: string } | null = null;
+    if (rec.replacement) {
+      // Never fails the purchase: the result is recorded on the label row.
+      const synced = await syncReplacementTracking(supabaseAdmin, orderId, rec.log_id);
+      shopify = synced.ok ? { ok: true } : { ok: false, error: synced.error };
+    }
+
     return NextResponse.json({
       bought: true,
+      logId: rec.log_id,
+      replacement: rec.replacement,
+      shopify,
       trackingNumber: bought.tracking_code,
       carrier: bought.selected_rate.carrier,
       service: bought.selected_rate.service,

@@ -131,17 +131,28 @@ export async function POST(
     }
 
     const nowIso = new Date().toISOString();
-    await supabaseAdmin
+    const shopifyFulfillmentId = result.fulfillmentCreate.fulfillment?.id ?? null;
+    // Shopify is fulfilled now. If the ERP can't record it, say so loudly
+    // instead of leaving the order stuck at Label Printed without a word.
+    const statusWrite = await supabaseAdmin
       .from("order_status")
       .upsert(
         { shopify_order_id: orderId, status: "fulfilled", updated_at: nowIso },
         { onConflict: "shopify_order_id" },
       );
-    await supabaseAdmin
+    const logWrite = await supabaseAdmin
       .from("fulfillment_log")
-      .update({ fulfilled_at: nowIso })
+      .update({ fulfilled_at: nowIso, ...(shopifyFulfillmentId ? { shopify_fulfillment_id: shopifyFulfillmentId } : {}) })
       .eq("shopify_order_id", orderId)
       .is("fulfilled_at", null);
+    if (statusWrite.error || logWrite.error) {
+      const why = statusWrite.error?.message ?? logWrite.error?.message;
+      console.error(`[mark-fulfilled] Shopify fulfilled order ${orderId} (${shopifyFulfillmentId}) but the ERP update failed: ${why}`);
+      return NextResponse.json(
+        { error: `Shopify marked this order fulfilled, but the ERP could not record it: ${why}. Do not click Mark Fulfilled again; ask for the status to be fixed.` },
+        { status: 500 },
+      );
+    }
 
     // Free the staging box. Never fails the fulfillment: if this errors, the
     // reconcile on the Pick List / Shipping Assignments load releases it.
