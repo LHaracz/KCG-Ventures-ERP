@@ -32,7 +32,7 @@ export const LOG_FIELD_TYPES: { value: LogFieldType; label: string }[] = [
   { value: "datetime", label: "Date & time" },
   { value: "pass_fail", label: "Pass / Fail" },
   { value: "yes_no", label: "Yes / No" },
-  { value: "employee", label: "Employee (roster)" },
+  { value: "employee", label: "Employee (employee accounts)" },
   { value: "sop", label: "Linked SOP" },
   { value: "production_cycle", label: "Production cycle" },
   { value: "raw_material", label: "Raw material" },

@@ -1,8 +1,11 @@
 import { NextResponse } from "next/server";
 import { requireApiUserFromBearerToken } from "@/lib/apiAuth";
 import { setInventoryCycleCount } from "@/lib/inventorySync";
+import { guardApi } from "@/lib/access/api";
 
 export async function POST(request: Request) {
+  const denied = await guardApi(request);
+  if (denied) return denied;
   try {
     await requireApiUserFromBearerToken(request);
     const body = (await request.json()) as {

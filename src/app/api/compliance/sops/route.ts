@@ -3,6 +3,7 @@ import { requireApiUserFromBearerToken } from "@/lib/apiAuth";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { removeSopObject, verifyUploadedPdf } from "@/lib/sopStorage";
 import { blankDocument, productionTemplate } from "@/lib/sopDocument";
+import { guardApi } from "@/lib/access/api";
 
 type CreateDocumentSopBody = {
   format: "document";
@@ -39,6 +40,8 @@ function badRequest(message: string) {
 }
 
 export async function POST(request: Request) {
+  const denied = await guardApi(request);
+  if (denied) return denied;
   try {
     const user = await requireApiUserFromBearerToken(request);
     if (!supabaseAdmin) {

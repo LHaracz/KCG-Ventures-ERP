@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { requireApiUserFromBearerToken } from "@/lib/apiAuth";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { removeCompanyAssetObject, verifyUploadedLogo } from "@/lib/companyLogoStorage";
+import { guardApi } from "@/lib/access/api";
 
 /**
  * Step 2 of 2 for a profile logo upload: the browser has already PUT its
@@ -25,6 +26,8 @@ function badRequest(message: string) {
 }
 
 export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
+  const denied = await guardApi(request);
+  if (denied) return denied;
   try {
     const { id: profileId } = await params;
     await requireApiUserFromBearerToken(request);

@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { requireApiUserFromBearerToken } from "@/lib/apiAuth";
 import { shopifyAdminGraphQL, toOrderGid } from "@/lib/shopifyAdmin";
 import { normalizeShippingAddress, type CanonicalAddress } from "@/lib/fulfillmentOrder";
+import { guardApi } from "@/lib/access/api";
 
 /**
  * Direct Shopify write for the manual shipping-address edit on the order
@@ -70,6 +71,8 @@ export async function POST(
   request: Request,
   { params }: { params: Promise<{ orderId: string }> },
 ) {
+  const denied = await guardApi(request);
+  if (denied) return denied;
   try {
     await requireApiUserFromBearerToken(request);
     const { orderId } = await params;

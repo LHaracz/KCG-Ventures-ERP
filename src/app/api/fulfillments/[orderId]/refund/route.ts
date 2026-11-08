@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { requireApiUserFromBearerToken } from "@/lib/apiAuth";
 import { badRequest, errorResponse, requireAdmin, rpcErrorResponse } from "@/lib/fulfillmentApi";
 import { requestRefundOutcome, retrieveEasyPostShipment } from "@/lib/easypost";
+import { guardApi } from "@/lib/access/api";
 
 /**
  * Refund follow-up for a voided label.
@@ -14,6 +15,8 @@ import { requestRefundOutcome, retrieveEasyPostShipment } from "@/lib/easypost";
 const KNOWN = new Set(["submitted", "refunded", "rejected", "not_applicable"]);
 
 export async function POST(request: Request, { params }: { params: Promise<{ orderId: string }> }) {
+  const denied = await guardApi(request);
+  if (denied) return denied;
   try {
     await requireApiUserFromBearerToken(request);
     const db = requireAdmin();

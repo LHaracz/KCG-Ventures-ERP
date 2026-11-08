@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { requireApiUserFromBearerToken } from "@/lib/apiAuth";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { requestRefundOutcome, type RefundOutcome } from "@/lib/easypost";
+import { guardApi } from "@/lib/access/api";
 
 /**
  * Voids the order's active label, at any stage (Label Generated, Label
@@ -26,6 +27,8 @@ export async function POST(
   request: Request,
   { params }: { params: Promise<{ orderId: string }> },
 ) {
+  const denied = await guardApi(request);
+  if (denied) return denied;
   try {
     await requireApiUserFromBearerToken(request);
     const { orderId } = await params;

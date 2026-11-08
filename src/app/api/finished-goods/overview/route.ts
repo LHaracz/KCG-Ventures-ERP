@@ -3,6 +3,7 @@ import { requireApiUserFromBearerToken } from "@/lib/apiAuth";
 import { errorResponse, loadOrders, requireAdmin } from "@/lib/fulfillmentApi";
 import { loadPackagingConfig } from "@/lib/warehouse";
 import { computeBatchPlan, syncOutOfStockFlags } from "@/lib/batchPlan";
+import { guardApi } from "@/lib/access/api";
 
 /**
  * Finished goods overview for Finished Products Inventory and the
@@ -13,6 +14,8 @@ import { computeBatchPlan, syncOutOfStockFlags } from "@/lib/batchPlan";
  * once-a-minute cache refresh.
  */
 export async function GET(request: Request) {
+  const denied = await guardApi(request);
+  if (denied) return denied;
   try {
     await requireApiUserFromBearerToken(request);
     const db = requireAdmin();

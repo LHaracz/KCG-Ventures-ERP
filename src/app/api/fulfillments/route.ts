@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { requireApiUserFromBearerToken } from "@/lib/apiAuth";
 import { errorResponse, loadOrders, requireAdmin } from "@/lib/fulfillmentApi";
 import type { FulfillmentListRow as LoaderRow } from "@/lib/fulfillmentOrdersLoader";
+import { guardApi } from "@/lib/access/api";
 
 /**
  * Fulfillments list. Orders come from the shared order loader
@@ -14,6 +15,8 @@ import type { FulfillmentListRow as LoaderRow } from "@/lib/fulfillmentOrdersLoa
 export type FulfillmentListRow = LoaderRow & { boxLabel: string | null; needsNewLabel: boolean };
 
 export async function GET(request: Request) {
+  const denied = await guardApi(request);
+  if (denied) return denied;
   try {
     await requireApiUserFromBearerToken(request);
     const db = requireAdmin();

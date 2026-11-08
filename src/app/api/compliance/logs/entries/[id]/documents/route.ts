@@ -3,6 +3,7 @@ import { requireApiUserFromBearerToken } from "@/lib/apiAuth";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { removeLogEntryDocObject, verifyUploadedLogEntryDoc } from "@/lib/logEntryDocsStorage";
 import { DOCUMENT_TYPES, type LogEntryFile } from "@/lib/complianceLogs";
+import { callerOf, guardApi } from "@/lib/access/api";
 
 /**
  * "Add documents later" (entry detail page): the only change allowed on a
@@ -15,7 +16,8 @@ import { DOCUMENT_TYPES, type LogEntryFile } from "@/lib/complianceLogs";
  */
 
 type AddDocumentsRequestBody = {
-  addedByName: string;
+  /** Ignored: "Added by" is the signed-in employee. */
+  addedByName?: string;
   files: Array<{
     path: string;
     originalFilename: string;
@@ -31,6 +33,8 @@ function badRequest(message: string) {
 const VALID_DOCUMENT_TYPES = new Set(DOCUMENT_TYPES.map((t) => t.value));
 
 export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
+  const denied = await guardApi(request);
+  if (denied) return denied;
   const { id: logEntryId } = await params;
   const verifiedPaths: string[] = [];
   try {
@@ -43,7 +47,9 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     }
 
     const body = (await request.json()) as AddDocumentsRequestBody;
-    if (!body?.addedByName?.trim()) return badRequest("Choose who is adding these documents.");
+    // "Added by" is the signed-in employee, from the session.
+    const { access } = callerOf(request);
+    if (!access.fullName || !access.accountId) return badRequest("Your name isn't set. Reload and try again.");
     if (!Array.isArray(body.files) || body.files.length === 0) return badRequest("No files to add.");
     for (const file of body.files) {
       if (!file.path || !file.originalFilename) return badRequest("Missing file path or name.");
@@ -74,7 +80,8 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
         file_size_bytes: verified.sizeBytes,
         document_type: file.documentType,
         label: file.label?.trim() || null,
-        added_by_name: body.addedByName.trim(),
+        added_by_name: access.fullName,
+        added_by_account_id: access.accountId,
         added_after_submit: true,
       });
     }

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { jsonError, readJson, withSopApi } from "@/lib/sopApi";
 import { validateSopDocument } from "@/lib/sopDocument";
+import { guardApi } from "@/lib/access/api";
 
 /**
  * One autosaved draft per SOP, stored on the sops row.
@@ -11,6 +12,8 @@ import { validateSopDocument } from "@/lib/sopDocument";
  */
 
 export async function GET(request: Request, { params }: { params: Promise<{ id: string }> }) {
+  const denied = await guardApi(request);
+  if (denied) return denied;
   return withSopApi(request, async ({ admin }) => {
     const { id } = await params;
     const { data: sop, error } = await admin
@@ -46,6 +49,8 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
 }
 
 export async function PUT(request: Request, { params }: { params: Promise<{ id: string }> }) {
+  const denied = await guardApi(request);
+  if (denied) return denied;
   return withSopApi(request, async ({ admin, user }) => {
     const { id } = await params;
     const body = await readJson<{ content: unknown; expectedRevision: number; baseVersionId?: string | null }>(request);
@@ -82,6 +87,8 @@ export async function PUT(request: Request, { params }: { params: Promise<{ id: 
 }
 
 export async function DELETE(request: Request, { params }: { params: Promise<{ id: string }> }) {
+  const denied = await guardApi(request);
+  if (denied) return denied;
   return withSopApi(request, async ({ admin, user }) => {
     const { id } = await params;
     const expected = Number(new URL(request.url).searchParams.get("expectedRevision"));

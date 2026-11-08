@@ -1,9 +1,12 @@
 import { NextResponse } from "next/server";
 import { requireApiUserFromBearerToken } from "@/lib/apiAuth";
 import { errorResponse, requireAdmin } from "@/lib/fulfillmentApi";
+import { guardApi } from "@/lib/access/api";
 
 /** Read-only preview of the next batch codes, for Complete Production's confirmation step. */
 export async function GET(request: Request) {
+  const denied = await guardApi(request);
+  if (denied) return denied;
   try {
     await requireApiUserFromBearerToken(request);
     const count = Math.min(50, Math.max(1, Number(new URL(request.url).searchParams.get("count")) || 1));

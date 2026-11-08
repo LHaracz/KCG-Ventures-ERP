@@ -1,8 +1,11 @@
 import { NextResponse } from "next/server";
 import { requireApiUserFromBearerToken } from "@/lib/apiAuth";
 import { syncAllInventoryToShopify } from "@/lib/inventorySync";
+import { guardApi } from "@/lib/access/api";
 
 export async function POST(request: Request) {
+  const denied = await guardApi(request);
+  if (denied) return denied;
   const runId = `manual-sync-${Date.now()}`;
   // #region agent log
   fetch("http://127.0.0.1:7579/ingest/75023274-b317-4510-8d56-7dafb38622b5", {

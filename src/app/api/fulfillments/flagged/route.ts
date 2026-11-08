@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { requireApiUserFromBearerToken } from "@/lib/apiAuth";
 import { errorResponse, requireAdmin } from "@/lib/fulfillmentApi";
+import { guardApi } from "@/lib/access/api";
 
 /**
  * Every flagged order for the Dashboard's Flagged Orders card (fulfilled
@@ -9,6 +10,8 @@ import { errorResponse, requireAdmin } from "@/lib/fulfillmentApi";
  * imported Sales Data orders; no Shopify calls.
  */
 export async function GET(request: Request) {
+  const denied = await guardApi(request);
+  if (denied) return denied;
   try {
     await requireApiUserFromBearerToken(request);
     const db = requireAdmin();

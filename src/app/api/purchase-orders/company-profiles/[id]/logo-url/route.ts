@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { requireApiUserFromBearerToken } from "@/lib/apiAuth";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { createSignedLogoViewUrl, SIGNED_LOGO_URL_TTL_SECONDS } from "@/lib/companyLogoStorage";
+import { guardApi } from "@/lib/access/api";
 
 /**
  * Short-lived signed URL for previewing a profile's current logo (the
@@ -10,6 +11,8 @@ import { createSignedLogoViewUrl, SIGNED_LOGO_URL_TTL_SECONDS } from "@/lib/comp
  * mints a fresh one (~10 min).
  */
 export async function GET(request: Request, { params }: { params: Promise<{ id: string }> }) {
+  const denied = await guardApi(request);
+  if (denied) return denied;
   try {
     const { id: profileId } = await params;
     await requireApiUserFromBearerToken(request);

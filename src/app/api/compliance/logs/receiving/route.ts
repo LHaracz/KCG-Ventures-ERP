@@ -3,6 +3,7 @@ import { requireApiUserFromBearerToken } from "@/lib/apiAuth";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { removeLogEntryDocObject, verifyUploadedLogEntryDoc } from "@/lib/logEntryDocsStorage";
 import { DOCUMENT_TYPES, type LogEntryFile } from "@/lib/complianceLogs";
+import { callerOf, guardApi } from "@/lib/access/api";
 
 /**
  * The ONE-transaction path for submitting (or correcting) a Receiving log
@@ -35,8 +36,10 @@ type ReceivingFilePayload = {
 type SubmitReceivingRequestBody = {
   logTypeId: string;
   performedAt: string;
-  performedByEmployeeId: string;
-  performedByName: string;
+  /** Ignored: "Received by" is the signed-in employee. */
+  performedByEmployeeId?: string | null;
+  /** Ignored: "Received by" is the signed-in employee. */
+  performedByName?: string;
   rawMaterialId?: string | null;
   rawMaterialName?: string | null;
   newRawMaterial?: NewRawMaterialPayload | null;
@@ -63,6 +66,8 @@ function badRequest(message: string) {
 const VALID_DOCUMENT_TYPES = new Set(DOCUMENT_TYPES.map((t) => t.value));
 
 export async function POST(request: Request) {
+  const denied = await guardApi(request);
+  if (denied) return denied;
   const verifiedPaths: string[] = [];
   try {
     const user = await requireApiUserFromBearerToken(request);
@@ -76,7 +81,9 @@ export async function POST(request: Request) {
     const body = (await request.json()) as SubmitReceivingRequestBody;
 
     if (!body?.logTypeId) return badRequest("Missing log type.");
-    if (!body.performedByEmployeeId || !body.performedByName?.trim()) return badRequest('"Received by" is required.');
+    // "Received by" is the signed-in employee, from the session.
+    const { access } = callerOf(request);
+    if (!access.fullName) return badRequest("Your name isn't set. Reload and try again.");
     if (!body.rawMaterialId && !body.newRawMaterial) return badRequest("A raw material is required.");
     if (body.newRawMaterial) {
       if (!body.newRawMaterial.name?.trim()) return badRequest("New raw material: name is required.");
@@ -202,8 +209,8 @@ export async function POST(request: Request) {
       quantity_added: body.quantityAdded,
       original_quantity_added: originalQuantityAdded,
       performed_at: body.performedAt,
-      performed_by_employee_id: body.performedByEmployeeId,
-      performed_by_name: body.performedByName.trim(),
+      performed_by_employee_id: null,
+      performed_by_name: access.fullName,
       values,
       template_snapshot: templateSnapshot,
       correction_reason: body.correctsEntryId ? body.correctionReason?.trim() : null,

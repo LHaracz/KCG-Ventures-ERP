@@ -4,6 +4,7 @@ import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { overrideErpFromShopifyForInventoryRow } from "@/lib/inventorySync";
 import { shopifyVariantIdLookupKeys } from "@/lib/shopifyIds";
 import { ordersCreateWebhookLog } from "./log";
+import { guardApi } from "@/lib/access/api";
 
 type ShopifyOrderLineItem = {
   variant_id?: number | string | null;
@@ -56,6 +57,8 @@ function sleep(ms: number): Promise<void> {
 }
 
 export async function POST(request: Request) {
+  const denied = await guardApi(request);
+  if (denied) return denied;
   const runId = `webhook-order-${Date.now()}`;
   const topic = request.headers.get("x-shopify-topic") ?? "";
   const shopDomain = request.headers.get("x-shopify-shop-domain") ?? "";

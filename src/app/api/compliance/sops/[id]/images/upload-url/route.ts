@@ -1,9 +1,12 @@
 import { NextResponse } from "next/server";
 import { jsonError, readJson, withSopApi } from "@/lib/sopApi";
 import { MAX_SOP_IMAGE_BYTES, SOP_IMAGES_BUCKET, buildSopImagePath, isAllowedImageMime } from "@/lib/sopImageStorage";
+import { guardApi } from "@/lib/access/api";
 
 /** Step 1 of 2 for an image in a SOP document: a signed upload URL in the private bucket. */
 export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
+  const denied = await guardApi(request);
+  if (denied) return denied;
   return withSopApi(request, async ({ admin }) => {
     const { id } = await params;
     const body = await readJson<{ mimeType: string; fileSize: number }>(request);

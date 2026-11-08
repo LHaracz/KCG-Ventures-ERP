@@ -24,6 +24,7 @@ import {
   type PoFormPayload,
   type PurchaseOrderWithLines,
 } from "@/lib/purchaseOrders";
+import { EmployeeNameField, YouName } from "@/components/access/People";
 
 const inputClassName =
   "w-full rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-xs text-black placeholder:text-zinc-400 shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500";
@@ -435,7 +436,6 @@ export function PurchaseOrderForm({
     if (!d.payment_terms.trim()) return "Payment terms are required.";
     if (!d.shipping_method.trim()) return "Shipping method is required.";
     if (!d.freight_terms.trim()) return "Freight terms are required.";
-    if (!d.prepared_by_name.trim()) return "Prepared by is required.";
     if (!d.authorized_by_name.trim()) return "Authorized by is required.";
     if (!d.authorized_by_title.trim()) return "Authorized-by title is required.";
     if (!d.buyer_phone.trim()) return "Buyer phone is required.";
@@ -696,13 +696,18 @@ export function PurchaseOrderForm({
       <section className="rounded-md border border-zinc-200 bg-white p-4">
         <p className={sectionHeadingClassName}>Prepared &amp; authorized by</p>
         <div className="mt-3 grid gap-3 sm:grid-cols-2">
-          <Field label="Prepared by" required value={draft.prepared_by_name} onChange={(v) => setDraft((d) => (d ? { ...d, prepared_by_name: v } : d))} />
-          <Field
-            label="Authorized by"
-            required
-            value={draft.authorized_by_name}
-            onChange={(v) => setDraft((d) => (d ? { ...d, authorized_by_name: v } : d))}
-          />
+          <YouName label="Prepared by" />
+          <div>
+            <label htmlFor="po-authorized-by" className="mb-1 block text-xs font-medium text-black">
+              Authorized by <span className="text-red-700">*</span>
+            </label>
+            <EmployeeNameField
+              id="po-authorized-by"
+              value={draft.authorized_by_name}
+              onChange={(v) => setDraft((d) => (d ? { ...d, authorized_by_name: v } : d))}
+              className={inputClassName}
+            />
+          </div>
           <Field
             label="Authorized-by title"
             required

@@ -1,9 +1,12 @@
 import { NextResponse } from "next/server";
 import { jsonError, readJson, withSopApi } from "@/lib/sopApi";
 import { SOP_IMAGES_BUCKET, SOP_IMAGE_URL_TTL_SECONDS } from "@/lib/sopImageStorage";
+import { guardApi } from "@/lib/access/api";
 
 /** Resolves image bucket paths to short-lived signed URLs at render time. Only recorded SOP images. */
 export async function POST(request: Request) {
+  const denied = await guardApi(request);
+  if (denied) return denied;
   return withSopApi(request, async ({ admin }) => {
     const body = await readJson<{ paths: string[] }>(request);
     const paths = Array.from(new Set((body.paths ?? []).filter((p) => typeof p === "string" && p))).slice(0, 200);

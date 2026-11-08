@@ -2,9 +2,12 @@ import { NextResponse } from "next/server";
 import { requireApiUserFromBearerToken } from "@/lib/apiAuth";
 import { badRequest, errorResponse, requireAdmin } from "@/lib/fulfillmentApi";
 import { syncReplacementTracking } from "@/lib/shopifyTracking";
+import { guardApi } from "@/lib/access/api";
 
 /** "Retry Shopify update": send a replacement label's tracking number to Shopify again. */
 export async function POST(request: Request, { params }: { params: Promise<{ orderId: string }> }) {
+  const denied = await guardApi(request);
+  if (denied) return denied;
   try {
     await requireApiUserFromBearerToken(request);
     const db = requireAdmin();

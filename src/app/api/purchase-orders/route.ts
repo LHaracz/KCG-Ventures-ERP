@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { requireApiUserFromBearerToken } from "@/lib/apiAuth";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import type { PoFormPayload } from "@/lib/purchaseOrders";
+import { callerOf, guardApi } from "@/lib/access/api";
 
 /**
  * Create a new purchase order. The ONE path that calls create_purchase_order
@@ -14,6 +15,8 @@ import type { PoFormPayload } from "@/lib/purchaseOrders";
  * messages into a 400 the form can show directly.
  */
 export async function POST(request: Request) {
+  const denied = await guardApi(request);
+  if (denied) return denied;
   try {
     const user = await requireApiUserFromBearerToken(request);
     if (!supabaseAdmin) {
@@ -48,7 +51,8 @@ export async function POST(request: Request) {
       shipping_method: body.shipping_method,
       freight_terms: body.freight_terms,
       reference_number: body.reference_number || null,
-      prepared_by_name: body.prepared_by_name,
+      // "Prepared by" is the signed-in employee, from the session (whatever the browser sent).
+      prepared_by_name: callerOf(request).access.fullName ?? "",
       authorized_by_name: body.authorized_by_name,
       authorized_by_title: body.authorized_by_title,
       buyer_phone: body.buyer_phone,
@@ -72,6 +76,10 @@ export async function POST(request: Request) {
 
     const { data, error } = await supabaseAdmin.rpc("create_purchase_order", { payload });
     if (error) return NextResponse.json({ error: error.message || "Failed to create this purchase order." }, { status: 400 });
+    const newId = (data as { id?: string } | null)?.id;
+    if (newId) {
+      await supabaseAdmin.from("purchase_orders").update({ prepared_by_account_id: callerOf(request).access.accountId }).eq("id", newId);
+    }
 
     return NextResponse.json(data);
   } catch (error) {

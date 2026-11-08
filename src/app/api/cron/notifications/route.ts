@@ -21,6 +21,9 @@ import {
   scheduleRunsWithTwoDayBuffer,
 } from "@/lib/botaniqalsScheduling";
 import { normalizeBusinessType } from "@/lib/businessType";
+import { guardApi } from "@/lib/access/api";
+import { loadAccess, type Access } from "@/lib/access/access";
+import { hasFeature } from "@/lib/access/catalog";
 
 const CONFIG_ID = "a0000000-0000-0000-0000-000000000001";
 
@@ -72,6 +75,8 @@ function toDateKeyInTimezone(input: Date | string, timezone: string): string {
 }
 
 export async function GET(request: Request) {
+  const denied = await guardApi(request);
+  if (denied) return denied;
   const url = new URL(request.url);
   const secret =
     request.headers.get("authorization")?.replace("Bearer ", "") ??
@@ -373,9 +378,15 @@ export async function GET(request: Request) {
   }
 
   const { data: usersData } = await admin.auth.admin.listUsers();
-  const userEmails = new Map<string, string>();
+  // Each login's employee access (names for headings; features decide which
+  // sections their in-app copy contains).
+  const accessByUser = new Map<string, Access>();
   for (const u of usersData?.users ?? []) {
-    if (u.email) userEmails.set(u.id, u.email);
+    try {
+      accessByUser.set(u.id, await loadAccess(admin, u.id));
+    } catch {
+      // No access when it can't be read (fail closed).
+    }
   }
 
   const agendaParts: string[] = [`<h2>Today's Production Tasks (${escapeHtml(todayLabel)})</h2>`];
@@ -383,8 +394,8 @@ export async function GET(request: Request) {
     agendaParts.push("<p>No microgreen-grow or freeze-dryer tasks scheduled for today.</p>");
   } else {
       for (const [userId, userEvents] of byUser) {
-      const email = userEmails.get(userId) ?? userId.slice(0, 8);
-      agendaParts.push(`<h3>Account (${escapeHtml(email)})</h3><ul>`);
+      const who = accessByUser.get(userId)?.fullName ?? "Production";
+      agendaParts.push(`<h3>${escapeHtml(who)}</h3><ul>`);
       for (const ev of userEvents) {
         const zonedTime = toZonedTime(new Date(ev.startAt), timezone);
         const time = format(zonedTime, "h:mm a");
@@ -399,7 +410,8 @@ export async function GET(request: Request) {
       agendaParts.push("</ul>");
     }
   }
-  sections.push(agendaParts.join(""));
+  const agendaHtml = agendaParts.join("");
+  sections.push(agendaHtml);
 
   // Section 2: Low-stock digest (once daily)
   const { data: lowItems } = await admin
@@ -407,6 +419,7 @@ export async function GET(request: Request) {
     .select("id, name, unit, quantity_on_hand, par_level")
     .not("par_level", "is", null);
 
+  let lowStockHtml = "";
   const atOrBelowPar = (lowItems || []).filter(
     (row: { quantity_on_hand: number; par_level: number | null }) =>
       row.par_level != null &&
@@ -422,12 +435,11 @@ export async function GET(request: Request) {
       }) =>
         `<tr><td>${escapeHtml(r.name)}</td><td>${r.quantity_on_hand} ${escapeHtml(r.unit)}</td><td>${r.par_level} ${escapeHtml(r.unit)}</td></tr>`,
     );
-    sections.push(
-      `<h2>Low Stock (at or below par)</h2><table border="1" cellpadding="6" style="border-collapse:collapse"><thead><tr><th>Item</th><th>QOH</th><th>Par</th></tr></thead><tbody>${lines.join("")}</tbody></table>`,
-    );
+    lowStockHtml = `<h2>Low Stock (at or below par)</h2><table border="1" cellpadding="6" style="border-collapse:collapse"><thead><tr><th>Item</th><th>QOH</th><th>Par</th></tr></thead><tbody>${lines.join("")}</tbody></table>`;
   } else {
-    sections.push("<h2>Low Stock</h2><p>No items are currently at or below par level.</p>");
+    lowStockHtml = "<h2>Low Stock</h2><p>No items are currently at or below par level.</p>";
   }
+  sections.push(lowStockHtml);
 
   if (sections.length === 0) {
     return NextResponse.json({ ok: true, message: "No content for this hour" });
@@ -440,15 +452,20 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: "Failed to send email", detail: error }, { status: 500 });
   }
 
-  // In-app: insert one notification per user so everyone sees the digest
-  const body = sections.join("\n\n").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
-  const userIds = usersData?.users?.map((u) => u.id) ?? [];
-  for (const uid of userIds) {
+  // In-app: one notification per active employee, containing only the
+  // sections their features cover (production agenda: production.planner;
+  // low stock: inventory.raw_materials). Nobody else gets one.
+  const toText = (html: string) => html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+  for (const [uid, access] of accessByUser) {
+    const parts: string[] = [];
+    if (hasFeature(access, "production.planner")) parts.push(agendaHtml);
+    if (hasFeature(access, "inventory.raw_materials")) parts.push(lowStockHtml);
+    if (parts.length === 0) continue;
     await admin.from("notifications").insert({
       user_id: uid,
       type: "daily_digest",
       title,
-      body: body.slice(0, 10000),
+      body: toText(parts.join("\n\n")).slice(0, 10000),
     });
   }
 

@@ -5,6 +5,7 @@ import { loadPackagingConfig } from "@/lib/warehouse";
 import { resolveOrderComponents } from "@/lib/orderComponents";
 import { computeBatchPlan, requiredFor, allocOrderFor, flagDetailFor } from "@/lib/batchPlan";
 import { planAllocations, sameAllocation } from "@/lib/batchAllocation";
+import { guardApi } from "@/lib/access/api";
 
 /**
  * Mark as Picked: assigns a staging box and takes the order's units out of
@@ -22,6 +23,8 @@ import { planAllocations, sameAllocation } from "@/lib/batchAllocation";
 type Allocation = { product_id: string; batch_id: string; qty: number };
 
 export async function POST(request: Request, { params }: { params: Promise<{ orderId: string }> }) {
+  const denied = await guardApi(request);
+  if (denied) return denied;
   try {
     await requireApiUserFromBearerToken(request);
     const { orderId } = await params;

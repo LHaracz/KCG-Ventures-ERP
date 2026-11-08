@@ -4,3 +4,7 @@ npm run --silent check:private || {
   echo "pre-commit: check:private failed. Unstage the files listed above." >&2
   exit 1
 }
+npm run --silent check:access || {
+  echo "pre-commit: check:access failed. Register the pages and routes listed above." >&2
+  exit 1
+}

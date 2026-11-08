@@ -4,7 +4,11 @@
  * src/app/api/webhooks/orders-create/status/route.ts
  * → URL path /api/webhooks/orders-create/status
  */
-export async function GET() {
+import { guardApi } from "@/lib/access/api";
+
+export async function GET(request: Request) {
+  const denied = await guardApi(request);
+  if (denied) return denied;
   return Response.json({
     ok: true,
     route: "/api/webhooks/orders-create/status",

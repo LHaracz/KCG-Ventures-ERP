@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { requireApiUserFromBearerToken } from "@/lib/apiAuth";
 import { shopifyAdminGraphQL, weightToOz, toOrderGid } from "@/lib/shopifyAdmin";
 import { normalizeShippingAddress, type CanonicalAddress } from "@/lib/fulfillmentOrder";
+import { guardApi } from "@/lib/access/api";
 
 type OrderQueryResponse = {
   order: {
@@ -120,6 +121,8 @@ export async function GET(
   request: Request,
   { params }: { params: Promise<{ orderId: string }> },
 ) {
+  const denied = await guardApi(request);
+  if (denied) return denied;
   try {
     await requireApiUserFromBearerToken(request);
     const { orderId } = await params;

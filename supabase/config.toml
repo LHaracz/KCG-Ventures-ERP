@@ -1,0 +1,17 @@
+# Local Supabase (supabase start) settings for this app. Only the settings
+# this app depends on are listed; anything not set uses the CLI defaults.
+# The hosted project's equivalents are set in the Supabase dashboard
+# (Authentication > Providers/Policies); see the rollout notes.
+project_id = "kcg-ventures-erp"
+
+[auth]
+site_url = "http://localhost:3000"
+additional_redirect_urls = ["http://localhost:3000/auth/accept-invite"]
+# New logins only by invitation.
+enable_signup = false
+# At least 11 characters with lower, upper, digit and symbol.
+minimum_password_length = 11
+password_requirements = "lower_upper_letters_digits_symbols"
+
+[auth.email]
+enable_signup = false

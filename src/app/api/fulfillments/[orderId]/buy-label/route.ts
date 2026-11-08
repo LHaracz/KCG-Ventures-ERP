@@ -3,6 +3,7 @@ import { requireApiUserFromBearerToken } from "@/lib/apiAuth";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { buyEasyPostRate } from "@/lib/easypost";
 import { syncReplacementTracking } from "@/lib/shopifyTracking";
+import { guardApi } from "@/lib/access/api";
 
 /**
  * Fulfillments Part 2b — purchase-only route. The rates quote (shipment
@@ -35,6 +36,8 @@ export async function POST(
   request: Request,
   { params }: { params: Promise<{ orderId: string }> },
 ) {
+  const denied = await guardApi(request);
+  if (denied) return denied;
   try {
     await requireApiUserFromBearerToken(request);
     const { orderId } = await params;

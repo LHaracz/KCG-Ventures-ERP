@@ -27,6 +27,14 @@ vi.mock("@/lib/supabaseAdmin", () => ({
 vi.mock("@/lib/apiAuth", () => ({
   requireApiUserFromBearerToken: async () => ({ id: "00000000-0000-4000-8000-000000000001" }),
 }));
+vi.mock("@/lib/access/api", () => {
+  const user = { id: "00000000-0000-4000-8000-000000000001" };
+  const access = {
+    userId: user.id, accountId: null, status: "active", email: "packer1@example.test", firstName: "Test", lastName: "Packer",
+    roles: ["Admin"], fullName: "Test Packer", active: true, isAdmin: true, features: new Set<string>(),
+  };
+  return { guardApi: async () => null, callerOf: () => ({ user, access }), userFromRequest: async () => user };
+});
 vi.mock("@/lib/easypost", async (orig) => {
   const actual = await orig<typeof import("@/lib/easypost")>();
   const fakeRefund = async (id: string) => {

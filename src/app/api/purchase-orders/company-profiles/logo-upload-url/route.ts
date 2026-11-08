@@ -8,6 +8,7 @@ import {
   isAllowedLogoFilename,
   isAllowedLogoMimeType,
 } from "@/lib/companyLogoStorage";
+import { guardApi } from "@/lib/access/api";
 
 /**
  * Step 1 of 2 for a profile logo upload: create a signed upload URL for the
@@ -28,6 +29,8 @@ function badRequest(message: string) {
 }
 
 export async function POST(request: Request) {
+  const denied = await guardApi(request);
+  if (denied) return denied;
   try {
     await requireApiUserFromBearerToken(request);
     if (!supabaseAdmin) {

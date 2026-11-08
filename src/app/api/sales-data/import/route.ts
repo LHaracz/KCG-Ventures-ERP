@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { requireApiUserFromBearerToken } from "@/lib/apiAuth";
 import { runSalesImport } from "@/lib/salesImport";
+import { guardApi } from "@/lib/access/api";
 
 type ImportRequestBody = {
   since?: string | null;
@@ -8,6 +9,8 @@ type ImportRequestBody = {
 };
 
 export async function POST(request: Request) {
+  const denied = await guardApi(request);
+  if (denied) return denied;
   try {
     const user = await requireApiUserFromBearerToken(request);
 

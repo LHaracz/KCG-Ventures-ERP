@@ -1,11 +1,6 @@
-import { createClient } from "@supabase/supabase-js";
+import { createBrowserClient } from "@supabase/ssr";
+import { SUPABASE_ANON_KEY, SUPABASE_URL } from "@/lib/supabaseConfig";
 
-// Defaults are the production project (unchanged behavior). Setting
-// NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY points the
-// browser at another project (a dev project or local `supabase start`), which
-// the e2e tests require so they never run against production.
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://ttfshzqopxwijdtpvgye.supabase.co";
-const supabaseAnonKey =
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "sb_publishable_4ZsAEGgSLPwWtKu2l50VvQ_oGDEQC8K";
-
-export const supabase = createClient(supabaseUrl, supabaseAnonKey);
+// Browser client. The session is kept in cookies (not localStorage), so the
+// server can tell who is signed in on every page request. Same API as before.
+export const supabase = createBrowserClient(SUPABASE_URL, SUPABASE_ANON_KEY);

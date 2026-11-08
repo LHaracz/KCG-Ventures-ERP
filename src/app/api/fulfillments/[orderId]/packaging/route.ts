@@ -3,6 +3,7 @@ import { requireApiUserFromBearerToken } from "@/lib/apiAuth";
 import { badRequest, cachedOrder, errorResponse, requireAdmin, rpcErrorResponse } from "@/lib/fulfillmentApi";
 import { loadPackagingConfig, packagingForOrder } from "@/lib/warehouse";
 import type { PackagingOverride } from "@/lib/packagingEngine";
+import { guardApi } from "@/lib/access/api";
 
 /**
  * Packaging override for one order.
@@ -20,6 +21,8 @@ type Body = {
 };
 
 export async function POST(request: Request, { params }: { params: Promise<{ orderId: string }> }) {
+  const denied = await guardApi(request);
+  if (denied) return denied;
   try {
     await requireApiUserFromBearerToken(request);
     const { orderId } = await params;

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { requireApiUserFromBearerToken } from "@/lib/apiAuth";
 import { badRequest, errorResponse, requireAdmin } from "@/lib/fulfillmentApi";
+import { callerOf, guardApi } from "@/lib/access/api";
 
 /**
  * Count boxes: { counts: [{ batch_id, expected_remaining, counted_qty, reason }], name }
@@ -8,11 +9,15 @@ import { badRequest, errorResponse, requireAdmin } from "@/lib/fulfillmentApi";
  * opened, responds 409 with code count_stale and the current numbers.
  */
 export async function POST(request: Request) {
+  const denied = await guardApi(request);
+  if (denied) return denied;
   try {
     await requireApiUserFromBearerToken(request);
-    const body = (await request.json().catch(() => ({}))) as { counts?: unknown[]; name?: string };
+    const body = (await request.json().catch(() => ({}))) as { counts?: unknown[] };
+    // "Counted by" is the signed-in employee, from the session.
+    const countedBy = callerOf(request).access.fullName;
     if (!Array.isArray(body.counts) || body.counts.length === 0) return badRequest("Enter at least one count.");
-    const { data, error } = await requireAdmin().rpc("count_batches", { p_counts: body.counts, p_name: body.name ?? null });
+    const { data, error } = await requireAdmin().rpc("count_batches", { p_counts: body.counts, p_name: countedBy });
     if (error) {
       const e = error as { message: string; hint?: string | null; details?: string | null };
       let stale: unknown = null;

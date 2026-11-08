@@ -8,6 +8,7 @@ import {
   isAllowedDocFilename,
   isAllowedDocMimeType,
 } from "@/lib/logEntryDocsStorage";
+import { guardApi } from "@/lib/access/api";
 
 /**
  * Step 1 of 2 for every log-entry document upload (a new receiving
@@ -29,6 +30,8 @@ function badRequest(message: string) {
 }
 
 export async function POST(request: Request) {
+  const denied = await guardApi(request);
+  if (denied) return denied;
   try {
     await requireApiUserFromBearerToken(request);
     if (!supabaseAdmin) {

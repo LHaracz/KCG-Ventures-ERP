@@ -4,6 +4,7 @@ import { errorResponse, requireAdmin } from "@/lib/fulfillmentApi";
 import { fetchAllRows } from "@/lib/supabasePagination";
 import { loadPackagingConfig } from "@/lib/warehouse";
 import { buildPackagingPreview, type PreviewOrder } from "@/lib/packagingPreview";
+import { guardApi } from "@/lib/access/api";
 
 /**
  * Read-only "Last 90 days" packaging preview. Uses the ERP's imported
@@ -12,6 +13,8 @@ import { buildPackagingPreview, type PreviewOrder } from "@/lib/packagingPreview
  * server-side pass; no Shopify calls; nothing is written.
  */
 export async function GET(request: Request) {
+  const denied = await guardApi(request);
+  if (denied) return denied;
   try {
     await requireApiUserFromBearerToken(request);
     const db = requireAdmin();

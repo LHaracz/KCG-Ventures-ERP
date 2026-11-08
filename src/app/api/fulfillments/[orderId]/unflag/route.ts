@@ -3,6 +3,7 @@ import { requireApiUserFromBearerToken } from "@/lib/apiAuth";
 import { badRequest, errorResponse, loadOrders, requireAdmin } from "@/lib/fulfillmentApi";
 import { loadPackagingConfig } from "@/lib/warehouse";
 import { computeBatchPlan, syncOutOfStockFlags } from "@/lib/batchPlan";
+import { guardApi } from "@/lib/access/api";
 
 /**
  * Unflag an automatic "Item(s) out of stock" flag. Recomputes the batch plan:
@@ -11,6 +12,8 @@ import { computeBatchPlan, syncOutOfStockFlags } from "@/lib/batchPlan";
  * from the order page, as before.)
  */
 export async function POST(request: Request, { params }: { params: Promise<{ orderId: string }> }) {
+  const denied = await guardApi(request);
+  if (denied) return denied;
   try {
     await requireApiUserFromBearerToken(request);
     const { orderId } = await params;

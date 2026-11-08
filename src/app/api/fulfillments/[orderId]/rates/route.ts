@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { requireApiUserFromBearerToken } from "@/lib/apiAuth";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { createEasyPostShipment, type EasyPostAddress, type EasyPostRate } from "@/lib/easypost";
+import { guardApi } from "@/lib/access/api";
 
 /**
  * Fulfillments Part 2b — quote-only route. Creates an EasyPost shipment and
@@ -91,6 +92,8 @@ async function findPreselectedRate(
 }
 
 export async function POST(request: Request, { params }: { params: Promise<{ orderId: string }> }) {
+  const denied = await guardApi(request);
+  if (denied) return denied;
   try {
     await requireApiUserFromBearerToken(request);
     const { orderId } = await params;

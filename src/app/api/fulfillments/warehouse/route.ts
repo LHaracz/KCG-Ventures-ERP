@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { requireApiUserFromBearerToken } from "@/lib/apiAuth";
 import { errorResponse, loadOrders, requireAdmin } from "@/lib/fulfillmentApi";
 import { loadWarehouseSnapshot } from "@/lib/warehouse";
+import { guardApi } from "@/lib/access/api";
 
 /**
  * Data for the Pick List and Shipping Assignments pages (polled about every
@@ -10,6 +11,8 @@ import { loadWarehouseSnapshot } from "@/lib/warehouse";
  * boxes, assignments, rules and overrides.
  */
 export async function GET(request: Request) {
+  const denied = await guardApi(request);
+  if (denied) return denied;
   try {
     await requireApiUserFromBearerToken(request);
     const db = requireAdmin();

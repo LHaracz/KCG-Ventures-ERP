@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { requireApiUserFromBearerToken } from "@/lib/apiAuth";
 import { runCsvSalesImport } from "@/lib/salesImport";
+import { guardApi } from "@/lib/access/api";
 
 type ImportCsvRequestBody = {
   csv?: string;
@@ -11,6 +12,8 @@ type ImportCsvRequestBody = {
 const MAX_CSV_LENGTH = 20 * 1024 * 1024;
 
 export async function POST(request: Request) {
+  const denied = await guardApi(request);
+  if (denied) return denied;
   try {
     const user = await requireApiUserFromBearerToken(request);
 

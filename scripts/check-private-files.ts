@@ -4,11 +4,15 @@
  *   - anything under .private/, test-results/ or playwright-report/
  *   - any .pdf not listed in scripts/private-allowlist.txt
  *   - anything that looks like a backup, dump or export of SOP, formula or BOM data
- * Prints file paths only, never file contents.
+ *   - any staged ADDED line (outside .private/) containing an email address at
+ *     a personal-provider domain (gmail.com, yahoo.com, ...) unless the address
+ *     is listed in scripts/email-allowlist.txt
+ * Prints file paths (and line numbers) only, never file contents or addresses.
  */
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
+import { findPersonalEmailsInDiff, parseEmailAllowlist } from "./lib/personalEmails";
 
 const root = execFileSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim();
 
@@ -60,10 +64,23 @@ for (const f of files) {
   }
 }
 
+// Personal email addresses on staged added lines (file and line only).
+const emailAllowFile = path.join(root, "scripts", "email-allowlist.txt");
+const emailAllow = existsSync(emailAllowFile) ? parseEmailAllowlist(readFileSync(emailAllowFile, "utf8")) : [];
+const stagedDiff = execFileSync("git", ["diff", "--cached", "-U0", "--no-color", "--no-ext-diff", "--diff-filter=ACMR"], {
+  cwd: root,
+  encoding: "utf8",
+  maxBuffer: 256 * 1024 * 1024,
+});
+for (const e of findPersonalEmailsInDiff(stagedDiff, emailAllow)) {
+  hits.push({ file: `${e.file}:${e.line}`, reason: "personal email address on an added line" });
+}
+
 if (hits.length > 0) {
   console.error("check:private FAILED. These tracked or staged files must not be committed:");
   for (const h of hits) console.error(`  ${h.file}  (${h.reason})`);
   console.error("Unstage them (git rm --cached <file>) or, for an intentional non-confidential file, add it to scripts/private-allowlist.txt.");
+  console.error("For a personal email address: remove it from the line, or (only if it must be committed) add it to scripts/email-allowlist.txt.");
   process.exit(1);
 }
 console.log(`check:private OK (${files.length} tracked/staged files checked).`);

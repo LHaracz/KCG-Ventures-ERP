@@ -10,6 +10,7 @@
     "inventory:backfill-units": "node scripts/backfillUnitsPerVariant.mjs",
     "inventory:backfill-units:dry-run": "node scripts/backfillUnitsPerVariant.mjs --dry-run",
     "check:private": "tsx scripts/check-private-files.ts",
+    "check:access": "tsx scripts/check-access-registry.ts",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "test:e2e": "playwright test",
@@ -22,6 +23,7 @@
   "dependencies": {
     "@instantdb/react": "^0.22.151",
     "@react-pdf/renderer": "4.9.0",
+    "@supabase/ssr": "0.9.0",
     "@supabase/supabase-js": "^2.98.0",
     "@tiptap/core": "3.31.4",
     "@tiptap/extension-drag-handle-react": "3.31.4",

@@ -4,14 +4,10 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { useSupabase } from "@/components/InstantProvider";
+import { useAccess } from "@/components/access/AccessProvider";
+import { ALL_SECTIONS, type NavCategory, type NavLeaf, type NavSection, type Sidebar } from "@/lib/access/catalog";
 
-export type NavLeaf = { href: string; label: string };
-export type NavCategory = { title: string; items: NavLeaf[] };
-export type NavSection = {
-  title: string;
-  items?: NavLeaf[];
-  categories?: NavCategory[];
-};
+export type { NavCategory, NavLeaf, NavSection };
 
 const SIDEBAR_WIDTH_STORAGE_KEY = "kcg-erp-sidebar-width";
 const SIDEBAR_MIN_WIDTH = 190;
@@ -22,66 +18,11 @@ function clampSidebarWidth(width: number): number {
   return Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, width));
 }
 
-const topItems: NavLeaf[] = [
-  { href: "/", label: "Dashboard" },
-  { href: "/schedule", label: "Schedule" },
-  { href: "/notifications", label: "Alerts" },
-  { href: "/settings/notifications", label: "Notification Settings" },
-];
-
-// Exported so other pages (e.g. the Dashboard's BotanIQals dropdowns) can
-// mirror these exact categories/pages instead of maintaining a second,
-// driftable copy of the same links.
-export const sections: NavSection[] = [
-  {
-    title: "BotanIQals",
-    categories: [
-      {
-        title: "Production",
-        items: [
-          { href: "/calibration", label: "Freeze Dryer Calibration" },
-          { href: "/products", label: "Products & BOM" },
-          { href: "/formulation", label: "Formulation" },
-          { href: "/cycles", label: "Production Cycles & Planner" },
-          { href: "/production-optimization", label: "Production Optimization" },
-        ],
-      },
-      {
-        title: "Inventory",
-        items: [
-          { href: "/finished-products-inventory", label: "Finished Products Inventory" },
-          { href: "/inventory", label: "Raw Materials" },
-          { href: "/inventory/purchase-orders", label: "Purchase Orders" },
-        ],
-      },
-      {
-        title: "Fulfillment",
-        items: [
-          { href: "/fulfillments", label: "Fulfillments" },
-          { href: "/fulfillments/pick-list", label: "Pick List" },
-          { href: "/sales-data", label: "Sales Data" },
-          { href: "/stats", label: "Sales Stats" },
-        ],
-      },
-      {
-        title: "Compliance",
-        items: [
-          { href: "/compliance/sops", label: "SOPs" },
-          { href: "/compliance/logs", label: "Logs" },
-          { href: "/compliance/coas", label: "COAs" },
-        ],
-      },
-    ],
-  },
-  {
-    title: "MiniLeaf",
-    items: [
-      { href: "/microgreens", label: "Microgreens Guide" },
-      { href: "/yield", label: "Yield Logging" },
-      { href: "/microgreen-optimization", label: "Microgreens Optimization" },
-    ],
-  },
-];
+// The sidebar is built from the feature catalog (src/lib/access/catalog.ts)
+// for the signed-in employee. ALL_SECTIONS is the full, unfiltered structure
+// (what an Admin sees). It's exported so other pages (e.g. the Dashboard's
+// BotanIQals dropdowns) mirror the same categories instead of keeping a copy.
+export const sections: NavSection[] = ALL_SECTIONS;
 
 function NavLink({
   item,
@@ -176,21 +117,26 @@ function CategorySection({
 function AccountControls({
   isLoading,
   user,
+  fullName,
   onLogout,
 }: {
   isLoading: boolean;
   user: { email?: string | null } | null;
+  fullName: string | null;
   onLogout: () => void;
 }) {
   if (isLoading) {
-    return <span className="text-xs text-zinc-500">Checking session…</span>;
+    return <span className="text-xs text-black">Checking session…</span>;
   }
   if (user) {
     return (
       <div className="flex flex-col gap-2">
-        <span className="truncate text-xs text-zinc-600" title={user.email ?? ""}>
-          {user.email}
+        <span className="truncate text-xs text-black" title={user.email ?? ""}>
+          {fullName ?? user.email}
         </span>
+        <Link href="/set-password" className="text-xs font-medium text-emerald-700 underline">
+          Change password
+        </Link>
         <button
           type="button"
           onClick={onLogout}
@@ -213,14 +159,17 @@ function AccountControls({
 
 function NavMenu({
   pathname,
+  sidebar,
   onNavigate,
 }: {
   pathname: string | null;
+  sidebar: Sidebar | null;
   onNavigate?: () => void;
 }) {
+  if (!sidebar) return <nav className="flex-1 overflow-y-auto px-2 py-2" aria-label="Main" />;
   return (
-    <nav className="flex-1 space-y-1 overflow-y-auto px-2 py-2">
-      {topItems.map((item) => (
+    <nav className="flex-1 space-y-1 overflow-y-auto px-2 py-2" aria-label="Main">
+      {sidebar.top.map((item) => (
         <NavLink
           key={item.href}
           item={item}
@@ -228,7 +177,12 @@ function NavMenu({
           onClick={onNavigate}
         />
       ))}
-      {sections.map((section) => (
+      {sidebar.employees && (
+        <div className="pt-2">
+          <NavLink item={sidebar.employees} active={pathname === sidebar.employees.href} onClick={onNavigate} />
+        </div>
+      )}
+      {sidebar.sections.map((section) => (
         <div key={section.title}>
           <SectionHeading title={section.title} />
           {section.categories ? (
@@ -326,6 +280,8 @@ function SidebarResizeHandle({
 export function Navigation() {
   const pathname = usePathname();
   const { user, isLoading, supabase } = useSupabase();
+  const { me } = useAccess();
+  const sidebar = user && me?.active ? me.sidebar : null;
   const [mobileOpen, setMobileOpen] = useState(false);
   const [sidebarWidth, setSidebarWidth] = useState(SIDEBAR_DEFAULT_WIDTH);
 
@@ -363,6 +319,7 @@ export function Navigation() {
   const handleLogout = async () => {
     await supabase.auth.signOut();
     setMobileOpen(false);
+    window.location.assign("/login");
   };
 
   return (
@@ -377,9 +334,9 @@ export function Navigation() {
             KCG Ventures ERP
           </span>
         </div>
-        <NavMenu pathname={pathname} />
+        <NavMenu pathname={pathname} sidebar={sidebar} />
         <div className="border-t border-zinc-200 px-3 py-3">
-          <AccountControls isLoading={isLoading} user={user} onLogout={handleLogout} />
+          <AccountControls isLoading={isLoading} user={user} fullName={me?.fullName ?? null} onLogout={handleLogout} />
         </div>
         <SidebarResizeHandle
           width={sidebarWidth}
@@ -410,11 +367,12 @@ export function Navigation() {
             id="mobile-nav"
             className="flex max-h-[calc(100vh-56px)] flex-col border-t border-zinc-200"
           >
-            <NavMenu pathname={pathname} onNavigate={() => setMobileOpen(false)} />
+            <NavMenu pathname={pathname} sidebar={sidebar} onNavigate={() => setMobileOpen(false)} />
             <div className="border-t border-zinc-200 px-3 py-3">
               <AccountControls
                 isLoading={isLoading}
                 user={user}
+                fullName={me?.fullName ?? null}
                 onLogout={handleLogout}
               />
             </div>

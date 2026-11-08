@@ -3,6 +3,7 @@ import { requireApiUserFromBearerToken } from "@/lib/apiAuth";
 import { badRequest, errorResponse, loadOrders, requireAdmin } from "@/lib/fulfillmentApi";
 import { loadPackagingConfig } from "@/lib/warehouse";
 import { computeBatchPlan } from "@/lib/batchPlan";
+import { guardApi } from "@/lib/access/api";
 
 /**
  * Batches for one order (order detail page): the planned batch per
@@ -10,6 +11,8 @@ import { computeBatchPlan } from "@/lib/batchPlan";
  * picked afterwards (including "Picked from a different batch").
  */
 export async function GET(request: Request, { params }: { params: Promise<{ orderId: string }> }) {
+  const denied = await guardApi(request);
+  if (denied) return denied;
   try {
     await requireApiUserFromBearerToken(request);
     const { orderId } = await params;

@@ -15,9 +15,11 @@ import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useSupabase } from "@/components/InstantProvider";
-import { fetchActiveEmployees, type Employee } from "@/lib/employees";
+import { YouName } from "@/components/access/People";
 import { DOCUMENT_TYPES, type LogEntryFile, type LogType } from "@/lib/complianceLogs";
 import { isMassUnit, convertGramsTo } from "@/lib/massUnits";
+import { FeatureLink } from "@/components/access/FeatureLink";
+import { useAccess } from "@/components/access/AccessProvider";
 
 const inputClassName =
   "w-full rounded-md border border-zinc-300 bg-white px-3 py-2.5 text-sm text-black placeholder:text-zinc-400 shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500 disabled:bg-zinc-100 disabled:text-zinc-500";
@@ -67,16 +69,16 @@ export function ReceivingEntryForm({
 }) {
   const router = useRouter();
   const { user, supabase } = useSupabase();
+  const { has } = useAccess();
+  const canViewLogs = has("compliance.logs");
 
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
 
-  const [employees, setEmployees] = useState<Employee[]>([]);
   const [rawMaterials, setRawMaterials] = useState<RawMaterial[]>([]);
   const [pastSuppliers, setPastSuppliers] = useState<string[]>([]);
   const [original, setOriginal] = useState<OriginalReceiptInfo | null>(null);
 
-  const [performedByEmployeeId, setPerformedByEmployeeId] = useState("");
   const [performedAt, setPerformedAt] = useState(toDatetimeLocalValue(new Date().toISOString()));
   const [correctionReason, setCorrectionReason] = useState("");
 
@@ -111,13 +113,11 @@ export function ReceivingEntryForm({
       setLoading(true);
       setLoadError(null);
       try {
-        const [employeesResult, itemsResult, suppliersResult] = await Promise.all([
-          fetchActiveEmployees(supabase),
+        const [itemsResult, suppliersResult] = await Promise.all([
           supabase.from("inventory_items").select("id, name, unit, quantity_on_hand").order("name"),
           supabase.from("receiving_details").select("supplier").order("supplier"),
         ]);
         if (cancelled) return;
-        setEmployees(employeesResult);
         setRawMaterials((itemsResult.data ?? []) as RawMaterial[]);
         const uniqueSuppliers = Array.from(
           new Set(((suppliersResult.data ?? []) as any[]).map((r) => r.supplier).filter(Boolean)),
@@ -236,15 +236,6 @@ export function ReceivingEntryForm({
   const handleSubmit = async () => {
     setSubmitError(null);
 
-    if (!performedByEmployeeId) {
-      setSubmitError('"Received by" is required.');
-      return;
-    }
-    const employee = employees.find((e) => e.id === performedByEmployeeId);
-    if (!employee) {
-      setSubmitError("Selected employee not found.");
-      return;
-    }
     if (!addingNewMaterial && !rawMaterialId) {
       setSubmitError("Choose a raw material, or add a new one.");
       return;
@@ -313,8 +304,6 @@ export function ReceivingEntryForm({
         body: JSON.stringify({
           logTypeId: logType.id,
           performedAt: performedAtIso,
-          performedByEmployeeId: employee.id,
-          performedByName: employee.full_name,
           rawMaterialId: addingNewMaterial ? null : rawMaterialId,
           rawMaterialName: addingNewMaterial ? null : selectedMaterial?.name ?? null,
           newRawMaterial: addingNewMaterial
@@ -343,7 +332,8 @@ export function ReceivingEntryForm({
       });
       const payload = await res.json();
       if (!res.ok) throw new Error(payload.error || "Failed to save this receiving entry.");
-      router.push(`/compliance/logs/entries/${payload.entryId}`);
+      // Raw Materials users without the Logs feature go back to Raw Materials.
+      router.push(canViewLogs ? `/compliance/logs/entries/${payload.entryId}` : "/inventory");
     } catch (err: any) {
       setSubmitError(err.message || "Failed to save this receiving entry.");
     } finally {
@@ -367,9 +357,9 @@ export function ReceivingEntryForm({
           {correctsEntryId ? `Correct Receiving Entry${original ? ` #${original.entryNumber}` : ""}` : "New Receiving Entry"}
         </h1>
         {logType.linked_sop_id && (
-          <Link href={`/compliance/sops/${logType.linked_sop_id}`} className="mt-1 inline-block text-xs font-medium text-emerald-700 underline">
+          <FeatureLink feature="compliance.sops" href={`/compliance/sops/${logType.linked_sop_id}`} className="mt-1 inline-block text-xs font-medium text-emerald-700 underline">
             View SOP
-          </Link>
+          </FeatureLink>
         )}
       </div>
 
@@ -392,18 +382,7 @@ export function ReceivingEntryForm({
           </div>
         )}
 
-        <div>
-          <label className={labelClassName}>Received by</label>
-          <select value={performedByEmployeeId} onChange={(e) => setPerformedByEmployeeId(e.target.value)} className={inputClassName}>
-            <option value="">Select…</option>
-            {employees.map((emp) => (
-              <option key={emp.id} value={emp.id}>
-                {emp.full_name}
-              </option>
-            ))}
-          </select>
-          <p className="mt-1 text-[11px] text-zinc-500">A name selection from the roster, not a login or signature.</p>
-        </div>
+        <YouName label="Received by" />
 
         <div>
           <label className={labelClassName}>Date/time received</label>

@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { requireApiUserFromBearerToken } from "@/lib/apiAuth";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { removeSopObject, verifyUploadedPdf } from "@/lib/sopStorage";
+import { guardApi } from "@/lib/access/api";
 
 /**
  * Step 2 of 2 for "Upload New Version": the browser has already PUT its
@@ -36,6 +37,8 @@ function badRequest(message: string) {
  * by so-and-so" in the version selector.
  */
 export async function GET(request: Request, { params }: { params: Promise<{ id: string }> }) {
+  const denied = await guardApi(request);
+  if (denied) return denied;
   try {
     const { id: sopId } = await params;
     await requireApiUserFromBearerToken(request);
@@ -80,6 +83,8 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
 }
 
 export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
+  const denied = await guardApi(request);
+  if (denied) return denied;
   try {
     const { id: sopId } = await params;
     const user = await requireApiUserFromBearerToken(request);

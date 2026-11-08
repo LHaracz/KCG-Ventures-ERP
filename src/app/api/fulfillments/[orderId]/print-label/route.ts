@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { requireApiUserFromBearerToken } from "@/lib/apiAuth";
 import { badRequest, errorResponse, requireAdmin, rpcErrorResponse } from "@/lib/fulfillmentApi";
+import { guardApi } from "@/lib/access/api";
 
 /**
  * Print Label: stamps printed_at on the active label. Label Generated becomes
@@ -8,6 +9,8 @@ import { badRequest, errorResponse, requireAdmin, rpcErrorResponse } from "@/lib
  * is left as it is.
  */
 export async function POST(request: Request, { params }: { params: Promise<{ orderId: string }> }) {
+  const denied = await guardApi(request);
+  if (denied) return denied;
   try {
     await requireApiUserFromBearerToken(request);
     const db = requireAdmin();

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { jsonError, readJson, UUID_RE, withSopApi } from "@/lib/sopApi";
 import { syncSopFormulaTables } from "@/lib/sopService";
+import { guardApi } from "@/lib/access/api";
 
 /**
  * Called right after Finish Iteration commits. Creates one automatic
@@ -8,6 +9,8 @@ import { syncSopFormulaTables } from "@/lib/sopService";
  * formula amounts or SOP text.
  */
 export async function POST(request: Request) {
+  const denied = await guardApi(request);
+  if (denied) return denied;
   return withSopApi(request, async ({ admin }) => {
     const body = await readJson<{ productId: string; formulationId: string }>(request);
     if (!UUID_RE.test(body.productId ?? "") || !UUID_RE.test(body.formulationId ?? "")) return jsonError("productId and formulationId are required.");

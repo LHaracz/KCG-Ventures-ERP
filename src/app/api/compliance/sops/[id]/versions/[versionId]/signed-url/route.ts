@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { requireApiUserFromBearerToken } from "@/lib/apiAuth";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { createSignedViewUrl, SIGNED_VIEW_URL_TTL_SECONDS } from "@/lib/sopStorage";
+import { guardApi } from "@/lib/access/api";
 
 /**
  * Short-lived signed URL for viewing or downloading one version's file.
@@ -13,6 +14,8 @@ export async function GET(
   request: Request,
   { params }: { params: Promise<{ id: string; versionId: string }> },
 ) {
+  const denied = await guardApi(request);
+  if (denied) return denied;
   try {
     const { id: sopId, versionId } = await params;
     await requireApiUserFromBearerToken(request);

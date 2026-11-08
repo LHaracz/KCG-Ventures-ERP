@@ -7,6 +7,7 @@ import {
   productionDateFromCycleEndDate,
   type SheetsProductionRecord,
 } from "@/lib/sheetsProductionWebhook";
+import { guardApi } from "@/lib/access/api";
 
 type TargetRow = {
   product: string | null;
@@ -25,6 +26,8 @@ type BatchRow = {
  * Auth: Bearer token of the cycle owner (no separate admin role in this app).
  */
 export async function POST(request: Request) {
+  const denied = await guardApi(request);
+  if (denied) return denied;
   try {
     const user = await requireApiUserFromBearerToken(request);
     const body = (await request.json()) as { cycleId?: string };
@@ -41,7 +44,6 @@ export async function POST(request: Request) {
       .from("production_cycles")
       .select("id, user_id, business_type, brand, end_date")
       .eq("id", cycleId)
-      .eq("user_id", user.id)
       .single();
 
     if (cycleError || !cycle) {
@@ -67,7 +69,7 @@ export async function POST(request: Request) {
       .from("botaniqals_production_batches")
       .select("product_id, quantity_produced, batch_id")
       .eq("production_cycle_id", cycleId)
-      .eq("user_id", user.id);
+;
 
     if (batchesError) {
       return NextResponse.json({ error: batchesError.message }, { status: 500 });
@@ -98,7 +100,7 @@ export async function POST(request: Request) {
         .from("production_targets")
         .select("product, quantity_to_produce, target_units")
         .eq("production_cycle", cycleId)
-        .eq("user_id", user.id);
+;
 
       if (targetsError) {
         return NextResponse.json({ error: targetsError.message }, { status: 500 });

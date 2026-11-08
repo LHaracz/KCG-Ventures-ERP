@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { requireApiUserFromBearerToken } from "@/lib/apiAuth";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { SOPS_BUCKET, MAX_SOP_FILE_BYTES, buildSopStoragePath, isPdfFilename, isPdfMimeType } from "@/lib/sopStorage";
+import { guardApi } from "@/lib/access/api";
 
 /**
  * Step 1 of 2 for every upload (new SOP or new version): create a signed
@@ -22,6 +23,8 @@ function badRequest(message: string) {
 }
 
 export async function POST(request: Request) {
+  const denied = await guardApi(request);
+  if (denied) return denied;
   try {
     await requireApiUserFromBearerToken(request);
     if (!supabaseAdmin) {
