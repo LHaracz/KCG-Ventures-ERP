@@ -25,6 +25,7 @@ import {
   type PurchaseOrderWithLines,
 } from "@/lib/purchaseOrders";
 import { EmployeeNameField, YouName } from "@/components/access/People";
+import { applyPrefillToDraft, type PoPrefill } from "@/lib/procurement/poPrefill";
 
 const inputClassName =
   "w-full rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-xs text-black placeholder:text-zinc-400 shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500";
@@ -339,11 +340,14 @@ export function PurchaseOrderForm({
   poId,
   initialPo,
   duplicateFromPo,
+  prefill,
 }: {
   mode: "create" | "edit";
   poId?: string;
   initialPo?: PurchaseOrderWithLines | null;
   duplicateFromPo?: PurchaseOrderWithLines | null;
+  /** From Procurement (built on the server from ids). Nothing is saved until the user saves. */
+  prefill?: PoPrefill | null;
 }) {
   const router = useRouter();
   const { supabase } = useSupabase();
@@ -363,6 +367,9 @@ export function PurchaseOrderForm({
           setDraft(draftFromExistingPo(initialPo));
         } else if (mode === "create" && duplicateFromPo) {
           setDraft(draftFromDuplicateSource(duplicateFromPo));
+        } else if (mode === "create" && prefill) {
+          // The business profile's defaults first (the form's normal default), then the supplier and lines.
+          setDraft(applyPrefillToDraft(data.length > 0 ? applyProfileDefaults(emptyDraft(), data[0]) : emptyDraft(), prefill, EMPTY_PO_LINE));
         } else if (data.length > 0) {
           setDraft(applyProfileDefaults(emptyDraft(), data[0]));
         } else {

@@ -56,7 +56,8 @@ const SIDEBAR_BEFORE = {
         { title: "Inventory", items: [
           { href: "/finished-products-inventory", label: "Finished Products Inventory" },
           { href: "/inventory", label: "Raw Materials" },
-          { href: "/inventory/purchase-orders", label: "Purchase Orders" },
+          // Procurement build: replaced "Purchase Orders" in the same position (tests/unit/procurementSidebar.test.ts).
+          { href: "/inventory/procurement", label: "Procurement" },
         ] },
         { title: "Fulfillment", items: [
           { href: "/fulfillments", label: "Fulfillments" },

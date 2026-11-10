@@ -170,6 +170,9 @@ export default function PurchaseOrdersListPage() {
   return (
     <AuthGuard>
       <div className="mx-auto max-w-6xl space-y-4">
+        <Link href="/inventory/procurement" className="inline-block text-[11px] font-medium text-emerald-700 underline">
+          ← Back to Procurement
+        </Link>
         <div className="flex flex-wrap items-start justify-between gap-2">
           <div>
             <h1 className="text-2xl font-semibold text-zinc-900">Purchase Orders</h1>

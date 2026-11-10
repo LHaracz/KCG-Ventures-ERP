@@ -7,6 +7,9 @@ import { AuthGuard } from "@/components/AuthGuard";
 import { useSupabase } from "@/components/InstantProvider";
 import { PurchaseOrderForm } from "@/components/PurchaseOrderForm";
 import { fetchPurchaseOrderWithLines, type PurchaseOrderWithLines } from "@/lib/purchaseOrders";
+import { SupplierInfoBox } from "@/components/procurement/ProcurementUi";
+import { fetchPoPrefill } from "@/lib/procurement/client";
+import type { PoPrefillResult } from "@/lib/procurement/service";
 
 export default function NewPurchaseOrderPage() {
   return (
@@ -20,6 +23,13 @@ function NewPurchaseOrderPageInner() {
   const { user, supabase } = useSupabase();
   const searchParams = useSearchParams();
   const duplicateFromId = searchParams.get("duplicateFrom");
+  // From Procurement: only ids are in the URL; the server builds the prefill.
+  const procurementSupplierId = duplicateFromId ? null : searchParams.get("supplier");
+  const procurementMaterialIds = (searchParams.get("materials") ?? "").split(",").filter(Boolean);
+  const procurementKey = procurementSupplierId ? `${procurementSupplierId}|${procurementMaterialIds.join(",")}` : null;
+  const [procurement, setProcurement] = useState<PoPrefillResult | null>(null);
+  const [loadingProcurement, setLoadingProcurement] = useState(!!procurementSupplierId);
+  const [procurementError, setProcurementError] = useState<string | null>(null);
 
   const [duplicateFromPo, setDuplicateFromPo] = useState<PurchaseOrderWithLines | null>(null);
   const [loadingDuplicateSource, setLoadingDuplicateSource] = useState(!!duplicateFromId);
@@ -44,13 +54,32 @@ function NewPurchaseOrderPageInner() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user, duplicateFromId]);
 
+  useEffect(() => {
+    if (!user || !procurementKey) return;
+    const [supplierId, ids] = procurementKey.split("|");
+    (async () => {
+      try {
+        setProcurement(await fetchPoPrefill(supplierId, ids ? ids.split(",") : []));
+      } catch (err) {
+        setProcurementError(`${err instanceof Error ? err.message : "Could not load the supplier."} Starting a blank PO instead.`);
+      } finally {
+        setLoadingProcurement(false);
+      }
+    })();
+  }, [user, procurementKey]);
+
   return (
     <AuthGuard>
       <div className="mx-auto max-w-4xl space-y-4">
         <div>
-          <Link href="/inventory/purchase-orders" className="mb-1 inline-block text-[11px] font-medium text-emerald-700 underline">
-            ← Back to Purchase Orders
-          </Link>
+          <div className="mb-1 flex flex-wrap gap-3">
+            <Link href="/inventory/procurement" className="inline-block text-[11px] font-medium text-emerald-700 underline">
+              ← Back to Procurement
+            </Link>
+            <Link href="/inventory/purchase-orders" className="inline-block text-[11px] font-medium text-emerald-700 underline">
+              ← Back to Purchase Orders
+            </Link>
+          </div>
           <h1 className="text-2xl font-semibold text-zinc-900">
             {duplicateFromPo ? `Duplicate ${duplicateFromPo.po_number}` : "New Purchase Order"}
           </h1>
@@ -61,7 +90,27 @@ function NewPurchaseOrderPageInner() {
             {duplicateError}
           </p>
         )}
-        {loadingDuplicateSource ? <p className="text-xs text-black">Loading…</p> : <PurchaseOrderForm mode="create" duplicateFromPo={duplicateFromPo} />}
+        {procurementError && (
+          <p className="rounded-md border border-amber-300 bg-amber-50 p-2 text-xs text-amber-900" role="alert">
+            {procurementError}
+          </p>
+        )}
+        {procurement && (
+          <>
+            {procurement.prefill.warnings.map((w) => (
+              <p key={w} className="rounded-md border border-amber-300 bg-amber-50 p-2 text-xs text-black" role="alert">
+                {w}
+              </p>
+            ))}
+            <SupplierInfoBox info={procurement.supplierInfo} />
+            <p className="text-sm text-black">Review the details below. Nothing is saved, and no PO number is used, until you create it. Fill in the unit prices before saving.</p>
+          </>
+        )}
+        {loadingDuplicateSource || loadingProcurement ? (
+          <p className="text-xs text-black">Loading…</p>
+        ) : (
+          <PurchaseOrderForm mode="create" duplicateFromPo={duplicateFromPo} prefill={procurement?.prefill ?? null} />
+        )}
       </div>
     </AuthGuard>
   );

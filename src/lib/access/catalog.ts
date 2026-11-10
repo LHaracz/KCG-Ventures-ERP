@@ -50,7 +50,7 @@ export const FEATURES: Feature[] = [
   { key: "production.optimization", label: "Production Optimization", description: "BotanIQals production quantity optimization.", group: "Production", business: "botaniqals", assignable: true },
   { key: "inventory.finished_products", label: "Finished Products Inventory", description: "Active batches, box counts, manual batches and transaction history.", group: "Inventory", business: "botaniqals", assignable: true },
   { key: "inventory.raw_materials", label: "Raw Materials", description: "Raw materials, receiving stock and adjustments.", group: "Inventory", business: "botaniqals", assignable: true },
-  { key: "inventory.purchase_orders", label: "Purchase Orders", description: "Purchase orders and their company settings.", group: "Inventory", business: "botaniqals", assignable: true },
+  { key: "inventory.purchase_orders", label: "Procurement (suppliers, buy links and Purchase Orders)", description: "Procurement (suppliers, buy links and Purchase Orders): stock alerts, suppliers and where to buy, and purchase orders with their company settings.", group: "Inventory", business: "botaniqals", assignable: true },
   { key: "fulfillment.orders", label: "Fulfillments", description: "Order list and pages, Shipping Assignments, labels (generate, print, void), Mark Fulfilled, flags and address edits.", group: "Fulfillment", business: "botaniqals", assignable: true },
   { key: "fulfillment.pick_list", label: "Pick List", description: "Picking orders into staging boxes, and staging box management.", group: "Fulfillment", business: "botaniqals", assignable: true },
   { key: "fulfillment.sales_data", label: "Sales Data", description: "Sales imports, CSV upload, variant mapping and unmapped items.", group: "Fulfillment", business: "botaniqals", assignable: true },
@@ -133,6 +133,8 @@ export const PAGE_RULES: Record<string, Rule> = {
 
   "/finished-products-inventory": F("inventory.finished_products"),
   "/inventory": F("inventory.raw_materials"),
+  "/inventory/procurement": F("inventory.purchase_orders"),
+  "/inventory/procurement/suppliers": F("inventory.purchase_orders"),
   "/inventory/purchase-orders": F("inventory.purchase_orders"),
   "/inventory/purchase-orders/new": F("inventory.purchase_orders"),
   "/inventory/purchase-orders/[id]": F("inventory.purchase_orders"),
@@ -204,6 +206,16 @@ export const API_RULES: Record<string, Rule> = {
   "/api/finished-goods/manual-batch": F("inventory.finished_products"),
 
   "/api/purchase-orders": F("inventory.purchase_orders"),
+  // Procurement (suppliers, buy links, Create PO) shares the Purchase Orders feature.
+  "/api/procurement": F("inventory.purchase_orders"),
+  "/api/procurement/po-prefill": F("inventory.purchase_orders"),
+  "/api/procurement/suppliers": F("inventory.purchase_orders"),
+  "/api/procurement/suppliers/[supplierId]": F("inventory.purchase_orders"),
+  "/api/procurement/suppliers/[supplierId]/archive": F("inventory.purchase_orders"),
+  "/api/procurement/links": F("inventory.purchase_orders"),
+  "/api/procurement/links/[linkId]": F("inventory.purchase_orders"),
+  "/api/procurement/links/[linkId]/archive": F("inventory.purchase_orders"),
+  "/api/procurement/links/[linkId]/preferred": F("inventory.purchase_orders"),
   "/api/purchase-orders/[id]": F("inventory.purchase_orders"),
   "/api/purchase-orders/company-profiles/[id]/logo": F("inventory.purchase_orders"),
   "/api/purchase-orders/company-profiles/[id]/logo-url": F("inventory.purchase_orders"),
@@ -353,7 +365,7 @@ const SECTION_DEFS: Array<{ title: string; categories?: Array<{ title: string; i
         items: [
           { href: "/finished-products-inventory", label: "Finished Products Inventory", feature: "inventory.finished_products" },
           { href: "/inventory", label: "Raw Materials", feature: "inventory.raw_materials" },
-          { href: "/inventory/purchase-orders", label: "Purchase Orders", feature: "inventory.purchase_orders" },
+          { href: "/inventory/procurement", label: "Procurement", feature: "inventory.purchase_orders" },
         ],
       },
       {
@@ -419,6 +431,21 @@ export function buildSidebar(access: AccessSummary | null): Sidebar {
     }
   }
   return { top, employees, sections };
+}
+
+/**
+ * Pages that keep a sidebar item highlighted besides its own href. Purchase
+ * Orders is opened from Procurement, so Procurement stays highlighted there.
+ */
+const ACTIVE_PREFIXES: Record<string, readonly string[]> = {
+  "/inventory/procurement": ["/inventory/procurement/", "/inventory/purchase-orders"],
+};
+
+/** Whether a sidebar item is the current page. */
+export function navItemActive(href: string, pathname: string | null): boolean {
+  if (!pathname) return false;
+  if (pathname === href) return true;
+  return (ACTIVE_PREFIXES[href] ?? []).some((p) => pathname === p || pathname.startsWith(p.endsWith("/") ? p : `${p}/`));
 }
 
 /** Sidebar labels a set of features would show (role editor preview). */

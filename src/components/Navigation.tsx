@@ -5,7 +5,7 @@ import { usePathname } from "next/navigation";
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { useSupabase } from "@/components/InstantProvider";
 import { useAccess } from "@/components/access/AccessProvider";
-import { ALL_SECTIONS, type NavCategory, type NavLeaf, type NavSection, type Sidebar } from "@/lib/access/catalog";
+import { ALL_SECTIONS, navItemActive, type NavCategory, type NavLeaf, type NavSection, type Sidebar } from "@/lib/access/catalog";
 
 export type { NavCategory, NavLeaf, NavSection };
 
@@ -104,7 +104,7 @@ function CategorySection({
             <NavLink
               key={item.href}
               item={item}
-              active={pathname === item.href}
+              active={navItemActive(item.href, pathname)}
               onClick={onNavigate}
             />
           ))}
@@ -173,13 +173,13 @@ function NavMenu({
         <NavLink
           key={item.href}
           item={item}
-          active={pathname === item.href}
+          active={navItemActive(item.href, pathname)}
           onClick={onNavigate}
         />
       ))}
       {sidebar.employees && (
         <div className="pt-2">
-          <NavLink item={sidebar.employees} active={pathname === sidebar.employees.href} onClick={onNavigate} />
+          <NavLink item={sidebar.employees} active={navItemActive(sidebar.employees.href, pathname)} onClick={onNavigate} />
         </div>
       )}
       {sidebar.sections.map((section) => (
@@ -202,7 +202,7 @@ function NavMenu({
                 <NavLink
                   key={item.href}
                   item={item}
-                  active={pathname === item.href}
+                  active={navItemActive(item.href, pathname)}
                   onClick={onNavigate}
                 />
               ))}
