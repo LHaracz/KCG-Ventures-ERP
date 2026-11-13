@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+import { BackToProcurementLink } from "@/components/procurement/ProcurementUi";
 import { AuthGuard } from "@/components/AuthGuard";
 import { useSupabase } from "@/components/InstantProvider";
 import { formatDate } from "@/lib/date";
@@ -170,9 +171,7 @@ export default function PurchaseOrdersListPage() {
   return (
     <AuthGuard>
       <div className="mx-auto max-w-6xl space-y-4">
-        <Link href="/inventory/procurement" className="inline-block text-[11px] font-medium text-emerald-700 underline">
-          ← Back to Procurement
-        </Link>
+        <BackToProcurementLink className="inline-block text-[11px] font-medium text-emerald-700 underline" />
         <div className="flex flex-wrap items-start justify-between gap-2">
           <div>
             <h1 className="text-2xl font-semibold text-zinc-900">Purchase Orders</h1>

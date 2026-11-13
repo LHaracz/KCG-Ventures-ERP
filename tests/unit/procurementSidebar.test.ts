@@ -131,7 +131,7 @@ describe("access", () => {
   it("Procurement pages and API routes are guarded by the Purchase Orders feature, with no new feature key", () => {
     expect(FEATURES.filter((f) => f.key.includes("procurement"))).toEqual([]);
     for (const p of procurementPages) expect(PAGE_RULES[p]).toEqual({ kind: "feature", features: ["inventory.purchase_orders"] });
-    expect(procurementApis.length).toBe(9);
+    expect(procurementApis.length).toBe(21);
     for (const a of procurementApis) expect(API_RULES[a]).toEqual({ kind: "feature", features: ["inventory.purchase_orders"] });
     expect(apiRule("/api/procurement/links/123e4567-e89b-42d3-a456-426614174000/preferred")).toEqual({ kind: "feature", features: ["inventory.purchase_orders"] });
   });
@@ -181,6 +181,10 @@ import * as listRoute from "@/app/api/procurement/route";
 import * as prefillRoute from "@/app/api/procurement/po-prefill/route";
 import * as suppliersRoute from "@/app/api/procurement/suppliers/route";
 import * as linksRoute from "@/app/api/procurement/links/route";
+import * as equipmentRoute from "@/app/api/procurement/equipment/route";
+import * as equipmentLinksRoute from "@/app/api/procurement/equipment-links/route";
+import * as categoriesRoute from "@/app/api/procurement/categories/route";
+import * as reorderRoute from "@/app/api/procurement/categories/reorder/route";
 
 describe("API responses", () => {
   const req = (path: string, method: "GET" | "POST") =>
@@ -196,6 +200,10 @@ describe("API responses", () => {
     expect((await prefillRoute.POST(req("/po-prefill", "POST"))).status).toBe(403);
     expect((await suppliersRoute.POST(req("/suppliers", "POST"))).status).toBe(403);
     expect((await linksRoute.POST(req("/links", "POST"))).status).toBe(403);
+    expect((await equipmentRoute.POST(req("/equipment", "POST"))).status).toBe(403);
+    expect((await equipmentLinksRoute.POST(req("/equipment-links", "POST"))).status).toBe(403);
+    expect((await categoriesRoute.POST(req("/categories", "POST"))).status).toBe(403);
+    expect((await reorderRoute.POST(req("/categories/reorder", "POST"))).status).toBe(403);
   });
 
   it("passes the guard with the feature", async () => {
@@ -204,5 +212,7 @@ describe("API responses", () => {
     expect(res.status).not.toBe(403);
     expect(res.status).not.toBe(401);
     expect((await res.json()).error).toBe("Unknown supplier.");
+    const eq = await equipmentRoute.POST(req("/equipment", "POST"));
+    expect(eq.status).toBe(400); // past the guard, then refused by validation
   });
 });

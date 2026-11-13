@@ -9,23 +9,43 @@
  */
 import { useEffect, useId, useMemo, useState, type ReactNode } from "react";
 import {
+  addEquipmentLinkApi,
   addLinkApi,
+  archiveCategoryApi,
+  archiveEquipmentApi,
+  createCategoryApi,
+  createEquipmentApi,
   createSupplierApi,
   ProcurementApiError,
+  renameCategoryApi,
+  reorderCategoriesApi,
+  updateEquipmentApi,
+  updateEquipmentLinkApi,
   updateLinkApi,
   updateSupplierApi,
 } from "@/lib/procurement/client";
-import { COA_POLICIES, NOTES_HINT, PAYMENT_METHODS, SUPPLIER_PAYMENT_TERMS, type Supplier } from "@/lib/procurement/types";
 import {
-  EMPTY_LINK,
+  COA_POLICIES,
+  NOTES_HINT,
+  PAYMENT_METHODS,
+  SUPPLIER_PAYMENT_TERMS,
+  type EquipmentCategory,
+  type EquipmentItem,
+  type Supplier,
+} from "@/lib/procurement/types";
+import {
+  validateCategoryName,
+  validateEquipment,
+  validateEquipmentLink,
   validateLink,
   validateSupplier,
+  type EquipmentLinkValues,
   type Errors,
   type LinkValues,
   type SupplierValues,
 } from "@/lib/procurement/validation";
 import { formatQuantity } from "@/lib/procurement/stockAlert";
-import type { LinkWithSupplier, MaterialRow, ShortageGroup } from "@/lib/procurement/view";
+import { usageText, type EquipmentLinkWithSupplier, type LinkWithSupplier, type MaterialRow, type ShortageGroup } from "@/lib/procurement/view";
 import { StockBadge, btn, btnPrimary, linkBtn } from "./ProcurementUi";
 
 const input =
@@ -277,12 +297,12 @@ function serverFail(e: unknown, setErrors: (e: Errors) => void, setError: (m: st
 // --- Supplier editor (Suppliers page, and supplier names on Procurement) ---------
 export function SupplierEditorModal({
   supplier,
-  usedFor,
+  usage,
   onClose,
   onSaved,
 }: {
   supplier: Supplier | null;
-  usedFor: number;
+  usage: SupplierUsage;
   onClose: () => void;
   onSaved: (s: Supplier) => void;
 }) {
@@ -313,9 +333,9 @@ export function SupplierEditorModal({
 
   return (
     <Dialog title={supplier ? `Edit ${supplier.name}` : "Add supplier"} onClose={onClose} wide>
-      {supplier && usedFor > 0 && (
+      {supplier && (
         <p className="mb-3 rounded-md border border-amber-300 bg-amber-50 p-2 text-xs text-black" role="note">
-          Used for {usedFor} {usedFor === 1 ? "ingredient" : "ingredients"}. Changes apply to all of them.
+          {usageLine(usage, supplier.id)}
         </p>
       )}
       <SupplierFields draft={draft} onChange={setDraft} errors={errors} />
@@ -337,37 +357,65 @@ export function SupplierEditorModal({
 }
 
 // --- Add or edit a supplier for an ingredient ------------------------------------
-type LinkDraft = { product_url: string; supplier_item: string; pack_info: string; coa_policy: string; notes: string };
-const linkToDraft = (l?: LinkValues | null): LinkDraft => ({
+type LinkDraft = { product_url: string; supplier_item: string; pack_info: string; coa_policy: string; notes: string; price: string; price_note: string };
+type DraftSource = {
+  product_url?: string | null;
+  supplier_item?: string | null;
+  pack_info?: string | null;
+  coa_policy?: string | null;
+  notes?: string | null;
+  price?: number | string | null;
+  price_note?: string | null;
+};
+const linkToDraft = (l?: DraftSource | null): LinkDraft => ({
   product_url: l?.product_url ?? "",
   supplier_item: l?.supplier_item ?? "",
   pack_info: l?.pack_info ?? "",
   coa_policy: l?.coa_policy ?? "unknown",
   notes: l?.notes ?? "",
+  price: l?.price === null || l?.price === undefined ? "" : String(Number(l.price)),
+  price_note: l?.price_note ?? "",
 });
 
+export type SupplierUsage = { materials: ReadonlyMap<string, number>; equipment: ReadonlyMap<string, number> };
+const usageLine = (u: SupplierUsage, supplierId: string) => `${usageText(u.materials.get(supplierId) ?? 0, u.equipment.get(supplierId) ?? 0)}. Changes apply to all of them.`;
+
+type AnyListing = LinkWithSupplier | EquipmentLinkWithSupplier;
+
+/**
+ * Add or edit a supplier listing, for a raw material or an equipment item.
+ * Choosing a supplier lists every active supplier, whichever tab it was
+ * first added from, or adds a new one. Raw materials have COA and pack
+ * size; equipment has a model or part number and no COA. Both have a price.
+ */
 export function LinkModal({
-  row,
+  kind,
+  target,
   link,
   suppliers,
   usage,
   onClose,
   onSaved,
+  cancelLabel = "Cancel",
 }: {
-  row: MaterialRow;
-  /** Editing this link; null to add a supplier. */
-  link: LinkWithSupplier | null;
+  kind: "raw" | "equipment";
+  /** The raw material or equipment item, and the suppliers already listed for it. */
+  target: { id: string; name: string; takenSupplierIds: readonly string[]; hasListings: boolean };
+  /** Editing this listing; null to add a supplier. */
+  link: AnyListing | null;
   /** Every supplier (archived ones are hidden from the picker). */
   suppliers: readonly Supplier[];
-  usage: ReadonlyMap<string, number>;
+  usage: SupplierUsage;
   onClose: () => void;
   onSaved: () => void;
+  /** "Skip for now" right after adding a new equipment item. */
+  cancelLabel?: string;
 }) {
   const editing = !!link;
-  const taken = useMemo(() => new Set(row.links.map((l) => l.supplier_id)), [row.links]);
+  const taken = useMemo(() => new Set(target.takenSupplierIds), [target.takenSupplierIds]);
   const choices = useMemo(
-    () => suppliers.filter((s) => !s.archived_at && !taken.has(s.id)).sort((a, b) => a.name.localeCompare(b.name, "en", { sensitivity: "base" })),
-    [suppliers, taken],
+    () => suppliers.filter((s) => !s.archived_at).sort((a, b) => a.name.localeCompare(b.name, "en", { sensitivity: "base" })),
+    [suppliers],
   );
   const [mode, setMode] = useState<"existing" | "new">(choices.length === 0 ? "new" : "existing");
   const [search, setSearch] = useState("");
@@ -375,40 +423,43 @@ export function LinkModal({
   const original = useMemo(() => supplierToDraft(link?.supplier ?? null), [link]);
   const [supplierDraft, setSupplierDraft] = useState<SupplierDraft>(original);
   const [editSupplier, setEditSupplier] = useState(false);
-  const [linkDraft, setLinkDraft] = useState<LinkDraft>(() => linkToDraft(link ?? EMPTY_LINK));
+  const [linkDraft, setLinkDraft] = useState<LinkDraft>(() => linkToDraft(link));
   const [makePreferred, setMakePreferred] = useState(false);
   const [errors, setErrors] = useState<Errors>({});
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const filtered = choices.filter((s) => s.name.toLowerCase().includes(search.trim().toLowerCase()));
   const setLink = (p: Partial<LinkDraft>) => setLinkDraft((d) => ({ ...d, ...p }));
-  const n = link ? (usage.get(link.supplier_id) ?? 0) : 0;
+  const noun = kind === "raw" ? "ingredient" : "equipment item";
 
   const save = async () => {
     setError(null);
-    const lc = validateLink(linkDraft);
+    const lc = kind === "raw" ? validateLink(linkDraft) : validateEquipmentLink(linkDraft);
     const needSupplier = editing ? editSupplier && supplierChanged(supplierDraft, original) : mode === "new";
     const sc = needSupplier ? validateSupplier(supplierDraft) : null;
     const errs: Errors = { ...(lc.ok ? {} : lc.errors), ...(sc && !sc.ok ? sc.errors : {}) };
     if (!editing && mode === "existing" && !supplierId) errs.supplier_id = "Choose a supplier, or add a new one.";
+    if (!editing && mode === "existing" && supplierId && taken.has(supplierId)) {
+      errs.supplier_id = `This supplier is already listed for this ${noun}. Edit that listing instead.`;
+    }
     if (Object.keys(errs).length > 0 || !lc.ok) {
       setErrors(errs);
-      setError("Check the highlighted fields.");
+      setError(errs.supplier_id && Object.keys(errs).length === 1 ? errs.supplier_id : "Check the highlighted fields.");
       return;
     }
     setErrors({});
     setSaving(true);
     try {
       const supplierValues: SupplierValues | undefined = sc && sc.ok ? sc.value : undefined;
-      if (editing) {
-        await updateLinkApi(link!.id, { link: lc.value, supplier: supplierValues, make_preferred: makePreferred });
+      const supplierPart = mode === "new" ? { new_supplier: supplierValues } : { supplier_id: supplierId };
+      if (kind === "raw") {
+        const value = lc.value as LinkValues;
+        if (editing) await updateLinkApi(link!.id, { link: value, supplier: supplierValues, make_preferred: makePreferred });
+        else await addLinkApi({ raw_material_id: target.id, ...supplierPart, link: value, make_preferred: makePreferred });
       } else {
-        await addLinkApi({
-          raw_material_id: row.material.id,
-          ...(mode === "new" ? { new_supplier: supplierValues } : { supplier_id: supplierId }),
-          link: lc.value,
-          make_preferred: makePreferred,
-        });
+        const value = lc.value as EquipmentLinkValues;
+        if (editing) await updateEquipmentLinkApi(link!.id, { link: value, supplier: supplierValues, make_preferred: makePreferred });
+        else await addEquipmentLinkApi({ equipment_id: target.id, ...supplierPart, link: value, make_preferred: makePreferred });
       }
       onSaved();
     } catch (e) {
@@ -419,7 +470,7 @@ export function LinkModal({
   };
 
   return (
-    <Dialog title={editing ? `${link!.supplier.name} for ${row.name}` : `Add a supplier for ${row.name}`} onClose={onClose} wide>
+    <Dialog title={editing ? `${link!.supplier.name} for ${target.name}` : `Add a supplier for ${target.name}`} onClose={onClose} wide>
       <div className="space-y-4">
         {!editing && (
           <section className="space-y-2">
@@ -451,7 +502,8 @@ export function LinkModal({
                         className={`block w-full px-2 py-1.5 text-left text-xs text-black ${supplierId === s.id ? "bg-emerald-100" : "hover:bg-zinc-50"}`}
                       >
                         {s.name}
-                        <span className="ml-1 text-[11px]">({usage.get(s.id) ?? 0} ingredients)</span>
+                        <span className="ml-1 text-[11px]">({usageText(usage.materials.get(s.id) ?? 0, usage.equipment.get(s.id) ?? 0).replace(/^Used for /, "")})</span>
+                        {taken.has(s.id) && <span className="ml-1 text-[11px] font-semibold">Already listed</span>}
                       </button>
                     ))
                   )}
@@ -475,7 +527,7 @@ export function LinkModal({
             {editSupplier && (
               <>
                 <p className="rounded-md border border-amber-300 bg-amber-50 p-2 text-xs text-black" role="note">
-                  Used for {n} {n === 1 ? "ingredient" : "ingredients"}. Changes apply to all of them.
+                  {usageLine(usage, link!.supplier_id)}
                 </p>
                 <SupplierFields draft={supplierDraft} onChange={setSupplierDraft} errors={errors} />
               </>
@@ -484,33 +536,45 @@ export function LinkModal({
         )}
 
         <section className="space-y-3">
-          <p className="text-xs font-semibold text-black">{editing ? "For this ingredient" : `2. For ${row.name}`}</p>
+          <p className="text-xs font-semibold text-black">{editing ? `For this ${noun}` : `2. For ${target.name}`}</p>
           <div className="grid gap-3 sm:grid-cols-2">
             <Text name="product_url" text="Product link" placeholder="https://" value={linkDraft.product_url} onChange={(v) => setLink({ product_url: v })} error={errors.product_url} />
-            <Text name="supplier_item" text="Supplier item name" value={linkDraft.supplier_item} onChange={(v) => setLink({ supplier_item: v })} error={errors.supplier_item} />
-            <Text name="pack_info" text="Pack size or price note" value={linkDraft.pack_info} onChange={(v) => setLink({ pack_info: v })} error={errors.pack_info} />
-            <div>
-              <label className={label} htmlFor="coa-policy">
-                COA policy
-              </label>
-              <select id="coa-policy" className={input} value={linkDraft.coa_policy} onChange={(e) => setLink({ coa_policy: e.target.value })}>
-                {COA_POLICIES.map((c) => (
-                  <option key={c.value} value={c.value}>
-                    {c.label}
-                  </option>
-                ))}
-              </select>
-              <FieldError msg={errors.coa_policy} />
-            </div>
+            <Text
+              name="supplier_item"
+              text={kind === "raw" ? "Supplier item name" : "Model or part number"}
+              value={linkDraft.supplier_item}
+              onChange={(v) => setLink({ supplier_item: v })}
+              error={errors.supplier_item}
+            />
+            {kind === "raw" && (
+              <>
+                <Text name="pack_info" text="Pack size or price note" value={linkDraft.pack_info} onChange={(v) => setLink({ pack_info: v })} error={errors.pack_info} />
+                <div>
+                  <label className={label} htmlFor="coa-policy">
+                    COA policy
+                  </label>
+                  <select id="coa-policy" className={input} value={linkDraft.coa_policy} onChange={(e) => setLink({ coa_policy: e.target.value })}>
+                    {COA_POLICIES.map((c) => (
+                      <option key={c.value} value={c.value}>
+                        {c.label}
+                      </option>
+                    ))}
+                  </select>
+                  <FieldError msg={errors.coa_policy} />
+                </div>
+              </>
+            )}
+            <Text name="price" text="Price (USD)" placeholder="12.50" value={linkDraft.price} onChange={(v) => setLink({ price: v })} error={errors.price} />
+            <Text name="price_note" text="Price note" placeholder="per 25 kg bag, each" value={linkDraft.price_note} onChange={(v) => setLink({ price_note: v })} error={errors.price_note} />
           </div>
           <Notes name="notes" text="Notes" value={linkDraft.notes} onChange={(v) => setLink({ notes: v })} error={errors.notes} />
           {link?.is_preferred ? (
-            <p className="text-xs text-black">★ This is the preferred supplier for {row.name}.</p>
+            <p className="text-xs text-black">★ This is the preferred supplier for {target.name}.</p>
           ) : (
             <label className="flex items-center gap-1.5 text-xs text-black">
               <input type="checkbox" checked={makePreferred} onChange={(e) => setMakePreferred(e.target.checked)} />
               Make this the preferred supplier
-              {!editing && row.links.length === 0 && <span>(the first supplier is preferred automatically)</span>}
+              {!editing && !target.hasListings && <span>(the first supplier is preferred automatically)</span>}
             </label>
           )}
         </section>
@@ -522,7 +586,7 @@ export function LinkModal({
         )}
         <div className="flex justify-end gap-2">
           <button type="button" className={btn} onClick={onClose} disabled={saving}>
-            Cancel
+            {cancelLabel}
           </button>
           <button type="button" className={btnPrimary} onClick={save} disabled={saving}>
             {saving ? "Saving…" : editing ? "Save" : "Add supplier"}
@@ -633,6 +697,270 @@ export function ShortagesModal({
       <div className="mt-4 flex justify-end">
         <button type="button" className={btn} onClick={onClose}>
           Close
+        </button>
+      </div>
+    </Dialog>
+  );
+}
+
+// --- Add or edit equipment --------------------------------------------------------------
+const NEW_CATEGORY = "__new__";
+
+/**
+ * Name, category (with "New category" inline) and description. Edit also
+ * offers Archive (the item and its supplier listings; nothing is deleted).
+ */
+export function EquipmentModal({
+  item,
+  categories,
+  onClose,
+  onSaved,
+  onArchived,
+}: {
+  item: EquipmentItem | null;
+  /** Active categories, in order. */
+  categories: readonly EquipmentCategory[];
+  onClose: () => void;
+  onSaved: (item: EquipmentItem, created: boolean) => void;
+  onArchived: () => void;
+}) {
+  const [name, setName] = useState(item?.name ?? "");
+  const [categoryId, setCategoryId] = useState(item?.category_id ?? categories[0]?.id ?? NEW_CATEGORY);
+  const [newCategory, setNewCategory] = useState("");
+  const [description, setDescription] = useState(item?.description ?? "");
+  const [errors, setErrors] = useState<Errors>({});
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [confirmArchive, setConfirmArchive] = useState(false);
+
+  const save = async () => {
+    setError(null);
+    const errs: Errors = {};
+    let catId = categoryId;
+    if (categoryId === NEW_CATEGORY) {
+      const c = validateCategoryName(newCategory);
+      if (!c.ok) errs.category = c.error;
+    }
+    const checked = validateEquipment({ name, category_id: categoryId === NEW_CATEGORY ? "00000000-0000-4000-8000-000000000000" : categoryId, description });
+    if (!checked.ok) Object.assign(errs, checked.errors);
+    if (Object.keys(errs).length > 0 || !checked.ok) {
+      setErrors(errs);
+      setError("Check the highlighted fields.");
+      return;
+    }
+    setErrors({});
+    setSaving(true);
+    try {
+      if (categoryId === NEW_CATEGORY) {
+        catId = (await createCategoryApi(newCategory.trim())).category.id;
+        setCategoryId(catId);
+        setNewCategory("");
+      }
+      const values = { ...checked.value, category_id: catId };
+      const res = item ? await updateEquipmentApi(item.id, values) : await createEquipmentApi(values);
+      onSaved(res.equipment, !item);
+    } catch (e) {
+      serverFail(e, setErrors, setError);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const archive = async () => {
+    if (!item) return;
+    setSaving(true);
+    setError(null);
+    try {
+      await archiveEquipmentApi(item.id);
+      onArchived();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not archive the item.");
+      setConfirmArchive(false);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Dialog title={item ? `Edit ${item.name}` : "Add equipment"} onClose={onClose}>
+      {confirmArchive ? (
+        <div className="space-y-3 text-xs text-black">
+          <p>Archive {item?.name}? It is hidden from the Equipment tab, and its supplier listings are archived too. Nothing is deleted, and you can restore it with “Show archived”.</p>
+          {error && (
+            <p className="rounded-md border border-red-300 bg-red-50 p-2 text-xs text-red-800" role="alert">
+              {error}
+            </p>
+          )}
+          <div className="flex justify-end gap-2">
+            <button type="button" className={btn} onClick={() => setConfirmArchive(false)} disabled={saving}>
+              Cancel
+            </button>
+            <button type="button" className={btnPrimary} onClick={archive} disabled={saving}>
+              {saving ? "Working…" : "Archive item"}
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          <Text name="name" text="Equipment name" required value={name} onChange={setName} error={errors.name} />
+          <div>
+            <label className={label} htmlFor="equipment-category">
+              Category <span className="text-red-700">*</span>
+            </label>
+            <select id="equipment-category" className={input} value={categoryId} onChange={(e) => setCategoryId(e.target.value)}>
+              {categories.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.name}
+                </option>
+              ))}
+              <option value={NEW_CATEGORY}>+ New category…</option>
+            </select>
+            <FieldError msg={errors.category_id} />
+          </div>
+          {categoryId === NEW_CATEGORY && <Text name="new_category" text="New category name" value={newCategory} onChange={setNewCategory} error={errors.category} />}
+          <Notes name="description" text="Description or model notes" value={description} onChange={setDescription} error={errors.description} />
+          {error && (
+            <p className="rounded-md border border-red-300 bg-red-50 p-2 text-xs text-red-800" role="alert">
+              {error}
+            </p>
+          )}
+          <div className="flex items-center justify-between gap-2">
+            {item ? (
+              <button type="button" className={btn} onClick={() => setConfirmArchive(true)} disabled={saving}>
+                Archive…
+              </button>
+            ) : (
+              <span />
+            )}
+            <div className="flex gap-2">
+              <button type="button" className={btn} onClick={onClose} disabled={saving}>
+                Cancel
+              </button>
+              <button type="button" className={btnPrimary} onClick={save} disabled={saving}>
+                {saving ? "Saving…" : item ? "Save" : "Add equipment"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </Dialog>
+  );
+}
+
+// --- Manage categories -------------------------------------------------------------------
+export function CategoriesModal({
+  categories,
+  onClose,
+  onChanged,
+}: {
+  /** Active categories with their active equipment counts, in order. */
+  categories: readonly { category: EquipmentCategory; count: number }[];
+  onClose: () => void;
+  onChanged: () => Promise<void> | void;
+}) {
+  const [adding, setAdding] = useState("");
+  const [editing, setEditing] = useState<{ id: string; name: string } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const run = async (fn: () => Promise<unknown>) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await fn();
+      await onChanged();
+      return true;
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Something went wrong.");
+      return false;
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const add = async () => {
+    const v = validateCategoryName(adding);
+    if (!v.ok) return setError(v.error);
+    if (await run(() => createCategoryApi(v.value))) setAdding("");
+  };
+  const rename = async () => {
+    if (!editing) return;
+    const v = validateCategoryName(editing.name);
+    if (!v.ok) return setError(v.error);
+    if (await run(() => renameCategoryApi(editing.id, v.value))) setEditing(null);
+  };
+  const move = (index: number, delta: number) => {
+    const ids = categories.map((c) => c.category.id);
+    const j = index + delta;
+    if (j < 0 || j >= ids.length) return;
+    [ids[index], ids[j]] = [ids[j], ids[index]];
+    void run(() => reorderCategoriesApi(ids));
+  };
+
+  return (
+    <Dialog title="Manage categories" onClose={onClose}>
+      <ul className="divide-y divide-zinc-100 rounded-md border border-zinc-200" data-testid="categories-list">
+        {categories.map(({ category: c, count }, i) => (
+          <li key={c.id} className="flex flex-wrap items-center justify-between gap-2 px-2 py-1.5 text-xs text-black" data-testid="category-row">
+            {editing?.id === c.id ? (
+              <span className="flex flex-1 items-center gap-1">
+                <input className={input} value={editing.name} onChange={(e) => setEditing({ id: c.id, name: e.target.value })} aria-label={`New name for ${c.name}`} />
+                <button type="button" className={btnPrimary} onClick={rename} disabled={busy}>
+                  Save
+                </button>
+                <button type="button" className={btn} onClick={() => setEditing(null)} disabled={busy}>
+                  Cancel
+                </button>
+              </span>
+            ) : (
+              <>
+                <span>
+                  <span className="font-medium">{c.name}</span> <span className="text-[11px]">({count} {count === 1 ? "item" : "items"})</span>
+                </span>
+                <span className="flex items-center gap-1">
+                  <button type="button" className={btn} onClick={() => move(i, -1)} disabled={busy || i === 0} aria-label={`Move ${c.name} up`}>
+                    ↑
+                  </button>
+                  <button type="button" className={btn} onClick={() => move(i, 1)} disabled={busy || i === categories.length - 1} aria-label={`Move ${c.name} down`}>
+                    ↓
+                  </button>
+                  <button type="button" className={btn} onClick={() => setEditing({ id: c.id, name: c.name })} disabled={busy}>
+                    Rename
+                  </button>
+                  <button
+                    type="button"
+                    className={btn}
+                    disabled={busy || count > 0}
+                    title={count > 0 ? `${count} ${count === 1 ? "item uses" : "items use"} this category. Move them to another category first.` : "Archive this category"}
+                    onClick={() => void run(() => archiveCategoryApi(c.id))}
+                  >
+                    Archive
+                  </button>
+                </span>
+                {count > 0 && (
+                  <span className="w-full text-[11px]">
+                    {count} {count === 1 ? "item uses" : "items use"} this category
+                  </span>
+                )}
+              </>
+            )}
+          </li>
+        ))}
+      </ul>
+      <div className="mt-3 flex gap-2">
+        <input className={input} placeholder="New category name" value={adding} onChange={(e) => setAdding(e.target.value)} aria-label="New category name" />
+        <button type="button" className={btnPrimary} onClick={add} disabled={busy}>
+          Add
+        </button>
+      </div>
+      {error && (
+        <p className="mt-2 rounded-md border border-red-300 bg-red-50 p-2 text-xs text-red-800" role="alert">
+          {error}
+        </p>
+      )}
+      <div className="mt-4 flex justify-end">
+        <button type="button" className={btn} onClick={onClose}>
+          Done
         </button>
       </div>
     </Dialog>

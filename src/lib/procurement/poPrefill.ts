@@ -11,7 +11,8 @@
  */
 import type { PoLineInput } from "@/lib/purchaseOrders";
 import { suggestedQuantity } from "./stockAlert";
-import type { RawMaterial, Supplier, SupplierLink } from "./types";
+import { priceForPoLine } from "./price";
+import type { EquipmentItem, EquipmentLink, RawMaterial, Supplier, SupplierLink } from "./types";
 
 export const MAX_PO_LINES = 100;
 
@@ -85,6 +86,27 @@ export function hasCompleteAddress(supplier: Pick<Supplier, "address_line1" | "c
   return [supplier.address_line1, supplier.city, supplier.state, supplier.zip, supplier.country].every((v) => s(v) !== "");
 }
 
+function vendorFrom(supplier: Supplier): PoVendorPrefill {
+  return {
+    vendor_name: s(supplier.name),
+    vendor_contact_name: s(supplier.contact_name),
+    vendor_email: s(supplier.contact_email),
+    vendor_phone: s(supplier.contact_phone),
+    vendor_account_number: s(supplier.account_number),
+    vendor_address_line1: s(supplier.address_line1),
+    vendor_address_line2: s(supplier.address_line2),
+    vendor_city: s(supplier.city),
+    vendor_state: s(supplier.state),
+    vendor_zip: s(supplier.zip),
+    vendor_country: s(supplier.country),
+  };
+}
+
+/**
+ * Raw materials: one line per ingredient with the suggested quantity. The
+ * unit price stays blank on purpose: a stored listing price may be per a
+ * different unit (for example per 25 kg bag) than the PO line.
+ */
 export function buildPoPrefill(
   supplier: Supplier,
   items: readonly PrefillItem[],
@@ -111,21 +133,32 @@ export function buildPoPrefill(
   });
 
   return {
-    vendor_name: s(supplier.name),
-    vendor_contact_name: s(supplier.contact_name),
-    vendor_email: s(supplier.contact_email),
-    vendor_phone: s(supplier.contact_phone),
-    vendor_account_number: s(supplier.account_number),
-    vendor_address_line1: s(supplier.address_line1),
-    vendor_address_line2: s(supplier.address_line2),
-    vendor_city: s(supplier.city),
-    vendor_state: s(supplier.state),
-    vendor_zip: s(supplier.zip),
-    vendor_country: s(supplier.country),
+    ...vendorFrom(supplier),
     payment_terms: s(supplier.default_po_payment_terms) || formDefaults.payment_terms,
     lines,
     unmatched_units: [...unmatched],
     warnings,
+  };
+}
+
+/**
+ * Equipment: one PO for one supplier and one item. One line: the equipment
+ * name, the model or part number as the item number, quantity 1, unit
+ * "each", and the listing's stored price as the unit price (blank if none).
+ * Notes and the product link are never copied.
+ */
+export function buildEquipmentPoPrefill(
+  supplier: Supplier,
+  item: Pick<EquipmentItem, "name">,
+  link: Pick<EquipmentLink, "supplier_item" | "price">,
+  formDefaults: { payment_terms: string },
+): PoPrefill {
+  return {
+    ...vendorFrom(supplier),
+    payment_terms: s(supplier.default_po_payment_terms) || formDefaults.payment_terms,
+    lines: [{ item_number: s(link.supplier_item), description: s(item.name), quantity: "1", unit: "each", unit_price: priceForPoLine(link.price) }],
+    unmatched_units: [],
+    warnings: hasCompleteAddress(supplier) ? [] : [MISSING_ADDRESS_WARNING],
   };
 }
 
@@ -140,7 +173,16 @@ export type SupplierInfo = {
   ordering_notes: string | null;
   reference_url: string | null;
   reference_label: "Product page" | "Website" | null;
+  /** Listed prices for reference (one per line that has a price). Never put on the PO. */
+  prices: SupplierInfoPrice[];
 };
+
+export type SupplierInfoPrice = { label: string; price: string; price_note: string | null; price_updated_at: string | null };
+
+const infoPrice = (label: string, l: { price: number | string | null; price_note: string | null; price_updated_at: string | null } | null): SupplierInfoPrice[] =>
+  l && l.price !== null && l.price !== undefined && String(l.price) !== ""
+    ? [{ label, price: String(l.price), price_note: l.price_note, price_updated_at: l.price_updated_at }]
+    : [];
 
 export function buildSupplierInfo(supplier: Supplier, items: readonly PrefillItem[]): SupplierInfo {
   const productUrls = [...new Set(items.map((i) => i.link?.product_url).filter((u): u is string => !!u))];
@@ -155,7 +197,28 @@ export function buildSupplierInfo(supplier: Supplier, items: readonly PrefillIte
     ordering_notes: supplier.ordering_notes,
     reference_url: product ?? supplier.website_url ?? null,
     reference_label: product ? "Product page" : supplier.website_url ? "Website" : null,
+    prices: items.flatMap((i) => infoPrice(i.material.name, i.link)),
   };
+}
+
+export function buildEquipmentSupplierInfo(supplier: Supplier, item: Pick<EquipmentItem, "name">, link: EquipmentLink): SupplierInfo {
+  return {
+    name: supplier.name,
+    contact_name: supplier.contact_name,
+    contact_email: supplier.contact_email,
+    contact_phone: supplier.contact_phone,
+    payment_methods: supplier.payment_methods ?? [],
+    payment_notes: supplier.payment_notes,
+    ordering_notes: supplier.ordering_notes,
+    reference_url: link.product_url ?? supplier.website_url ?? null,
+    reference_label: link.product_url ? "Product page" : supplier.website_url ? "Website" : null,
+    prices: infoPrice(item.name, link),
+  };
+}
+
+/** The New Purchase Order URL for a supplier and one equipment item. Only ids go in the URL. */
+export function newEquipmentPoHref(supplierId: string, equipmentId: string): string {
+  return `/inventory/purchase-orders/new?${new URLSearchParams({ supplier: supplierId, equipment: equipmentId }).toString()}`;
 }
 
 /** The New Purchase Order URL for a supplier and raw materials. Only ids go in the URL. */

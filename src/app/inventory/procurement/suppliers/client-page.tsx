@@ -5,13 +5,23 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { AuthGuard } from "@/components/AuthGuard";
 import { useSupabase } from "@/components/InstantProvider";
-import { ExternalLink, PaymentChips, StockBadge, btn, btnDanger, btnPrimary, linkBtn } from "@/components/procurement/ProcurementUi";
+import { BackToProcurementLink, ExternalLink, PaymentChips, PriceText, StockBadge, btn, btnDanger, btnPrimary, linkBtn } from "@/components/procurement/ProcurementUi";
 import { ConfirmDialog, SupplierEditorModal } from "@/components/procurement/ProcurementForms";
 import { archiveSupplierApi, fetchProcurement } from "@/lib/procurement/client";
 import { newPoHref } from "@/lib/procurement/poPrefill";
 import { formatNyDate } from "@/lib/nyTime";
-import type { ProcurementData, Supplier } from "@/lib/procurement/types";
-import { buildMaterialRows, filterSuppliers, supplierMaterials, supplierShortageMaterialIds, supplierUsage } from "@/lib/procurement/view";
+import { procurementHref, type ProcurementData, type Supplier } from "@/lib/procurement/types";
+import {
+  buildEquipmentRows,
+  buildMaterialRows,
+  filterSuppliers,
+  supplierEquipment,
+  supplierEquipmentUsage,
+  supplierMaterials,
+  supplierShortageMaterialIds,
+  supplierUsage,
+  usageText,
+} from "@/lib/procurement/view";
 
 export default function SuppliersPage() {
   return (
@@ -49,9 +59,14 @@ function SuppliersInner() {
   }, [user, load]);
 
   const rows = useMemo(() => (data ? buildMaterialRows(data) : []), [data]);
-  const usage = useMemo(() => (data ? supplierUsage(data) : new Map<string, number>()), [data]);
+  const eqRows = useMemo(() => (data ? buildEquipmentRows(data) : []), [data]);
+  const usage = useMemo(
+    () => ({ materials: data ? supplierUsage(data) : new Map<string, number>(), equipment: data ? supplierEquipmentUsage(data) : new Map<string, number>() }),
+    [data],
+  );
   const list = useMemo(() => (data ? filterSuppliers(data.suppliers, search, showArchived) : []), [data, search, showArchived]);
   const affected = useMemo(() => (archiving ? supplierMaterials(rows, archiving.id) : []), [rows, archiving]);
+  const affectedEquipment = useMemo(() => (archiving ? supplierEquipment(eqRows, archiving.id) : []), [eqRows, archiving]);
 
   const toggle = (id: string) =>
     setExpanded((prev) => {
@@ -79,9 +94,7 @@ function SuppliersInner() {
   return (
     <div className="mx-auto max-w-7xl space-y-4 text-black">
       <div>
-        <Link href="/inventory/procurement" className={linkBtn}>
-          ← Back to Procurement
-        </Link>
+        <BackToProcurementLink />
         <div className="mt-1 flex flex-wrap items-start justify-between gap-3">
           <div>
             <h1 className="text-2xl font-semibold text-black">Suppliers</h1>
@@ -136,8 +149,10 @@ function SuppliersInner() {
             <tbody>
               {list.map((s) => {
                 const open = expanded.has(s.id);
-                const n = usage.get(s.id) ?? 0;
+                const n = usage.materials.get(s.id) ?? 0;
+                const m = usage.equipment.get(s.id) ?? 0;
                 const materials = open ? supplierMaterials(rows, s.id) : [];
+                const equipment = open ? supplierEquipment(eqRows, s.id) : [];
                 return (
                   <Fragment key={s.id}>
                     <tr className="border-t border-zinc-100 align-top" data-testid="supplier-row">
@@ -170,8 +185,8 @@ function SuppliersInner() {
                       <td className="px-2 py-2">
                         <PaymentChips methods={s.payment_methods} />
                       </td>
-                      <td className="whitespace-nowrap px-2 py-2">
-                        Used for {n} {n === 1 ? "ingredient" : "ingredients"}
+                      <td className="px-2 py-2" data-testid="supplier-usage">
+                        {usageText(n, m)}
                       </td>
                       <td className="whitespace-nowrap px-2 py-2">
                         {formatNyDate(s.updated_at)}
@@ -209,35 +224,73 @@ function SuppliersInner() {
                     {open && (
                       <tr>
                         <td colSpan={8} className="bg-zinc-50 px-4 py-3">
-                          {materials.length === 0 ? (
-                            <p className="text-xs text-black">{s.archived_at ? "Archived suppliers supply no ingredients." : "Not listed for any ingredient yet."}</p>
+                          {materials.length === 0 && equipment.length === 0 ? (
+                            <p className="text-xs text-black">{s.archived_at ? "Archived suppliers supply nothing." : "Not listed for any ingredient or equipment item yet."}</p>
                           ) : (
-                            <table className="min-w-full text-left text-xs text-black">
-                              <thead className="text-[11px]">
-                                <tr>
-                                  <th className="px-2 py-1 font-semibold">Ingredient</th>
-                                  <th className="px-2 py-1 font-semibold">Stock alert</th>
-                                  <th className="px-2 py-1 font-semibold">Product link</th>
-                                  <th className="px-2 py-1 font-semibold">Preferred</th>
-                                </tr>
-                              </thead>
-                              <tbody>
-                                {materials.map(({ row, link }) => (
-                                  <tr key={row.material.id} className="border-t border-zinc-100">
-                                    <td className="px-2 py-1">
-                                      <Link className={linkBtn} href={`/inventory/procurement?material=${encodeURIComponent(row.material.id)}`}>
-                                        {row.name}
-                                      </Link>
-                                    </td>
-                                    <td className="px-2 py-1">
-                                      <StockBadge alert={row.alert} />
-                                    </td>
-                                    <td className="px-2 py-1">{link.product_url ? <ExternalLink href={link.product_url}>Product page</ExternalLink> : "No product link"}</td>
-                                    <td className="px-2 py-1">{link.is_preferred ? "★ Preferred" : "—"}</td>
-                                  </tr>
-                                ))}
-                              </tbody>
-                            </table>
+                            <div className="space-y-3">
+                              {materials.length > 0 && (
+                                <table className="min-w-full text-left text-xs text-black" data-testid="supplier-ingredients">
+                                  <thead className="text-[11px]">
+                                    <tr>
+                                      <th className="px-2 py-1 font-semibold">Ingredient</th>
+                                      <th className="px-2 py-1 font-semibold">Stock alert</th>
+                                      <th className="px-2 py-1 font-semibold">Price</th>
+                                      <th className="px-2 py-1 font-semibold">Product link</th>
+                                      <th className="px-2 py-1 font-semibold">Preferred</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {materials.map(({ row, link }) => (
+                                      <tr key={row.material.id} className="border-t border-zinc-100">
+                                        <td className="px-2 py-1">
+                                          <Link className={linkBtn} href={procurementHref("raw", { material: row.material.id })}>
+                                            {row.name}
+                                          </Link>
+                                        </td>
+                                        <td className="px-2 py-1">
+                                          <StockBadge alert={row.alert} />
+                                        </td>
+                                        <td className="px-2 py-1">
+                                          <PriceText listing={link} />
+                                        </td>
+                                        <td className="px-2 py-1">{link.product_url ? <ExternalLink href={link.product_url}>Product page</ExternalLink> : "No product link"}</td>
+                                        <td className="px-2 py-1">{link.is_preferred ? "★ Preferred" : "—"}</td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              )}
+                              {equipment.length > 0 && (
+                                <table className="min-w-full text-left text-xs text-black" data-testid="supplier-equipment">
+                                  <thead className="text-[11px]">
+                                    <tr>
+                                      <th className="px-2 py-1 font-semibold">Equipment</th>
+                                      <th className="px-2 py-1 font-semibold">Category</th>
+                                      <th className="px-2 py-1 font-semibold">Price</th>
+                                      <th className="px-2 py-1 font-semibold">Product link</th>
+                                      <th className="px-2 py-1 font-semibold">Preferred</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {equipment.map(({ row, link }) => (
+                                      <tr key={row.item.id} className="border-t border-zinc-100">
+                                        <td className="px-2 py-1">
+                                          <Link className={linkBtn} href={procurementHref("equipment", { equipment: row.item.id })}>
+                                            {row.name}
+                                          </Link>
+                                        </td>
+                                        <td className="px-2 py-1">{row.category?.name ?? "—"}</td>
+                                        <td className="px-2 py-1">
+                                          <PriceText listing={link} />
+                                        </td>
+                                        <td className="px-2 py-1">{link.product_url ? <ExternalLink href={link.product_url}>Product page</ExternalLink> : "No product link"}</td>
+                                        <td className="px-2 py-1">{link.is_preferred ? "★ Preferred" : "—"}</td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              )}
+                            </div>
                           )}
                         </td>
                       </tr>
@@ -253,7 +306,7 @@ function SuppliersInner() {
       {editor && (
         <SupplierEditorModal
           supplier={editor.supplier}
-          usedFor={editor.supplier ? usage.get(editor.supplier.id) ?? 0 : 0}
+          usage={usage}
           onClose={() => setEditor(null)}
           onSaved={async () => {
             setEditor(null);
@@ -263,20 +316,24 @@ function SuppliersInner() {
       )}
       {archiving && (
         <ConfirmDialog title={`Archive ${archiving.name}?`} confirmLabel="Archive supplier" busy={busy} error={archiveError} onConfirm={archive} onClose={() => setArchiving(null)}>
-          {affected.length === 0 ? (
-            <p>This supplier is not listed for any ingredient.</p>
-          ) : (
-            <>
-              <p>It will be removed from these ingredients (nothing is deleted, and no other supplier becomes preferred automatically):</p>
-              <ul className="list-disc pl-5">
-                {affected.map(({ row, link }) => (
-                  <li key={row.material.id}>
-                    {row.name}
-                    {link.is_preferred && " (preferred)"}
-                  </li>
-                ))}
-              </ul>
-            </>
+          <p data-testid="archive-counts">
+            This archives its {affected.length} raw material {affected.length === 1 ? "listing" : "listings"} and {affectedEquipment.length} equipment{" "}
+            {affectedEquipment.length === 1 ? "listing" : "listings"}. Nothing is deleted, and no other supplier becomes preferred automatically.
+          </p>
+          {(affected.length > 0 || affectedEquipment.length > 0) && (
+            <ul className="list-disc pl-5">
+              {affected.map(({ row, link }) => (
+                <li key={row.material.id}>
+                  {row.name}
+                  {link.is_preferred && " (preferred)"}
+                </li>
+              ))}
+              {affectedEquipment.map(({ row, link }) => (
+                <li key={row.item.id}>
+                  {row.name} (equipment{link.is_preferred ? ", preferred" : ""})
+                </li>
+              ))}
+            </ul>
           )}
           <p>Saved Purchase Orders are not changed.</p>
         </ConfirmDialog>

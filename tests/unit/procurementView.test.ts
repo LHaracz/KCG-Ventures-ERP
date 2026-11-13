@@ -30,7 +30,7 @@ const sup = (id: string, name: string, over: Partial<Supplier> = {}): Supplier =
 const mat = (id: string, name: string, on: number, par: number | null, unit = "kg"): RawMaterial => ({ id, name, unit, quantity_on_hand: on, par_level: par });
 const link = (id: string, raw: string, supplier: string, over: Partial<SupplierLink> = {}): SupplierLink => ({
   id, raw_material_id: raw, supplier_id: supplier, is_preferred: false, product_url: null, supplier_item: null, pack_info: null,
-  coa_policy: "unknown", notes: null, link_updated_at: null, archived_at: null, created_at: "", updated_at: "", ...over,
+  coa_policy: "unknown", notes: null, link_updated_at: null, price: null, price_note: null, price_updated_at: null, archived_at: null, created_at: "", updated_at: "", ...over,
 });
 
 function data(): ProcurementData {
@@ -59,6 +59,9 @@ function data(): ProcurementData {
       link("l6", "m-nopar", "s-a"), // has a supplier but none preferred
       link("l7", "m-arch", "s-a", { is_preferred: false, archived_at: "2026-10-05T00:00:00Z" }),
     ],
+    categories: [],
+    equipment: [],
+    equipmentLinks: [],
   };
 }
 
@@ -168,7 +171,7 @@ describe("rendered table", () => {
       createElement(SupplierInfoBox, {
         info: {
           name: "Supplier A", contact_name: "Pat", contact_email: "orders@supplier-a.example.test", contact_phone: "555-0100",
-          payment_methods: ["credit_card"], payment_notes: "<i>x</i>", ordering_notes: "Call first", reference_url: "https://supplier-a.example.test", reference_label: "Website",
+          payment_methods: ["credit_card"], payment_notes: "<i>x</i>", ordering_notes: "Call first", reference_url: "https://supplier-a.example.test", reference_label: "Website", prices: [],
         },
       }),
     );

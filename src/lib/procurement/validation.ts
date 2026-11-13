@@ -5,8 +5,9 @@
  * constraints (procurement_suppliers.sql).
  */
 import { COA_POLICY_VALUES, PAYMENT_METHOD_VALUES, SUPPLIER_PAYMENT_TERMS } from "./types";
+import { parsePrice } from "./price";
 
-export const LIMITS = { name: 200, url: 2000, email: 254, phone: 50, account: 100, notes: 2000, address: 200, short: 200 } as const;
+export const LIMITS = { name: 200, url: 2000, email: 254, phone: 50, account: 100, notes: 2000, address: 200, short: 200, category: 100 } as const;
 
 export type SupplierValues = {
   name: string;
@@ -33,7 +34,22 @@ export type LinkValues = {
   pack_info: string | null;
   coa_policy: string;
   notes: string | null;
+  /** Positive, at most 4 decimals, as a plain number string ("12.5"); null when blank. */
+  price: string | null;
+  price_note: string | null;
 };
+
+/** An equipment supplier listing. No COA, no pack size. */
+export type EquipmentLinkValues = {
+  product_url: string | null;
+  /** Model or part number. */
+  supplier_item: string | null;
+  price: string | null;
+  price_note: string | null;
+  notes: string | null;
+};
+
+export type EquipmentValues = { name: string; category_id: string; description: string | null };
 
 export type Errors = Record<string, string>;
 export type Checked<T> = { ok: true; value: T } | { ok: false; errors: Errors };
@@ -48,7 +64,8 @@ export const EMPTY_SUPPLIER: SupplierValues = {
   payment_methods: [], payment_notes: null, ordering_notes: null, address_line1: null, address_line2: null, city: null,
   state: null, zip: null, country: null, default_po_payment_terms: null,
 };
-export const EMPTY_LINK: LinkValues = { product_url: null, supplier_item: null, pack_info: null, coa_policy: "unknown", notes: null };
+export const EMPTY_LINK: LinkValues = { product_url: null, supplier_item: null, pack_info: null, coa_policy: "unknown", notes: null, price: null, price_note: null };
+export const EMPTY_EQUIPMENT_LINK: EquipmentLinkValues = { product_url: null, supplier_item: null, price: null, price_note: null, notes: null };
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export const isUuid = (v: unknown): v is string => typeof v === "string" && UUID_RE.test(v);
@@ -169,9 +186,20 @@ export function validateSupplier(input: unknown): Checked<SupplierValues> {
   };
 }
 
+/** Price and price note, shared by both kinds of listing. */
+function priceFields(raw: Record<string, unknown>, errors: Errors): { price: string | null; price_note: string | null } {
+  const p = parsePrice(raw.price);
+  if (!p.ok) errors.price = p.error;
+  const price_note = text(raw, "price_note");
+  if (price_note && price_note.length > LIMITS.short) errors.price_note = `Keep this under ${LIMITS.short} characters.`;
+  else if (price_note && looksLikeCardNumber(price_note)) errors.price_note = "This looks like a card number. Do not store card numbers here.";
+  return { price: p.ok ? p.value : null, price_note };
+}
+
 export function validateLink(input: unknown): Checked<LinkValues> {
   const raw = (input && typeof input === "object" ? input : {}) as Record<string, unknown>;
   const errors: Errors = {};
+  const prices = priceFields(raw, errors);
   const product_url = text(raw, "product_url");
   if (product_url && !isHttpUrl(product_url)) errors.product_url = "Enter a full product link starting with http:// or https://.";
   const supplier_item = text(raw, "supplier_item");
@@ -183,5 +211,41 @@ export function validateLink(input: unknown): Checked<LinkValues> {
   const notes = text(raw, "notes");
   noteCheck(errors, "notes", notes);
   if (Object.keys(errors).length > 0) return { ok: false, errors };
-  return { ok: true, value: { product_url, supplier_item, pack_info, coa_policy: coa, notes } };
+  return { ok: true, value: { product_url, supplier_item, pack_info, coa_policy: coa, notes, ...prices } };
+}
+
+export function validateEquipmentLink(input: unknown): Checked<EquipmentLinkValues> {
+  const raw = (input && typeof input === "object" ? input : {}) as Record<string, unknown>;
+  const errors: Errors = {};
+  const product_url = text(raw, "product_url");
+  if (product_url && !isHttpUrl(product_url)) errors.product_url = "Enter a full product link starting with http:// or https://.";
+  const supplier_item = text(raw, "supplier_item");
+  if (supplier_item && supplier_item.length > LIMITS.short) errors.supplier_item = `Keep this under ${LIMITS.short} characters.`;
+  const prices = priceFields(raw, errors);
+  const notes = text(raw, "notes");
+  noteCheck(errors, "notes", notes);
+  if (Object.keys(errors).length > 0) return { ok: false, errors };
+  return { ok: true, value: { product_url, supplier_item, notes, ...prices } };
+}
+
+export function validateEquipment(input: unknown): Checked<EquipmentValues> {
+  const raw = (input && typeof input === "object" ? input : {}) as Record<string, unknown>;
+  const errors: Errors = {};
+  const name = text(raw, "name");
+  if (!name) errors.name = "Equipment name is required.";
+  else if (name.length > LIMITS.name) errors.name = `Keep the name under ${LIMITS.name} characters.`;
+  const category_id = raw.category_id;
+  if (!isUuid(category_id)) errors.category_id = "Choose a category.";
+  const description = text(raw, "description");
+  noteCheck(errors, "description", description);
+  if (Object.keys(errors).length > 0) return { ok: false, errors };
+  return { ok: true, value: { name: name!, category_id: category_id as string, description } };
+}
+
+/** Category names: trimmed, 1-100 characters. */
+export function validateCategoryName(input: unknown): { ok: true; value: string } | { ok: false; error: string } {
+  const name = typeof input === "string" ? input.trim().replace(/\s+/g, " ") : "";
+  if (!name) return { ok: false, error: "Enter a category name." };
+  if (name.length > LIMITS.category) return { ok: false, error: `Keep the name under ${LIMITS.category} characters.` };
+  return { ok: true, value: name };
 }

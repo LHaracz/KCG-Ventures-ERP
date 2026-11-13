@@ -7,8 +7,8 @@ import { AuthGuard } from "@/components/AuthGuard";
 import { useSupabase } from "@/components/InstantProvider";
 import { PurchaseOrderForm } from "@/components/PurchaseOrderForm";
 import { fetchPurchaseOrderWithLines, type PurchaseOrderWithLines } from "@/lib/purchaseOrders";
-import { SupplierInfoBox } from "@/components/procurement/ProcurementUi";
-import { fetchPoPrefill } from "@/lib/procurement/client";
+import { BackToProcurementLink, SupplierInfoBox } from "@/components/procurement/ProcurementUi";
+import { fetchEquipmentPoPrefill, fetchPoPrefill } from "@/lib/procurement/client";
 import type { PoPrefillResult } from "@/lib/procurement/service";
 
 export default function NewPurchaseOrderPage() {
@@ -26,7 +26,12 @@ function NewPurchaseOrderPageInner() {
   // From Procurement: only ids are in the URL; the server builds the prefill.
   const procurementSupplierId = duplicateFromId ? null : searchParams.get("supplier");
   const procurementMaterialIds = (searchParams.get("materials") ?? "").split(",").filter(Boolean);
-  const procurementKey = procurementSupplierId ? `${procurementSupplierId}|${procurementMaterialIds.join(",")}` : null;
+  // Equipment: one supplier and one equipment item.
+  const procurementEquipmentId = searchParams.get("equipment");
+  const procurementKey = procurementSupplierId
+    ? `${procurementSupplierId}|${procurementEquipmentId ? `eq:${procurementEquipmentId}` : procurementMaterialIds.join(",")}`
+    : null;
+  const backTab = procurementEquipmentId || searchParams.get("tab") === "equipment" ? "equipment" : null;
   const [procurement, setProcurement] = useState<PoPrefillResult | null>(null);
   const [loadingProcurement, setLoadingProcurement] = useState(!!procurementSupplierId);
   const [procurementError, setProcurementError] = useState<string | null>(null);
@@ -59,7 +64,9 @@ function NewPurchaseOrderPageInner() {
     const [supplierId, ids] = procurementKey.split("|");
     (async () => {
       try {
-        setProcurement(await fetchPoPrefill(supplierId, ids ? ids.split(",") : []));
+        setProcurement(
+          ids.startsWith("eq:") ? await fetchEquipmentPoPrefill(supplierId, ids.slice(3)) : await fetchPoPrefill(supplierId, ids ? ids.split(",") : []),
+        );
       } catch (err) {
         setProcurementError(`${err instanceof Error ? err.message : "Could not load the supplier."} Starting a blank PO instead.`);
       } finally {
@@ -73,9 +80,7 @@ function NewPurchaseOrderPageInner() {
       <div className="mx-auto max-w-4xl space-y-4">
         <div>
           <div className="mb-1 flex flex-wrap gap-3">
-            <Link href="/inventory/procurement" className="inline-block text-[11px] font-medium text-emerald-700 underline">
-              ← Back to Procurement
-            </Link>
+            <BackToProcurementLink tab={procurement?.tab ?? backTab} className="inline-block text-[11px] font-medium text-emerald-700 underline" />
             <Link href="/inventory/purchase-orders" className="inline-block text-[11px] font-medium text-emerald-700 underline">
               ← Back to Purchase Orders
             </Link>
@@ -103,7 +108,7 @@ function NewPurchaseOrderPageInner() {
               </p>
             ))}
             <SupplierInfoBox info={procurement.supplierInfo} />
-            <p className="text-sm text-black">Review the details below. Nothing is saved, and no PO number is used, until you create it. Fill in the unit prices before saving.</p>
+            <p className="text-sm text-black">Review the details below. Nothing is saved, and no PO number is used, until you create it. {procurement.tab === "equipment" ? "The unit price comes from the listing when one is saved; check it before saving." : "Fill in the unit prices before saving."}</p>
           </>
         )}
         {loadingDuplicateSource || loadingProcurement ? (

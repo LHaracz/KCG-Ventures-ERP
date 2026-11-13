@@ -7,11 +7,22 @@
  * callbacks out). Names and notes are rendered as plain text (React escapes
  * them), never as HTML. All text is black; dates are America/New_York.
  */
-import { Fragment, type ReactNode } from "react";
+import { Fragment, Suspense, type ReactNode } from "react";
+import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { formatNyDate } from "@/lib/nyTime";
 import { formatQuantity, type StockAlert } from "@/lib/procurement/stockAlert";
-import { coaPolicyLabel, paymentMethodLabel, type Supplier } from "@/lib/procurement/types";
-import { createPoBlocker, orderTarget, type LinkWithSupplier, type MaterialRow } from "@/lib/procurement/view";
+import { formatPrice } from "@/lib/procurement/price";
+import { coaPolicyLabel, paymentMethodLabel, procurementHref, type ProcurementTab, type Supplier } from "@/lib/procurement/types";
+import {
+  createPoBlocker,
+  equipmentCreatePoBlocker,
+  orderTarget,
+  type EquipmentLinkWithSupplier,
+  type EquipmentRow,
+  type LinkWithSupplier,
+  type MaterialRow,
+} from "@/lib/procurement/view";
 import type { SupplierInfo } from "@/lib/procurement/poPrefill";
 
 export const btn =
@@ -66,7 +77,28 @@ export function ExternalLink({ href, children, title, className = btn }: { href:
   );
 }
 
-export function OrderButton({ link }: { link: LinkWithSupplier | null }) {
+/** A listing's price with its note, "—" when none; the tooltip says when it was last changed. */
+export function PriceText({
+  listing,
+  showDate = false,
+}: {
+  listing: { price: number | string | null; price_note: string | null; price_updated_at: string | null } | null | undefined;
+  showDate?: boolean;
+}) {
+  const text = listing ? formatPrice(listing.price, listing.price_note) : "";
+  if (!text) return <span data-testid="price">—</span>;
+  const updated = listing?.price_updated_at ? `Price updated ${formatNyDate(listing.price_updated_at)}` : undefined;
+  return (
+    <span data-testid="price">
+      <span title={updated} className="whitespace-nowrap">
+        {text}
+      </span>
+      {showDate && updated && <span className="block text-[11px]">{updated}</span>}
+    </span>
+  );
+}
+
+export function OrderButton({ link }: { link: Parameters<typeof orderTarget>[0] }) {
   const t = orderTarget(link);
   if (t.kind === "none") {
     return (
@@ -120,11 +152,40 @@ export type TableHandlers = {
   onCreatePo: (supplierId: string, materialIds: string[]) => void;
 };
 
-function SupplierSubtable({ row, h }: { row: MaterialRow; h: TableHandlers }) {
+type AnyListing = LinkWithSupplier | EquipmentLinkWithSupplier;
+
+/**
+ * The expanded supplier rows under a raw material or an equipment item, one
+ * per active listing, preferred first. Raw materials show COA and pack;
+ * equipment shows the model or part number. Both show the price.
+ */
+function ListingSubtable<L extends AnyListing>({
+  kind,
+  ownerId,
+  ownerName,
+  listings,
+  onAdd,
+  onEdit,
+  onEditSupplier,
+  onRemove,
+  onMakePreferred,
+  onCreatePo,
+}: {
+  kind: "raw" | "equipment";
+  ownerId: string;
+  ownerName: string;
+  listings: readonly L[];
+  onAdd: () => void;
+  onEdit: (l: L) => void;
+  onEditSupplier: (s: Supplier) => void;
+  onRemove: (l: L) => void;
+  onMakePreferred: (l: L) => void;
+  onCreatePo: (l: L) => void;
+}) {
   return (
-    <div className="space-y-2 bg-zinc-50 px-3 py-3" data-testid={`subtable-${row.material.id}`}>
-      {row.links.length === 0 ? (
-        <p className="text-xs text-black">No suppliers yet for {row.name}.</p>
+    <div className="space-y-2 bg-zinc-50 px-3 py-3" data-testid={`subtable-${ownerId}`}>
+      {listings.length === 0 ? (
+        <p className="text-xs text-black">No suppliers yet for {ownerName}.</p>
       ) : (
         <div className="overflow-x-auto">
           <table className="min-w-full border-collapse text-left text-xs text-black">
@@ -135,19 +196,20 @@ function SupplierSubtable({ row, h }: { row: MaterialRow; h: TableHandlers }) {
                 <th className="px-2 py-1 font-semibold">Links</th>
                 <th className="px-2 py-1 font-semibold">Contact</th>
                 <th className="px-2 py-1 font-semibold">Payment</th>
-                <th className="px-2 py-1 font-semibold">COA</th>
-                <th className="px-2 py-1 font-semibold">Item / pack</th>
+                {kind === "raw" && <th className="px-2 py-1 font-semibold">COA</th>}
+                <th className="px-2 py-1 font-semibold">{kind === "raw" ? "Item / pack" : "Model or part number"}</th>
+                <th className="px-2 py-1 font-semibold">Price</th>
                 <th className="px-2 py-1 font-semibold">Notes</th>
                 <th className="px-2 py-1 font-semibold">Actions</th>
               </tr>
             </thead>
             <tbody>
-              {row.links.map((l) => (
+              {listings.map((l) => (
                 <tr key={l.id} className="border-b border-zinc-100 align-top" data-testid="supplier-link-row">
                   <td className="px-2 py-1.5">
                     <button
                       type="button"
-                      onClick={() => !l.is_preferred && h.onMakePreferred(row, l)}
+                      onClick={() => !l.is_preferred && onMakePreferred(l)}
                       aria-pressed={l.is_preferred}
                       aria-label={l.is_preferred ? `${l.supplier.name} is the preferred supplier` : `Make ${l.supplier.name} the preferred supplier`}
                       title={l.is_preferred ? "Preferred supplier" : "Make this the preferred supplier"}
@@ -157,7 +219,7 @@ function SupplierSubtable({ row, h }: { row: MaterialRow; h: TableHandlers }) {
                     </button>
                   </td>
                   <td className="px-2 py-1.5">
-                    <button type="button" className={linkBtn} onClick={() => h.onEditSupplier(l.supplier)} title="Edit supplier details">
+                    <button type="button" className={linkBtn} onClick={() => onEditSupplier(l.supplier)} title="Edit supplier details">
                       {l.supplier.name}
                     </button>
                   </td>
@@ -185,11 +247,14 @@ function SupplierSubtable({ row, h }: { row: MaterialRow; h: TableHandlers }) {
                     <PaymentChips methods={l.supplier.payment_methods} />
                     {l.supplier.payment_notes && <p className="mt-1 whitespace-pre-wrap">{l.supplier.payment_notes}</p>}
                   </td>
-                  <td className="px-2 py-1.5">{coaPolicyLabel(l.coa_policy)}</td>
+                  {kind === "raw" && <td className="px-2 py-1.5">{coaPolicyLabel((l as LinkWithSupplier).coa_policy)}</td>}
                   <td className="px-2 py-1.5">
                     {l.supplier_item && <div>{l.supplier_item}</div>}
-                    {l.pack_info && <div>{l.pack_info}</div>}
-                    {!l.supplier_item && !l.pack_info && "—"}
+                    {kind === "raw" && (l as LinkWithSupplier).pack_info && <div>{(l as LinkWithSupplier).pack_info}</div>}
+                    {!l.supplier_item && (kind !== "raw" || !(l as LinkWithSupplier).pack_info) && "—"}
+                  </td>
+                  <td className="px-2 py-1.5">
+                    <PriceText listing={l} showDate />
                   </td>
                   <td className="max-w-xs px-2 py-1.5">
                     {l.supplier.ordering_notes && (
@@ -200,7 +265,7 @@ function SupplierSubtable({ row, h }: { row: MaterialRow; h: TableHandlers }) {
                     )}
                     {l.notes && (
                       <p className="mt-1 whitespace-pre-wrap">
-                        <span className="font-semibold">Link: </span>
+                        <span className="font-semibold">{kind === "raw" ? "Link: " : "Listing: "}</span>
                         {l.notes}
                       </p>
                     )}
@@ -208,13 +273,13 @@ function SupplierSubtable({ row, h }: { row: MaterialRow; h: TableHandlers }) {
                   </td>
                   <td className="px-2 py-1.5">
                     <div className="flex flex-wrap gap-1">
-                      <button type="button" className={btn} onClick={() => h.onEditLink(row, l)}>
+                      <button type="button" className={btn} onClick={() => onEdit(l)}>
                         Edit
                       </button>
-                      <button type="button" className={btn} onClick={() => h.onCreatePo(l.supplier_id, [row.material.id])} data-testid="subtable-create-po">
+                      <button type="button" className={btn} onClick={() => onCreatePo(l)} data-testid="subtable-create-po">
                         Create PO
                       </button>
-                      <button type="button" className={btnDanger} onClick={() => h.onRemoveLink(row, l)}>
+                      <button type="button" className={btnDanger} onClick={() => onRemove(l)}>
                         Remove
                       </button>
                     </div>
@@ -225,7 +290,7 @@ function SupplierSubtable({ row, h }: { row: MaterialRow; h: TableHandlers }) {
           </table>
         </div>
       )}
-      <button type="button" className={btn} onClick={() => h.onAddSupplier(row)}>
+      <button type="button" className={btn} onClick={onAdd}>
         + Add supplier
       </button>
     </div>
@@ -255,6 +320,7 @@ export function ProcurementTable({
             <th className="px-2 py-2 font-semibold">Par level</th>
             <th className="px-2 py-2 font-semibold">Stock alert</th>
             <th className="px-2 py-2 font-semibold">Preferred supplier</th>
+            <th className="px-2 py-2 font-semibold">Price</th>
             <th className="px-2 py-2 font-semibold">Payment</th>
             <th className="px-2 py-2 font-semibold">Ordering notes</th>
             <th className="px-2 py-2 font-semibold">Order</th>
@@ -313,6 +379,9 @@ export function ProcurementTable({
                     )}
                   </td>
                   <td className="px-2 py-2">
+                    <PriceText listing={row.preferred} />
+                  </td>
+                  <td className="px-2 py-2">
                     <PaymentChips methods={row.preferred?.supplier.payment_methods} />
                   </td>
                   <td className="max-w-[14rem] px-2 py-2">
@@ -342,8 +411,19 @@ export function ProcurementTable({
                 </tr>
                 {open && (
                   <tr>
-                    <td colSpan={10} className="p-0">
-                      <SupplierSubtable row={row} h={h} />
+                    <td colSpan={11} className="p-0">
+                      <ListingSubtable
+                        kind="raw"
+                        ownerId={row.material.id}
+                        ownerName={row.name}
+                        listings={row.links}
+                        onAdd={() => h.onAddSupplier(row)}
+                        onEdit={(l) => h.onEditLink(row, l)}
+                        onEditSupplier={h.onEditSupplier}
+                        onRemove={(l) => h.onRemoveLink(row, l)}
+                        onMakePreferred={(l) => h.onMakePreferred(row, l)}
+                        onCreatePo={(l) => h.onCreatePo(l.supplier_id, [row.material.id])}
+                      />
                     </td>
                   </tr>
                 )}
@@ -392,7 +472,239 @@ export function SupplierInfoBox({ info }: { info: SupplierInfo }) {
           <dt className="font-semibold">Ordering notes</dt>
           <dd className="whitespace-pre-wrap">{info.ordering_notes || "—"}</dd>
         </div>
+        {(info.prices ?? []).length > 0 && (
+          <div className="sm:col-span-2" data-testid="supplier-info-prices">
+            <dt className="font-semibold">Listed price</dt>
+            <dd>
+              <ul className="space-y-0.5">
+                {(info.prices ?? []).map((p) => (
+                  <li key={p.label}>
+                    {(info.prices ?? []).length > 1 && <span>{p.label}: </span>}
+                    <PriceText listing={p} />
+                    {p.price_updated_at && <span> (Price updated {formatNyDate(p.price_updated_at)})</span>}
+                  </li>
+                ))}
+              </ul>
+            </dd>
+          </div>
+        )}
       </dl>
     </section>
+  );
+}
+
+// --- Equipment ------------------------------------------------------------------------------
+export type EquipmentHandlers = {
+  onToggle: (equipmentId: string) => void;
+  onEditItem: (row: EquipmentRow) => void;
+  onRestore: (row: EquipmentRow) => void;
+  onAddSupplier: (row: EquipmentRow) => void;
+  onEditLink: (row: EquipmentRow, link: EquipmentLinkWithSupplier) => void;
+  onEditSupplier: (supplier: Supplier) => void;
+  onRemoveLink: (row: EquipmentRow, link: EquipmentLinkWithSupplier) => void;
+  onMakePreferred: (row: EquipmentRow, link: EquipmentLinkWithSupplier) => void;
+  onCreatePo: (supplierId: string, equipmentId: string) => void;
+};
+
+/** Equipment: no quantity, par level or stock alert. Sorted by name (natural order). */
+export function EquipmentTable({
+  rows,
+  expanded,
+  highlightId,
+  handlers: h,
+}: {
+  rows: readonly EquipmentRow[];
+  expanded: ReadonlySet<string>;
+  highlightId?: string | null;
+  handlers: EquipmentHandlers;
+}) {
+  if (rows.length === 0) return <p className="rounded-md border border-zinc-200 bg-white p-4 text-sm text-black">No equipment matches.</p>;
+  return (
+    <div className="overflow-x-auto rounded-md border border-zinc-200 bg-white">
+      <table className="min-w-full border-collapse text-left text-xs text-black" data-testid="equipment-table">
+        <thead className="bg-zinc-50 text-[11px] text-black">
+          <tr>
+            <th className="w-6 px-2 py-2" aria-label="Expand" />
+            <th className="px-2 py-2 font-semibold">Equipment</th>
+            <th className="px-2 py-2 font-semibold">Category</th>
+            <th className="px-2 py-2 font-semibold">Preferred supplier</th>
+            <th className="px-2 py-2 font-semibold">Price</th>
+            <th className="px-2 py-2 font-semibold">Payment</th>
+            <th className="px-2 py-2 font-semibold">Ordering notes</th>
+            <th className="px-2 py-2 font-semibold">Order</th>
+            <th className="px-2 py-2 font-semibold">Create PO</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => {
+            const id = row.item.id;
+            const open = expanded.has(id) && !row.archived;
+            const blocker = equipmentCreatePoBlocker(row);
+            const notes = row.preferred?.supplier.ordering_notes ?? "";
+            return (
+              <Fragment key={id}>
+                <tr
+                  id={`equipment-${id}`}
+                  data-testid="equipment-row"
+                  data-equipment-id={id}
+                  className={`border-t border-zinc-100 align-top ${highlightId === id ? "bg-emerald-50" : ""}`}
+                >
+                  <td className="px-2 py-2">
+                    {!row.archived && (
+                      <button type="button" onClick={() => h.onToggle(id)} aria-expanded={open} aria-label={`${open ? "Hide" : "Show"} suppliers for ${row.name}`} className="text-black">
+                        <svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true" className={`h-3.5 w-3.5 transition-transform ${open ? "rotate-90" : ""}`}>
+                          <path fillRule="evenodd" d="M7.21 14.77a.75.75 0 01.02-1.06L11.168 10 7.23 6.29a.75.75 0 111.04-1.08l4.5 4.25a.75.75 0 010 1.08l-4.5 4.25a.75.75 0 01-1.06-.02z" clipRule="evenodd" />
+                        </svg>
+                      </button>
+                    )}
+                  </td>
+                  <td className="px-2 py-2">
+                    <button type="button" className="text-left font-medium text-black hover:underline" onClick={() => h.onEditItem(row)} title="Edit this equipment item" data-testid="equipment-name">
+                      {row.name}
+                    </button>
+                    {row.archived && <span className="ml-2 rounded-full bg-zinc-200 px-2 py-0.5 text-[11px] font-medium text-black">Archived</span>}
+                    {row.item.description && (
+                      <span className="block max-w-[16rem] truncate text-[11px]" title={row.item.description}>
+                        {row.item.description}
+                      </span>
+                    )}
+                  </td>
+                  <td className="whitespace-nowrap px-2 py-2" data-testid="equipment-category">
+                    {row.category?.name ?? "—"}
+                  </td>
+                  <td className="px-2 py-2">
+                    {row.archived ? (
+                      <button type="button" className={btn} onClick={() => h.onRestore(row)}>
+                        Restore
+                      </button>
+                    ) : row.links.length === 0 ? (
+                      <div className="flex flex-col items-start gap-1">
+                        <NoSupplierBadge />
+                        <button type="button" className={btn} onClick={() => h.onAddSupplier(row)}>
+                          Add supplier
+                        </button>
+                      </div>
+                    ) : row.preferred ? (
+                      <button type="button" className={linkBtn} onClick={() => h.onEditSupplier(row.preferred!.supplier)}>
+                        {row.preferred.supplier.name}
+                      </button>
+                    ) : (
+                      <span>No preferred supplier</span>
+                    )}
+                  </td>
+                  <td className="px-2 py-2">
+                    <PriceText listing={row.preferred} />
+                  </td>
+                  <td className="px-2 py-2">
+                    <PaymentChips methods={row.preferred?.supplier.payment_methods} />
+                  </td>
+                  <td className="max-w-[14rem] px-2 py-2">
+                    {notes ? (
+                      <span className="block truncate" title={notes}>
+                        {notes}
+                      </span>
+                    ) : (
+                      "—"
+                    )}
+                  </td>
+                  <td className="px-2 py-2">
+                    <OrderButton link={row.preferred} />
+                  </td>
+                  <td className="px-2 py-2">
+                    <button
+                      type="button"
+                      className={btn}
+                      disabled={!!blocker}
+                      title={blocker ?? `Start a Purchase Order with ${row.preferred?.supplier.name ?? ""}`}
+                      onClick={() => row.preferred && h.onCreatePo(row.preferred.supplier_id, id)}
+                      data-testid="equipment-create-po"
+                    >
+                      Create PO
+                    </button>
+                  </td>
+                </tr>
+                {open && (
+                  <tr>
+                    <td colSpan={9} className="p-0">
+                      <ListingSubtable
+                        kind="equipment"
+                        ownerId={id}
+                        ownerName={row.name}
+                        listings={row.links}
+                        onAdd={() => h.onAddSupplier(row)}
+                        onEdit={(l) => h.onEditLink(row, l)}
+                        onEditSupplier={h.onEditSupplier}
+                        onRemove={(l) => h.onRemoveLink(row, l)}
+                        onMakePreferred={(l) => h.onMakePreferred(row, l)}
+                        onCreatePo={(l) => h.onCreatePo(l.supplier_id, id)}
+                      />
+                    </td>
+                  </tr>
+                )}
+              </Fragment>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// --- Tabs and back links ------------------------------------------------------------------
+export function ProcurementTabs({ tab, onChange }: { tab: ProcurementTab; onChange: (t: ProcurementTab) => void }) {
+  const tabs: { key: ProcurementTab; label: string }[] = [
+    { key: "raw", label: "Raw Materials" },
+    { key: "equipment", label: "Equipment" },
+  ];
+  return (
+    <div className="flex gap-1 border-b border-zinc-200" role="tablist" aria-label="Procurement">
+      {tabs.map((t) => (
+        <button
+          key={t.key}
+          type="button"
+          role="tab"
+          aria-selected={tab === t.key}
+          data-testid={`tab-${t.key}`}
+          onClick={() => onChange(t.key)}
+          className={`-mb-px border-b-2 px-3 py-2 text-sm font-medium text-black ${tab === t.key ? "border-emerald-600" : "border-transparent hover:border-zinc-300"}`}
+        >
+          {t.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function BackLinkFromUrl({ className }: { className: string }) {
+  const tab = useSearchParams().get("tab");
+  return (
+    <Link href={procurementHref(tab)} className={className}>
+      ← Back to Procurement
+    </Link>
+  );
+}
+
+/**
+ * "← Back to Procurement", returning to the tab in this page's ?tab=
+ * (or the tab given). Used on Suppliers, Purchase Orders and the PO form.
+ */
+export function BackToProcurementLink({ tab, className = linkBtn }: { tab?: string | null; className?: string }) {
+  if (tab !== undefined) {
+    return (
+      <Link href={procurementHref(tab)} className={className}>
+        ← Back to Procurement
+      </Link>
+    );
+  }
+  return (
+    <Suspense
+      fallback={
+        <Link href="/inventory/procurement" className={className}>
+          ← Back to Procurement
+        </Link>
+      }
+    >
+      <BackLinkFromUrl className={className} />
+    </Suspense>
   );
 }

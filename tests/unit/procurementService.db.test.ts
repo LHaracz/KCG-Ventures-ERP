@@ -60,6 +60,7 @@ beforeEach(async () => {
   ({ pg } = await createAccessDb());
   await asOwner(pg);
   await pg.exec(migration("procurement_suppliers.sql"));
+  await pg.exec(migration("procurement_equipment_prices.sql"));
   db = pgliteSupabase(pg) as unknown as Db;
 });
 
@@ -82,7 +83,7 @@ describe("suppliers", () => {
     await addLink(db, { raw_material_id: m1, supplier_id: s.id, link: {} }, null);
     const u = await updateSupplier(db, s.id, { ...supplierA, ordering_notes: "Order by 11am" }, "Test Person");
     expect(u.ordering_notes).toBe("Order by 11am");
-    expect(await archiveSupplier(db, s.id, "Test Person")).toEqual({ archivedLinks: 1 });
+    expect(await archiveSupplier(db, s.id, "Test Person")).toEqual({ archivedLinks: 1, archivedEquipmentLinks: 0 });
     await rejects(() => updateSupplier(db, s.id, supplierA, null), /archived/);
     await rejects(() => archiveSupplier(db, "not-a-uuid", null), /Unknown supplier/, 404);
   });
