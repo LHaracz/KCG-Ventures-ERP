@@ -71,7 +71,7 @@ export const featureByKey = (key: string) => FEATURES.find((f) => f.key === key)
 export const isFeatureKey = (key: string): key is FeatureKey => FEATURE_KEYS.includes(key as FeatureKey);
 
 /** Shown in the role editor: things no role can grant. */
-export const ADMIN_ONLY_NOTE = "Employees and Roles, Notification settings, and creating or changing log types are Admin only.";
+export const ADMIN_ONLY_NOTE = "Employees and Roles, Notification settings, Retail (retailers, price lists and invoices), and creating or changing log types are Admin only.";
 
 // --- Access rules -----------------------------------------------------------
 /**
@@ -147,6 +147,13 @@ export const PAGE_RULES: Record<string, Rule> = {
   "/fulfillments/pick-list": F("fulfillment.pick_list"),
   "/fulfillments/package-presets": F("fulfillment.setup"),
   "/fulfillments/settings": F("fulfillment.setup"),
+  // Retail: retailers, price lists and invoices. Admin only, never assignable.
+  "/fulfillment/retail": ADMIN,
+  "/fulfillment/retail/settings": ADMIN,
+  "/fulfillment/retail/retailers/[id]": ADMIN,
+  "/fulfillment/retail/invoices/new": ADMIN,
+  "/fulfillment/retail/invoices/[id]": ADMIN,
+  "/fulfillment/retail/invoices/[id]/edit": ADMIN,
   "/settings/shipping-methods": F("fulfillment.setup"),
   "/sales-data": F("fulfillment.sales_data"),
   "/settings/variant-mapping": F("fulfillment.sales_data"),
@@ -233,6 +240,22 @@ export const API_RULES: Record<string, Rule> = {
   "/api/purchase-orders/company-profiles/[id]/logo": F("inventory.purchase_orders"),
   "/api/purchase-orders/company-profiles/[id]/logo-url": F("inventory.purchase_orders"),
   "/api/purchase-orders/company-profiles/logo-upload-url": F("inventory.purchase_orders"),
+
+  "/api/retail": ADMIN,
+  "/api/retail/settings": ADMIN,
+  "/api/retail/retailers": ADMIN,
+  "/api/retail/retailers/[retailerId]": ADMIN,
+  "/api/retail/retailers/[retailerId]/archive": ADMIN,
+  "/api/retail/retailers/[retailerId]/restore": ADMIN,
+  "/api/retail/retailers/[retailerId]/prices": ADMIN,
+  "/api/retail/retailers/[retailerId]/prices/tools": ADMIN,
+  "/api/retail/invoices": ADMIN,
+  "/api/retail/invoices/preview": ADMIN,
+  "/api/retail/invoices/check-order": ADMIN,
+  "/api/retail/invoices/[invoiceId]": ADMIN,
+  "/api/retail/invoices/[invoiceId]/delete": ADMIN,
+  "/api/retail/invoices/[invoiceId]/restore": ADMIN,
+  "/api/retail/invoices/[invoiceId]/pdf": ADMIN,
 
   "/api/fulfillments": F("fulfillment.orders"),
   "/api/fulfillments/flagged": F("fulfillment.orders"),
@@ -388,6 +411,8 @@ const SECTION_DEFS: Array<{ title: string; categories?: Array<{ title: string; i
           { href: "/fulfillments/pick-list", label: "Pick List", feature: "fulfillment.pick_list" },
           { href: "/sales-data", label: "Sales Data", feature: "fulfillment.sales_data" },
           { href: "/stats", label: "Sales Stats", feature: "fulfillment.stats" },
+          // Admin only; always the last item in Fulfillment.
+          { href: "/fulfillment/retail", label: "Retail", admin: true },
         ],
       },
       {
@@ -452,6 +477,7 @@ export function buildSidebar(access: AccessSummary | null): Sidebar {
  */
 const ACTIVE_PREFIXES: Record<string, readonly string[]> = {
   "/inventory/procurement": ["/inventory/procurement/", "/inventory/purchase-orders"],
+  "/fulfillment/retail": ["/fulfillment/retail/"],
 };
 
 /** Whether a sidebar item is the current page. */

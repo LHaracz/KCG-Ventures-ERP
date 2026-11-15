@@ -84,6 +84,8 @@ describe("sidebar", () => {
     const inventory = expected[0].categories[1].items;
     expect(inventory[2]).toEqual({ href: "/inventory/purchase-orders", label: "Purchase Orders" });
     inventory[2] = { href: "/inventory/procurement", label: "Procurement" };
+    // Added later by the Retail build (Admin only, last in Fulfillment): see retailSidebar.test.ts.
+    expected[0].categories[2].items.push({ href: "/fulfillment/retail", label: "Retail" });
     expect(ALL_SECTIONS).toEqual(expected);
   });
 

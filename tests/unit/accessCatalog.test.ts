@@ -84,12 +84,14 @@ const SIDEBAR_BEFORE = {
 };
 
 describe("sidebar", () => {
-  it("an Admin sees exactly today's sidebar plus Employees", () => {
+  it("an Admin sees exactly today's sidebar plus Employees (and Retail, Admin only, last in Fulfillment)", () => {
     const sb = buildSidebar(summary([], true));
+    const expected = JSON.parse(JSON.stringify(SIDEBAR_BEFORE.sections));
+    expected[0].categories.find((c: { title: string }) => c.title === "Fulfillment").items.push({ href: "/fulfillment/retail", label: "Retail" });
     expect(sb.top).toEqual(SIDEBAR_BEFORE.top);
-    expect(sb.sections).toEqual(SIDEBAR_BEFORE.sections);
+    expect(sb.sections).toEqual(expected);
     expect(sb.employees).toEqual({ href: "/employees", label: "Employees" });
-    expect(ALL_SECTIONS).toEqual(SIDEBAR_BEFORE.sections);
+    expect(ALL_SECTIONS).toEqual(expected);
   });
 
   it("Warehouse Operations: no Production group, no MiniLeaf, sees COAs, no Notification Settings or Employees", () => {
