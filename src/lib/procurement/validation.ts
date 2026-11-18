@@ -37,6 +37,9 @@ export type LinkValues = {
   /** Positive, at most 4 decimals, as a plain number string ("12.5"); null when blank. */
   price: string | null;
   price_note: string | null;
+  /** Typical days from placing the order to it arriving (0 to 365); null when unknown. */
+  lead_time_days: number | null;
+  lead_time_note: string | null;
 };
 
 /** An equipment supplier listing. No COA, no pack size. */
@@ -64,7 +67,7 @@ export const EMPTY_SUPPLIER: SupplierValues = {
   payment_methods: [], payment_notes: null, ordering_notes: null, address_line1: null, address_line2: null, city: null,
   state: null, zip: null, country: null, default_po_payment_terms: null,
 };
-export const EMPTY_LINK: LinkValues = { product_url: null, supplier_item: null, pack_info: null, coa_policy: "unknown", notes: null, price: null, price_note: null };
+export const EMPTY_LINK: LinkValues = { product_url: null, supplier_item: null, pack_info: null, coa_policy: "unknown", notes: null, price: null, price_note: null, lead_time_days: null, lead_time_note: null };
 export const EMPTY_EQUIPMENT_LINK: EquipmentLinkValues = { product_url: null, supplier_item: null, price: null, price_note: null, notes: null };
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -196,6 +199,20 @@ function priceFields(raw: Record<string, unknown>, errors: Errors): { price: str
   return { price: p.ok ? p.value : null, price_note };
 }
 
+export const LEAD_TIME_HINT = "Typical days from placing the order to it arriving";
+export const LEAD_TIME_MAX_DAYS = 365;
+
+/** Lead time in whole days, 0 to 365. Blank means unknown (null). */
+export function parseLeadTimeDays(input: unknown): { ok: true; value: number | null } | { ok: false; error: string } {
+  if (input === null || input === undefined) return { ok: true, value: null };
+  const s = String(input).trim();
+  if (s === "") return { ok: true, value: null };
+  if (!/^\d+$/.test(s)) return { ok: false, error: `Enter whole days from 0 to ${LEAD_TIME_MAX_DAYS}.` };
+  const n = Number(s);
+  if (n > LEAD_TIME_MAX_DAYS) return { ok: false, error: `Enter whole days from 0 to ${LEAD_TIME_MAX_DAYS}.` };
+  return { ok: true, value: n };
+}
+
 export function validateLink(input: unknown): Checked<LinkValues> {
   const raw = (input && typeof input === "object" ? input : {}) as Record<string, unknown>;
   const errors: Errors = {};
@@ -210,8 +227,16 @@ export function validateLink(input: unknown): Checked<LinkValues> {
   if (!COA_POLICY_VALUES.includes(coa)) errors.coa_policy = "Choose a COA policy from the list.";
   const notes = text(raw, "notes");
   noteCheck(errors, "notes", notes);
+  const lead = parseLeadTimeDays(raw.lead_time_days);
+  if (!lead.ok) errors.lead_time_days = lead.error;
+  const lead_time_note = text(raw, "lead_time_note");
+  if (lead_time_note && lead_time_note.length > LIMITS.short) errors.lead_time_note = `Keep this under ${LIMITS.short} characters.`;
+  else if (lead_time_note && looksLikeCardNumber(lead_time_note)) errors.lead_time_note = "This looks like a card number. Do not store card numbers here.";
   if (Object.keys(errors).length > 0) return { ok: false, errors };
-  return { ok: true, value: { product_url, supplier_item, pack_info, coa_policy: coa, notes, ...prices } };
+  return {
+    ok: true,
+    value: { product_url, supplier_item, pack_info, coa_policy: coa, notes, ...prices, lead_time_days: lead.ok ? lead.value : null, lead_time_note },
+  };
 }
 
 export function validateEquipmentLink(input: unknown): Checked<EquipmentLinkValues> {

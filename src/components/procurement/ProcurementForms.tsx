@@ -38,6 +38,7 @@ import {
   validateEquipment,
   validateEquipmentLink,
   validateLink,
+  LEAD_TIME_HINT,
   validateSupplier,
   type EquipmentLinkValues,
   type Errors,
@@ -132,6 +133,8 @@ function Text({
   type = "text",
   required,
   placeholder,
+  hint,
+  inputMode,
 }: {
   name: string;
   text: string;
@@ -141,6 +144,8 @@ function Text({
   type?: string;
   required?: boolean;
   placeholder?: string;
+  hint?: string;
+  inputMode?: "numeric" | "decimal";
 }) {
   const id = useId();
   return (
@@ -148,7 +153,8 @@ function Text({
       <label htmlFor={id} className={label}>
         {text} {required && <span className="text-red-700">*</span>}
       </label>
-      <input id={id} name={name} type={type} value={value} placeholder={placeholder} onChange={(e) => onChange(e.target.value)} className={input} aria-invalid={!!error} />
+      <input id={id} name={name} type={type} value={value} placeholder={placeholder} inputMode={inputMode} onChange={(e) => onChange(e.target.value)} className={input} aria-invalid={!!error} />
+      {hint && <p className="mt-1 text-[11px] text-black">{hint}</p>}
       <FieldError msg={error} />
     </div>
   );
@@ -357,7 +363,17 @@ export function SupplierEditorModal({
 }
 
 // --- Add or edit a supplier for an ingredient ------------------------------------
-type LinkDraft = { product_url: string; supplier_item: string; pack_info: string; coa_policy: string; notes: string; price: string; price_note: string };
+type LinkDraft = {
+  product_url: string;
+  supplier_item: string;
+  pack_info: string;
+  coa_policy: string;
+  notes: string;
+  price: string;
+  price_note: string;
+  lead_time_days: string;
+  lead_time_note: string;
+};
 type DraftSource = {
   product_url?: string | null;
   supplier_item?: string | null;
@@ -366,6 +382,8 @@ type DraftSource = {
   notes?: string | null;
   price?: number | string | null;
   price_note?: string | null;
+  lead_time_days?: number | null;
+  lead_time_note?: string | null;
 };
 const linkToDraft = (l?: DraftSource | null): LinkDraft => ({
   product_url: l?.product_url ?? "",
@@ -375,6 +393,8 @@ const linkToDraft = (l?: DraftSource | null): LinkDraft => ({
   notes: l?.notes ?? "",
   price: l?.price === null || l?.price === undefined ? "" : String(Number(l.price)),
   price_note: l?.price_note ?? "",
+  lead_time_days: l?.lead_time_days === null || l?.lead_time_days === undefined ? "" : String(l.lead_time_days),
+  lead_time_note: l?.lead_time_note ?? "",
 });
 
 export type SupplierUsage = { materials: ReadonlyMap<string, number>; equipment: ReadonlyMap<string, number> };
@@ -566,6 +586,21 @@ export function LinkModal({
             )}
             <Text name="price" text="Price (USD)" placeholder="12.50" value={linkDraft.price} onChange={(v) => setLink({ price: v })} error={errors.price} />
             <Text name="price_note" text="Price note" placeholder="per 25 kg bag, each" value={linkDraft.price_note} onChange={(v) => setLink({ price_note: v })} error={errors.price_note} />
+            {kind === "raw" && (
+              <>
+                <Text
+                  name="lead_time_days"
+                  text="Lead time (days)"
+                  placeholder="14"
+                  inputMode="numeric"
+                  value={linkDraft.lead_time_days}
+                  onChange={(v) => setLink({ lead_time_days: v })}
+                  error={errors.lead_time_days}
+                  hint={LEAD_TIME_HINT}
+                />
+                <Text name="lead_time_note" text="Lead time note" placeholder="Longer in summer" value={linkDraft.lead_time_note} onChange={(v) => setLink({ lead_time_note: v })} error={errors.lead_time_note} />
+              </>
+            )}
           </div>
           <Notes name="notes" text="Notes" value={linkDraft.notes} onChange={(v) => setLink({ notes: v })} error={errors.notes} />
           {link?.is_preferred ? (

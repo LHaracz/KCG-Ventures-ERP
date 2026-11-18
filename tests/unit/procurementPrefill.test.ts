@@ -56,6 +56,8 @@ const lnk = (rawId: string, over: Partial<SupplierLink> = {}): SupplierLink => (
   price: null,
   price_note: null,
   price_updated_at: null,
+  lead_time_days: null,
+  lead_time_note: null,
   archived_at: null,
   created_at: "",
   updated_at: "",

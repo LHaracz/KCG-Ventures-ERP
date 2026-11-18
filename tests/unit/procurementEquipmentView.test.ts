@@ -51,7 +51,7 @@ const eqLink = (id: string, eq: string, supplier: string, over: Partial<Equipmen
 });
 const rmLink = (id: string, raw: string, supplier: string, over: Partial<SupplierLink> = {}): SupplierLink => ({
   id, raw_material_id: raw, supplier_id: supplier, is_preferred: false, product_url: null, supplier_item: null, pack_info: null,
-  coa_policy: "unknown", notes: null, link_updated_at: null, price: null, price_note: null, price_updated_at: null, archived_at: null,
+  coa_policy: "unknown", notes: null, link_updated_at: null, price: null, price_note: null, price_updated_at: null, lead_time_days: null, lead_time_note: null, archived_at: null,
   created_at: "", updated_at: "", ...over,
 });
 
@@ -166,7 +166,8 @@ describe("raw materials prices", () => {
       }),
     );
     const headers = [...html.matchAll(/<th[^>]*>([^<]*)<\/th>/g)].map((m) => m[1]).filter(Boolean);
-    expect(headers.slice(0, 10)).toEqual(["Material", "On hand", "Par level", "Stock alert", "Preferred supplier", "Price", "Payment", "Ordering notes", "Order", "Create PO"]);
+    // "Lead time" was added after Price by the Marketing & Sales build (procurementLeadTime.test.ts).
+    expect(headers.slice(0, 11)).toEqual(["Material", "On hand", "Par level", "Stock alert", "Preferred supplier", "Price", "Lead time", "Payment", "Ordering notes", "Order", "Create PO"]);
     expect(html).toContain('title="Price updated 11/3/2026"');
     expect(html).toContain("$48.50 per 25 kg bag");
     expect(html).toContain("COA"); // raw material subtable keeps COA

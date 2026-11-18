@@ -184,7 +184,9 @@ export function Badge({ children, tone = "zinc" }: { children: ReactNode; tone?:
   return <span className={`inline-flex items-center whitespace-nowrap rounded-full px-2 py-0.5 text-[11px] font-medium text-black ring-1 ${ring}`}>{children}</span>;
 }
 
-export function RetailTabs({ tab }: { tab: "retailers" | "invoices" }) {
+export type RetailTab = "retailers" | "invoices" | "line-sheets";
+
+export function RetailTabs({ tab }: { tab: RetailTab }) {
   const cls = (on: boolean) => `border-b-2 px-3 py-2 text-sm font-medium text-black ${on ? "border-emerald-600" : "border-transparent hover:border-zinc-300"}`;
   return (
     <div className="flex gap-1 border-b border-zinc-200" role="tablist">
@@ -194,13 +196,16 @@ export function RetailTabs({ tab }: { tab: "retailers" | "invoices" }) {
       <Link href="/fulfillment/retail?tab=invoices" role="tab" aria-selected={tab === "invoices"} className={cls(tab === "invoices")}>
         Invoices
       </Link>
+      <Link href="/fulfillment/retail?tab=line-sheets" role="tab" aria-selected={tab === "line-sheets"} className={cls(tab === "line-sheets")}>
+        Line sheets
+      </Link>
     </div>
   );
 }
 
-export function BackToRetail({ tab }: { tab?: "retailers" | "invoices" }) {
+export function BackToRetail({ tab }: { tab?: RetailTab }) {
   return (
-    <Link href={tab === "invoices" ? "/fulfillment/retail?tab=invoices" : "/fulfillment/retail"} className={linkBtn}>
+    <Link href={tab && tab !== "retailers" ? `/fulfillment/retail?tab=${tab}` : "/fulfillment/retail"} className={linkBtn}>
       ← Back to Retail
     </Link>
   );

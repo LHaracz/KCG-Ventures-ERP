@@ -52,6 +52,8 @@ export function mapUnit(unit: string | null | undefined): { unit: string; matche
 export type PrefillItem = {
   material: RawMaterial;
   link: SupplierLink | null;
+  /** An explicit quantity (Launch Pipeline: the shortfall) instead of the par-based suggestion. "" leaves it blank. */
+  quantity?: string;
 };
 
 export type PoVendorPrefill = {
@@ -119,14 +121,14 @@ export function buildPoPrefill(
   if (items.length > MAX_PO_LINES) warnings.push(notAddedWarning(items.length - MAX_PO_LINES));
 
   const unmatched = new Set<string>();
-  const lines: PoLineInput[] = kept.map(({ material, link }) => {
+  const lines: PoLineInput[] = kept.map(({ material, link, quantity }) => {
     const mapped = mapUnit(material.unit);
     if (!mapped.matched && mapped.unit) unmatched.add(mapped.unit);
-    const qty = suggestedQuantity(material.quantity_on_hand, material.par_level);
+    const qty = quantity !== undefined ? null : suggestedQuantity(material.quantity_on_hand, material.par_level);
     return {
       item_number: "",
       description: s(link?.supplier_item) || s(material.name),
-      quantity: qty ? qty.toFixed() : "",
+      quantity: quantity !== undefined ? quantity : qty ? qty.toFixed() : "",
       unit: mapped.unit,
       unit_price: "",
     };

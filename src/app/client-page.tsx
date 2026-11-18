@@ -1,5 +1,6 @@
 "use client";
 
+import { FollowUpsDueWidget, LaunchTasksDueWidget } from "@/components/growth/DashboardWidgets";
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { AuthGuard } from "@/components/AuthGuard";
@@ -32,6 +33,9 @@ export default function Home() {
   // "Active production cycles" follows the planner: all cycles, BotanIQals and MiniLeaf.
   const canPlanner = has("production.planner");
   const canOrders = has("fulfillment.orders");
+  // Marketing & Sales cards: never fetched or rendered without their feature.
+  const canLaunches = has("growth.launches");
+  const canProspecting = has("growth.prospecting");
   const miniLeafCards = MINILEAF_CARDS.filter((c) => has(c.feature));
   // The BotanIQals dropdowns mirror the signed-in employee's own sidebar.
   const botaniqalsCategories: NavCategory[] = me?.sidebar.sections.find((s) => s.title === "BotanIQals")?.categories ?? [];
@@ -173,6 +177,13 @@ export default function Home() {
         {canPlanner && <ActiveCyclesTable rows={cycleRows} loading={dataLoading} />}
 
         {canOrders && <FlaggedOrdersCard />}
+
+        {(canLaunches || canProspecting) && (
+          <section className="grid gap-6 lg:grid-cols-2">
+            {canLaunches && <LaunchTasksDueWidget />}
+            {canProspecting && <FollowUpsDueWidget />}
+          </section>
+        )}
 
         {(miniLeafCards.length > 0 || botaniqalsCategories.length > 0) && (
           <section className="grid gap-6 lg:grid-cols-2">

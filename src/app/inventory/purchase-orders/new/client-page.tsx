@@ -8,7 +8,7 @@ import { useSupabase } from "@/components/InstantProvider";
 import { PurchaseOrderForm } from "@/components/PurchaseOrderForm";
 import { fetchPurchaseOrderWithLines, type PurchaseOrderWithLines } from "@/lib/purchaseOrders";
 import { BackToProcurementLink, SupplierInfoBox } from "@/components/procurement/ProcurementUi";
-import { fetchEquipmentPoPrefill, fetchPoPrefill } from "@/lib/procurement/client";
+import { fetchEquipmentPoPrefill, fetchLaunchPoPrefill, fetchPoPrefill } from "@/lib/procurement/client";
 import type { PoPrefillResult } from "@/lib/procurement/service";
 
 export default function NewPurchaseOrderPage() {
@@ -28,8 +28,13 @@ function NewPurchaseOrderPageInner() {
   const procurementMaterialIds = (searchParams.get("materials") ?? "").split(",").filter(Boolean);
   // Equipment: one supplier and one equipment item.
   const procurementEquipmentId = searchParams.get("equipment");
+  // Launch Pipeline: a launch and its ingredient rows (quantities come from the server).
+  const launchId = searchParams.get("launch");
+  const launchRowIds = (searchParams.get("rows") ?? "").split(",").filter(Boolean);
   const procurementKey = procurementSupplierId
-    ? `${procurementSupplierId}|${procurementEquipmentId ? `eq:${procurementEquipmentId}` : procurementMaterialIds.join(",")}`
+    ? `${procurementSupplierId}|${
+        launchId ? `launch:${launchId}:${launchRowIds.join(",")}` : procurementEquipmentId ? `eq:${procurementEquipmentId}` : procurementMaterialIds.join(",")
+      }`
     : null;
   const backTab = procurementEquipmentId || searchParams.get("tab") === "equipment" ? "equipment" : null;
   const [procurement, setProcurement] = useState<PoPrefillResult | null>(null);
@@ -64,9 +69,14 @@ function NewPurchaseOrderPageInner() {
     const [supplierId, ids] = procurementKey.split("|");
     (async () => {
       try {
-        setProcurement(
-          ids.startsWith("eq:") ? await fetchEquipmentPoPrefill(supplierId, ids.slice(3)) : await fetchPoPrefill(supplierId, ids ? ids.split(",") : []),
-        );
+        if (ids.startsWith("launch:")) {
+          const [, lid, rows] = ids.split(":");
+          setProcurement(await fetchLaunchPoPrefill(supplierId, lid, rows ? rows.split(",") : []));
+        } else {
+          setProcurement(
+            ids.startsWith("eq:") ? await fetchEquipmentPoPrefill(supplierId, ids.slice(3)) : await fetchPoPrefill(supplierId, ids ? ids.split(",") : []),
+          );
+        }
       } catch (err) {
         setProcurementError(`${err instanceof Error ? err.message : "Could not load the supplier."} Starting a blank PO instead.`);
       } finally {
@@ -80,6 +90,11 @@ function NewPurchaseOrderPageInner() {
       <div className="mx-auto max-w-4xl space-y-4">
         <div>
           <div className="mb-1 flex flex-wrap gap-3">
+            {launchId && (
+              <Link href={`/growth/launches/${encodeURIComponent(launchId)}?tab=ingredients`} className="inline-block text-[11px] font-medium text-emerald-700 underline">
+                ← Back to the launch
+              </Link>
+            )}
             <BackToProcurementLink tab={procurement?.tab ?? backTab} className="inline-block text-[11px] font-medium text-emerald-700 underline" />
             <Link href="/inventory/purchase-orders" className="inline-block text-[11px] font-medium text-emerald-700 underline">
               ← Back to Purchase Orders

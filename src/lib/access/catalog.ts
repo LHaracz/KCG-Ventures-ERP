@@ -7,7 +7,7 @@
  * Route patterns use the Next.js folder names ("/cycles/[id]/plan").
  */
 
-export type FeatureGroup = "Production" | "Inventory" | "Fulfillment" | "Compliance" | "MiniLeaf";
+export type FeatureGroup = "Production" | "Inventory" | "Fulfillment" | "Compliance" | "Marketing & Sales" | "MiniLeaf";
 export type Business = "botaniqals" | "minileaf" | "general";
 
 export type FeatureKey =
@@ -27,6 +27,9 @@ export type FeatureKey =
   | "compliance.sops"
   | "compliance.logs"
   | "compliance.coas"
+  | "growth.launches"
+  | "growth.prospecting"
+  | "growth.marketing"
   | "minileaf.guide"
   | "minileaf.optimization"
   | "minileaf.yield_logging";
@@ -53,12 +56,15 @@ export const FEATURES: Feature[] = [
   { key: "inventory.purchase_orders", label: "Procurement (suppliers, buy links and Purchase Orders)", description: "Procurement (suppliers, buy links and Purchase Orders): stock alerts, suppliers and where to buy, and purchase orders with their company settings.", group: "Inventory", business: "botaniqals", assignable: true },
   { key: "fulfillment.orders", label: "Fulfillments", description: "Order list and pages, Shipping Assignments, labels (generate, print, void), Mark Fulfilled, flags and address edits.", group: "Fulfillment", business: "botaniqals", assignable: true },
   { key: "fulfillment.pick_list", label: "Pick List", description: "Picking orders into staging boxes, and staging box management.", group: "Fulfillment", business: "botaniqals", assignable: true },
-  { key: "fulfillment.sales_data", label: "Sales Data", description: "Sales imports, CSV upload, variant mapping and unmapped items.", group: "Fulfillment", business: "botaniqals", assignable: true },
-  { key: "fulfillment.stats", label: "Sales Stats", description: "Sales statistics.", group: "Fulfillment", business: "botaniqals", assignable: true },
   { key: "fulfillment.setup", label: "Fulfillment Setup", description: "Packaging Setup, Fulfillment settings and shipping methods.", group: "Fulfillment", business: "botaniqals", assignable: true },
   { key: "compliance.sops", label: "SOPs", description: "View, create, edit, publish and archive SOPs.", group: "Compliance", business: "botaniqals", assignable: true },
   { key: "compliance.logs", label: "Logs", description: "View logs, add entries and corrections, mark reviewed, receiving log, overdue view, export. Not creating or changing log types.", group: "Compliance", business: "botaniqals", assignable: true },
   { key: "compliance.coas", label: "COAs", description: "Certificates of analysis.", group: "Compliance", business: "botaniqals", assignable: true },
+  { key: "growth.launches", label: "Launch Pipeline", description: "New product launches: dated checklists with owners, and the test batch ingredient planner (order-by dates).", group: "Marketing & Sales", business: "botaniqals", assignable: true },
+  { key: "growth.prospecting", label: "Retail Prospecting", description: "Store leads, visits and calls, trips with Google Maps routes, follow-ups and the retailer goal.", group: "Marketing & Sales", business: "botaniqals", assignable: true },
+  { key: "growth.marketing", label: "Marketing Hub", description: "Product marketing profiles, the claims library, assets, the content calendar and caption templates.", group: "Marketing & Sales", business: "botaniqals", assignable: true },
+  { key: "fulfillment.sales_data", label: "Sales Data", description: "Sales imports, CSV upload, variant mapping and unmapped items.", group: "Marketing & Sales", business: "botaniqals", assignable: true },
+  { key: "fulfillment.stats", label: "Sales Stats", description: "Sales statistics.", group: "Marketing & Sales", business: "botaniqals", assignable: true },
   { key: "minileaf.guide", label: "Microgreens Guide", description: "Microgreen parameters for planning and logging.", group: "MiniLeaf", business: "minileaf", assignable: true },
   { key: "minileaf.yield_logging", label: "Yield Logging", description: "Fresh and dried yields per tray and microgreen.", group: "MiniLeaf", business: "minileaf", assignable: true },
   { key: "minileaf.optimization", label: "Microgreens Optimization", description: "Microgreen mixes and optimization.", group: "MiniLeaf", business: "minileaf", assignable: true },
@@ -66,12 +72,13 @@ export const FEATURES: Feature[] = [
 
 export const FEATURE_KEYS = FEATURES.map((f) => f.key);
 export const MINILEAF_FEATURES = FEATURES.filter((f) => f.business === "minileaf").map((f) => f.key);
-export const FEATURE_GROUPS: FeatureGroup[] = ["Production", "Inventory", "Fulfillment", "Compliance", "MiniLeaf"];
+export const FEATURE_GROUPS: FeatureGroup[] = ["Production", "Inventory", "Fulfillment", "Compliance", "Marketing & Sales", "MiniLeaf"];
 export const featureByKey = (key: string) => FEATURES.find((f) => f.key === key);
 export const isFeatureKey = (key: string): key is FeatureKey => FEATURE_KEYS.includes(key as FeatureKey);
 
 /** Shown in the role editor: things no role can grant. */
-export const ADMIN_ONLY_NOTE = "Employees and Roles, Notification settings, Retail (retailers, price lists and invoices), and creating or changing log types are Admin only.";
+export const ADMIN_ONLY_NOTE =
+  "Employees and Roles, Notification settings, Retail (retailers, price lists, invoices and line sheets), approving, rejecting or retiring marketing claims, the risky-word watch list, converting a lead to a retailer, and creating or changing log types are Admin only.";
 
 // --- Access rules -----------------------------------------------------------
 /**
@@ -154,6 +161,16 @@ export const PAGE_RULES: Record<string, Rule> = {
   "/fulfillment/retail/invoices/new": ADMIN,
   "/fulfillment/retail/invoices/[id]": ADMIN,
   "/fulfillment/retail/invoices/[id]/edit": ADMIN,
+  "/fulfillment/retail/line-sheets/new": ADMIN,
+  "/fulfillment/retail/line-sheets/[id]": ADMIN,
+  "/fulfillment/retail/line-sheets/[id]/edit": ADMIN,
+  // Marketing & Sales
+  "/growth/launches": F("growth.launches"),
+  "/growth/launches/[id]": F("growth.launches"),
+  "/growth/prospecting": F("growth.prospecting"),
+  "/growth/prospecting/leads/[id]": F("growth.prospecting"),
+  "/growth/prospecting/trips/[id]": F("growth.prospecting"),
+  "/growth/marketing": F("growth.marketing"),
   "/settings/shipping-methods": F("fulfillment.setup"),
   "/sales-data": F("fulfillment.sales_data"),
   "/settings/variant-mapping": F("fulfillment.sales_data"),
@@ -241,6 +258,47 @@ export const API_RULES: Record<string, Rule> = {
   "/api/purchase-orders/company-profiles/[id]/logo-url": F("inventory.purchase_orders"),
   "/api/purchase-orders/company-profiles/logo-upload-url": F("inventory.purchase_orders"),
 
+  "/api/growth/employees": F("growth.launches", "growth.prospecting", "growth.marketing"),
+  "/api/growth/prospecting": F("growth.prospecting"),
+  "/api/growth/prospecting/follow-ups": F("growth.prospecting"),
+  "/api/growth/prospecting/settings": F("growth.prospecting"),
+  "/api/growth/prospecting/leads": F("growth.prospecting"),
+  "/api/growth/prospecting/leads/[leadId]": F("growth.prospecting"),
+  "/api/growth/prospecting/leads/[leadId]/activities": F("growth.prospecting"),
+  "/api/growth/prospecting/leads/[leadId]/activities/[activityId]/void": F("growth.prospecting"),
+  "/api/growth/prospecting/trips": F("growth.prospecting"),
+  "/api/growth/prospecting/trips/[tripId]": F("growth.prospecting"),
+  "/api/growth/prospecting/trips/[tripId]/stops": F("growth.prospecting"),
+  // Admin only inside the feature (the route also checks Admin).
+  "/api/growth/prospecting/leads/[leadId]/convert": ADMIN,
+  "/api/growth/marketing": F("growth.marketing"),
+  "/api/growth/marketing/profiles/[productId]": F("growth.marketing"),
+  "/api/growth/marketing/claims": F("growth.marketing"),
+  "/api/growth/marketing/claims/[claimId]": F("growth.marketing"),
+  "/api/growth/marketing/claims/[claimId]/submit": F("growth.marketing"),
+  "/api/growth/marketing/assets": F("growth.marketing"),
+  "/api/growth/marketing/assets/upload-url": F("growth.marketing"),
+  "/api/growth/marketing/assets/finalize": F("growth.marketing"),
+  "/api/growth/marketing/assets/signed-urls": F("growth.marketing"),
+  "/api/growth/marketing/assets/[assetId]": F("growth.marketing"),
+  "/api/growth/marketing/posts": F("growth.marketing"),
+  "/api/growth/marketing/posts/[postId]": F("growth.marketing"),
+  "/api/growth/marketing/templates": F("growth.marketing"),
+  "/api/growth/marketing/templates/[templateId]": F("growth.marketing"),
+  // Admin only (not assignable): claim review and the risky-word list.
+  "/api/growth/marketing/claims/[claimId]/review": ADMIN,
+  "/api/growth/marketing/risky-words": ADMIN,
+  "/api/growth/marketing/risky-words/[wordId]": ADMIN,
+  "/api/growth/launches": F("growth.launches"),
+  "/api/growth/launches/tasks-due": F("growth.launches"),
+  "/api/growth/launches/[launchId]": F("growth.launches"),
+  "/api/growth/launches/[launchId]/shift": F("growth.launches"),
+  "/api/growth/launches/[launchId]/sync": F("growth.launches"),
+  "/api/growth/launches/[launchId]/tasks": F("growth.launches"),
+  "/api/growth/launches/[launchId]/tasks/reorder": F("growth.launches"),
+  "/api/growth/launches/[launchId]/tasks/[taskId]": F("growth.launches"),
+  "/api/growth/launches/[launchId]/ingredients/[rowId]": F("growth.launches"),
+
   "/api/retail": ADMIN,
   "/api/retail/settings": ADMIN,
   "/api/retail/retailers": ADMIN,
@@ -256,6 +314,12 @@ export const API_RULES: Record<string, Rule> = {
   "/api/retail/invoices/[invoiceId]/delete": ADMIN,
   "/api/retail/invoices/[invoiceId]/restore": ADMIN,
   "/api/retail/invoices/[invoiceId]/pdf": ADMIN,
+  "/api/retail/line-sheets": ADMIN,
+  "/api/retail/line-sheets/preview": ADMIN,
+  "/api/retail/line-sheets/[sheetId]": ADMIN,
+  "/api/retail/line-sheets/[sheetId]/duplicate": ADMIN,
+  "/api/retail/line-sheets/[sheetId]/delete": ADMIN,
+  "/api/retail/line-sheets/[sheetId]/pdf": ADMIN,
 
   "/api/fulfillments": F("fulfillment.orders"),
   "/api/fulfillments/flagged": F("fulfillment.orders"),
@@ -382,11 +446,15 @@ export const TOP_ITEMS: NavItemDef[] = [
 /** Admin only, directly above the BotanIQals section. */
 export const EMPLOYEES_ITEM: NavItemDef = { href: "/employees", label: "Employees", admin: true };
 
-const SECTION_DEFS: Array<{ title: string; categories?: Array<{ title: string; items: NavItemDef[] }>; items?: NavItemDef[] }> = [
+/** Catalog group keys (stable ids for the sidebar groups; the title is what people see). */
+export type NavGroupKey = "production" | "inventory" | "fulfillment" | "compliance" | "marketing_sales";
+
+const SECTION_DEFS: Array<{ title: string; categories?: Array<{ key?: NavGroupKey; title: string; items: NavItemDef[] }>; items?: NavItemDef[] }> = [
   {
     title: "BotanIQals",
     categories: [
       {
+        key: "production",
         title: "Production",
         items: [
           { href: "/calibration", label: "Freeze Dryer Calibration", feature: "production.calibration" },
@@ -397,6 +465,7 @@ const SECTION_DEFS: Array<{ title: string; categories?: Array<{ title: string; i
         ],
       },
       {
+        key: "inventory",
         title: "Inventory",
         items: [
           { href: "/finished-products-inventory", label: "Finished Products Inventory", feature: "inventory.finished_products" },
@@ -405,22 +474,35 @@ const SECTION_DEFS: Array<{ title: string; categories?: Array<{ title: string; i
         ],
       },
       {
+        key: "fulfillment",
         title: "Fulfillment",
         items: [
           { href: "/fulfillments", label: "Fulfillments", feature: "fulfillment.orders" },
           { href: "/fulfillments/pick-list", label: "Pick List", feature: "fulfillment.pick_list" },
-          { href: "/sales-data", label: "Sales Data", feature: "fulfillment.sales_data" },
-          { href: "/stats", label: "Sales Stats", feature: "fulfillment.stats" },
-          // Admin only; always the last item in Fulfillment.
-          { href: "/fulfillment/retail", label: "Retail", admin: true },
         ],
       },
       {
+        key: "compliance",
         title: "Compliance",
         items: [
           { href: "/compliance/sops", label: "SOPs", feature: "compliance.sops" },
           { href: "/compliance/logs", label: "Logs", feature: "compliance.logs" },
           { href: "/compliance/coas", label: "COAs", feature: "compliance.coas" },
+        ],
+      },
+      {
+        // The last BotanIQals group. Sales Data, Sales Stats and Retail moved
+        // here from Fulfillment; their URLs, features and rules are unchanged.
+        key: "marketing_sales",
+        title: "Marketing & Sales",
+        items: [
+          { href: "/growth/launches", label: "Launch Pipeline", feature: "growth.launches" },
+          { href: "/growth/prospecting", label: "Prospecting", feature: "growth.prospecting" },
+          { href: "/growth/marketing", label: "Marketing Hub", feature: "growth.marketing" },
+          // Admin only, never assignable.
+          { href: "/fulfillment/retail", label: "Retail", admin: true },
+          { href: "/sales-data", label: "Sales Data", feature: "fulfillment.sales_data" },
+          { href: "/stats", label: "Sales Stats", feature: "fulfillment.stats" },
         ],
       },
     ],
@@ -478,6 +560,9 @@ export function buildSidebar(access: AccessSummary | null): Sidebar {
 const ACTIVE_PREFIXES: Record<string, readonly string[]> = {
   "/inventory/procurement": ["/inventory/procurement/", "/inventory/purchase-orders"],
   "/fulfillment/retail": ["/fulfillment/retail/"],
+  "/growth/launches": ["/growth/launches/"],
+  "/growth/prospecting": ["/growth/prospecting/"],
+  "/growth/marketing": ["/growth/marketing/"],
 };
 
 /** Whether a sidebar item is the current page. */

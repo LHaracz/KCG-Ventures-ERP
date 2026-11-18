@@ -72,6 +72,9 @@ export type SupplierLink = {
   price: number | string | null;
   price_note: string | null;
   price_updated_at: string | null;
+  /** Typical days from order to arrival (0 to 365), null when unknown. */
+  lead_time_days: number | null;
+  lead_time_note: string | null;
   archived_at: string | null;
   created_at: string;
   updated_at: string;
@@ -153,7 +156,7 @@ export const SUPPLIER_COLUMNS =
 
 export const LINK_COLUMNS =
   "id, raw_material_id, supplier_id, is_preferred, product_url, supplier_item, pack_info, coa_policy, notes, " +
-  "link_updated_at, price, price_note, price_updated_at, archived_at, created_at, updated_at";
+  "link_updated_at, price, price_note, price_updated_at, lead_time_days, lead_time_note, archived_at, created_at, updated_at";
 
 export const CATEGORY_COLUMNS = "id, name, sort_order, archived_at, created_at";
 export const EQUIPMENT_COLUMNS = "id, name, category_id, description, archived_at, created_at, updated_at, updated_by_name";

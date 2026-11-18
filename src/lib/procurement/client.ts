@@ -50,6 +50,8 @@ export const archiveLinkApi = (id: string) => call<{ link: SupplierLink }>(`/api
 export const makePreferredApi = (id: string) => call<{ link: SupplierLink }>(`/api/procurement/links/${encodeURIComponent(id)}/preferred`, {});
 export const fetchPoPrefill = (supplierId: string, rawMaterialIds: string[]) =>
   call<PoPrefillResult>("/api/procurement/po-prefill", { supplier_id: supplierId, raw_material_ids: rawMaterialIds });
+export const fetchLaunchPoPrefill = (supplierId: string, launchId: string, rowIds: string[]) =>
+  call<PoPrefillResult>("/api/procurement/po-prefill", { supplier_id: supplierId, launch_id: launchId, launch_ingredient_ids: rowIds });
 export const fetchEquipmentPoPrefill = (supplierId: string, equipmentId: string) =>
   call<PoPrefillResult>("/api/procurement/po-prefill", { supplier_id: supplierId, equipment_id: equipmentId });
 

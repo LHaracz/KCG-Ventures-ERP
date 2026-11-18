@@ -7,6 +7,7 @@ import { AuthGuard } from "@/components/AuthGuard";
 import { useSupabase } from "@/components/InstantProvider";
 import { RetailerEditor, defaultTermsText } from "@/components/retail/RetailerEditor";
 import { InvoicesTab } from "@/components/retail/InvoicesTab";
+import { LineSheetsTab } from "@/components/retail/LineSheetsTab";
 import { Badge, RetailTabs, btn, btnPrimary, errorBox, input } from "@/components/retail/RetailUi";
 import { fetchRetail } from "@/lib/retail/client";
 import { formatShortDate } from "@/lib/retail/format";
@@ -28,7 +29,8 @@ function RetailInner() {
   const { user } = useSupabase();
   const router = useRouter();
   const params = useSearchParams();
-  const tab = params.get("tab") === "invoices" ? "invoices" : "retailers";
+  const tabParam = params.get("tab");
+  const tab = tabParam === "invoices" || tabParam === "line-sheets" ? tabParam : "retailers";
   const [data, setData] = useState<RetailBootstrap | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [editing, setEditing] = useState<Retailer | "new" | null>(null);
@@ -64,7 +66,7 @@ function RetailInner() {
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h1 className="text-2xl font-semibold text-black">Retail</h1>
-          <p className="text-sm text-black">Retailers, their price lists and payment terms, and invoices for wholesale and consignment orders.</p>
+          <p className="text-sm text-black">Retailers, their price lists and payment terms, invoices for wholesale and consignment orders, and wholesale line sheets.</p>
         </div>
         <div className="flex flex-wrap gap-2">
           <Link href="/fulfillment/retail/settings" className={btn}>
@@ -180,8 +182,10 @@ function RetailInner() {
             </div>
           )}
         </section>
-      ) : (
+      ) : tab === "invoices" ? (
         <InvoicesTab businesses={data?.businesses ?? []} retailers={data?.retailers ?? []} />
+      ) : (
+        <LineSheetsTab />
       )}
 
       {editing && data && (

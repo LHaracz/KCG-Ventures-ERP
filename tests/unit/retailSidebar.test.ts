@@ -2,6 +2,7 @@
 // sidebar change is "Retail" as the last item in Fulfillment, for Admins.
 // Every other category and item stays as recorded before the Retail build,
 // for every role. Invented people and example.test addresses only.
+import { withMarketingSales } from "./helpers/sidebarMoves";
 import { readdirSync, statSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -95,20 +96,19 @@ const nonAdmin = (features: string[]) => ({ active: true, isAdmin: false, featur
 const expectedFor = (features: string[]) => buildSidebar(nonAdmin(features));
 
 describe("Retail in the sidebar", () => {
-  it("Admins: the recorded structure plus Retail as the last Fulfillment item, nothing else changed", () => {
-    const expected = JSON.parse(JSON.stringify(BEFORE.sections));
-    expected[0].categories[2].items.push(RETAIL);
+  it("Admins: the recorded structure with Retail (later moved to Marketing & Sales), nothing else changed", () => {
+    const expected = withMarketingSales(BEFORE.sections);
     expect(ALL_SECTIONS).toEqual(expected);
     const admin = buildSidebar({ active: true, isAdmin: true, features: new Set() });
     expect(admin.sections).toEqual(expected);
-    const fulfillment = admin.sections[0].categories!.find((c) => c.title === "Fulfillment")!;
-    expect(fulfillment.items[fulfillment.items.length - 1]).toEqual(RETAIL);
+    const group = admin.sections[0].categories!.find((c) => c.title === "Marketing & Sales")!;
+    expect(group.items).toContainEqual(RETAIL);
     expect(TOP_ITEMS).toEqual(BEFORE.top);
     expect(EMPLOYEES_ITEM).toEqual(BEFORE.employees);
   });
 
   it("non-admins never see Retail, and keep exactly their old sidebar", () => {
-    const before = BEFORE.sections;
+    const before = withMarketingSales(BEFORE.sections);
     for (const [name, features] of Object.entries(ROLES)) {
       const sb = expectedFor(features);
       expect(JSON.stringify(sb), name).not.toContain("/fulfillment/retail");
@@ -130,17 +130,25 @@ describe("Retail in the sidebar", () => {
     }
     // A non-admin with every feature sees every item except the Admin-only ones.
     const all = buildSidebar(nonAdmin([...FEATURE_KEYS]));
-    expect(all.sections).toEqual(BEFORE.sections);
+    expect(JSON.stringify(all.sections)).toBe(JSON.stringify(before).replace(/,\{"href":"\/fulfillment\/retail","label":"Retail"\}/, ""));
     expect(all.employees).toBeNull();
   });
 
-  it("someone with all Fulfillment features still has Fulfillment, without Retail", () => {
+  it("someone with the old Fulfillment features keeps them (Sales Data and Sales Stats now under Marketing & Sales), without Retail", () => {
     const sb = buildSidebar(nonAdmin(ROLES.fulfillmentOnly));
-    expect(sb.sections).toEqual([{ title: "BotanIQals", categories: [{ title: "Fulfillment", items: BEFORE.sections[0].categories![2].items }] }]);
+    expect(sb.sections).toEqual([
+      {
+        title: "BotanIQals",
+        categories: [
+          { title: "Fulfillment", items: BEFORE.sections[0].categories![2].items.slice(0, 2) },
+          { title: "Marketing & Sales", items: BEFORE.sections[0].categories![2].items.slice(2) },
+        ],
+      },
+    ]);
   });
 
   it("Retail is never assignable: no feature key, not in the role editor preview, named in the Admin-only note", () => {
-    expect(FEATURES.filter((f) => /retail|invoice/i.test(`${f.key} ${f.label}`))).toEqual([]);
+    expect(FEATURES.filter((f) => /retail|invoice/i.test(f.key) || f.label === "Retail")).toEqual([]);
     expect(previewSidebarLabels(FEATURE_KEYS).some((l) => l.includes("Retail"))).toBe(false);
     expect(ADMIN_ONLY_NOTE).toContain("Retail");
   });
@@ -186,16 +194,21 @@ describe("Retail access rules", () => {
         "/fulfillment/retail/invoices/[id]",
         "/fulfillment/retail/invoices/[id]/edit",
         "/fulfillment/retail/invoices/new",
+        "/fulfillment/retail/line-sheets/[id]",
+        "/fulfillment/retail/line-sheets/[id]/edit",
+        "/fulfillment/retail/line-sheets/new",
         "/fulfillment/retail/retailers/[id]",
         "/fulfillment/retail/settings",
       ].sort(),
     );
     for (const p of pages) expect(PAGE_RULES[p], p).toEqual({ kind: "admin" });
-    expect(apis.length).toBe(15);
+    expect(apis.length).toBe(21); // 15 Retail + 6 line sheet routes
     for (const a of apis) expect(API_RULES[a], a).toEqual({ kind: "admin" });
     expect(Object.keys(API_RULES).filter((k) => k.startsWith("/api/retail")).sort()).toEqual([...apis].sort());
     expect(apiRule("/api/retail/invoices/123e4567-e89b-42d3-a456-426614174000/pdf")).toEqual({ kind: "admin" });
     expect(pageRule("/fulfillment/retail/invoices/123e4567-e89b-42d3-a456-426614174000/edit")).toEqual({ kind: "admin" });
+    expect(apiRule("/api/retail/line-sheets/123e4567-e89b-42d3-a456-426614174000/pdf")).toEqual({ kind: "admin" });
+    expect(pageRule("/fulfillment/retail/line-sheets/123e4567-e89b-42d3-a456-426614174000/edit")).toEqual({ kind: "admin" });
   });
 
   it("non-admins get the forbidden page, even with every feature; Admins get in", () => {

@@ -1,6 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 // Feature catalog, sidebar, page and API decisions, the route registry check,
 // and the password policy. Invented data only.
+import { withMarketingSales } from "./helpers/sidebarMoves";
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -84,10 +85,9 @@ const SIDEBAR_BEFORE = {
 };
 
 describe("sidebar", () => {
-  it("an Admin sees exactly today's sidebar plus Employees (and Retail, Admin only, last in Fulfillment)", () => {
+  it("an Admin sees exactly today's sidebar plus Employees (with the later Marketing & Sales regrouping)", () => {
     const sb = buildSidebar(summary([], true));
-    const expected = JSON.parse(JSON.stringify(SIDEBAR_BEFORE.sections));
-    expected[0].categories.find((c: { title: string }) => c.title === "Fulfillment").items.push({ href: "/fulfillment/retail", label: "Retail" });
+    const expected = withMarketingSales(SIDEBAR_BEFORE.sections);
     expect(sb.top).toEqual(SIDEBAR_BEFORE.top);
     expect(sb.sections).toEqual(expected);
     expect(sb.employees).toEqual({ href: "/employees", label: "Employees" });

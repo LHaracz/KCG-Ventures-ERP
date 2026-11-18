@@ -22,6 +22,8 @@ export type MaterialRow = {
   missingInfo: boolean;
   /** Has a preferred listing, and that listing has no price. */
   missingPrice: boolean;
+  /** Has a preferred listing, and that listing has no lead time. */
+  missingLeadTime: boolean;
 };
 
 const hasPrice = (l: { price: number | string | null } | null | undefined) => !!l && l.price !== null && l.price !== undefined && String(l.price) !== "";
@@ -60,6 +62,7 @@ export function buildMaterialRows(data: ProcurementData): MaterialRow[] {
       preferred,
       missingInfo: !preferred || (!preferred.product_url && !preferred.supplier.website_url),
       missingPrice: !!preferred && !hasPrice(preferred),
+      missingLeadTime: !!preferred && (preferred.lead_time_days === null || preferred.lead_time_days === undefined),
     };
   });
   return sortByStockAlert(rows);
@@ -89,8 +92,8 @@ export function createPoBlocker(row: MaterialRow): string | null {
 }
 
 export type QuickFilter = "out" | "below" | "no_supplier" | null;
-export type RowFilters = { search: string; shortagesOnly: boolean; missingInfo: boolean; missingPrice?: boolean; quick: QuickFilter };
-export const NO_FILTERS: RowFilters = { search: "", shortagesOnly: false, missingInfo: false, missingPrice: false, quick: null };
+export type RowFilters = { search: string; shortagesOnly: boolean; missingInfo: boolean; missingPrice?: boolean; missingLeadTime?: boolean; quick: QuickFilter };
+export const NO_FILTERS: RowFilters = { search: "", shortagesOnly: false, missingInfo: false, missingPrice: false, missingLeadTime: false, quick: null };
 
 export function filterRows(rows: readonly MaterialRow[], f: RowFilters): MaterialRow[] {
   const q = f.search.trim().toLowerCase();
@@ -99,6 +102,7 @@ export function filterRows(rows: readonly MaterialRow[], f: RowFilters): Materia
     if (f.shortagesOnly && !isShortage(r.alert.state)) return false;
     if (f.missingInfo && !r.missingInfo) return false;
     if (f.missingPrice && !r.missingPrice) return false;
+    if (f.missingLeadTime && !r.missingLeadTime) return false;
     if (f.quick === "out" && r.alert.state !== "out") return false;
     if (f.quick === "below" && r.alert.state !== "below") return false;
     if (f.quick === "no_supplier" && r.links.length > 0) return false;

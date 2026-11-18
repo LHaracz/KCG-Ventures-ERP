@@ -255,6 +255,7 @@ function ListingSubtable<L extends AnyListing>({
                   </td>
                   <td className="px-2 py-1.5">
                     <PriceText listing={l} showDate />
+                    {kind === "raw" && <LeadTimeText link={l as LinkWithSupplier} />}
                   </td>
                   <td className="max-w-xs px-2 py-1.5">
                     {l.supplier.ordering_notes && (
@@ -321,6 +322,7 @@ export function ProcurementTable({
             <th className="px-2 py-2 font-semibold">Stock alert</th>
             <th className="px-2 py-2 font-semibold">Preferred supplier</th>
             <th className="px-2 py-2 font-semibold">Price</th>
+            <th className="px-2 py-2 font-semibold">Lead time</th>
             <th className="px-2 py-2 font-semibold">Payment</th>
             <th className="px-2 py-2 font-semibold">Ordering notes</th>
             <th className="px-2 py-2 font-semibold">Order</th>
@@ -381,6 +383,9 @@ export function ProcurementTable({
                   <td className="px-2 py-2">
                     <PriceText listing={row.preferred} />
                   </td>
+                  <td className="whitespace-nowrap px-2 py-2" data-testid="row-lead-time" title={row.preferred?.lead_time_note ?? undefined}>
+                    {row.preferred ? (row.preferred.lead_time_days === null ? "No lead time" : leadTimeLabel(row.preferred.lead_time_days)) : "—"}
+                  </td>
                   <td className="px-2 py-2">
                     <PaymentChips methods={row.preferred?.supplier.payment_methods} />
                   </td>
@@ -411,7 +416,7 @@ export function ProcurementTable({
                 </tr>
                 {open && (
                   <tr>
-                    <td colSpan={11} className="p-0">
+                    <td colSpan={12} className="p-0">
                       <ListingSubtable
                         kind="raw"
                         ownerId={row.material.id}
@@ -708,3 +713,15 @@ export function BackToProcurementLink({ tab, className = linkBtn }: { tab?: stri
     </Suspense>
   );
 }
+
+/** Lead time under the price in the raw material subtable ("Lead time: 14 days"). */
+export function LeadTimeText({ link }: { link: { lead_time_days: number | null; lead_time_note: string | null } }) {
+  return (
+    <div className="mt-1 text-[11px] text-black" data-testid="lead-time">
+      {link.lead_time_days === null ? "No lead time" : `Lead time: ${leadTimeLabel(link.lead_time_days)}`}
+      {link.lead_time_note && <div>{link.lead_time_note}</div>}
+    </div>
+  );
+}
+
+export const leadTimeLabel = (days: number | null | undefined) => (days === null || days === undefined ? "—" : `${days} ${days === 1 ? "day" : "days"}`);

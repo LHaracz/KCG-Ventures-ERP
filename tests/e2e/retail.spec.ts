@@ -1,5 +1,5 @@
 /**
- * Browser tests for Retail (Admin only): the sidebar item, adding a
+ * Browser tests for Retail (Admin only): the sidebar item (Marketing & Sales), adding a
  * retailer with consignment terms (live "Retailer keeps X%"), the price
  * list, a new invoice with a custom line, the Shopify order number check,
  * Download PDF (file name), Delete and Restore.
@@ -27,16 +27,15 @@ test.afterAll(async () => {
   for (const id of created.retailers) await db.from("retailers").update({ archived_at: new Date().toISOString() }).eq("id", id).is("archived_at", null);
 });
 
-test("Retail is the last Fulfillment item for Admins", async ({ page }) => {
+test("Retail is in the Marketing & Sales group for Admins, after Marketing Hub", async ({ page }) => {
   await login(page);
   await assertBrowserOnDevDatabase(page);
   await page.goto("/fulfillment/retail");
   const nav = page.getByRole("navigation");
-  const links = nav.getByRole("link");
-  const labels = await links.allInnerTexts();
-  const i = labels.findIndex((l) => l.trim() === "Sales Stats");
+  const labels = (await nav.getByRole("link").allInnerTexts()).map((l) => l.trim());
+  const i = labels.indexOf("Marketing Hub");
   expect(i).toBeGreaterThan(-1);
-  expect(labels[i + 1].trim()).toBe("Retail");
+  expect(labels.slice(i + 1, i + 4)).toEqual(["Retail", "Sales Data", "Sales Stats"]);
   await expect(page.getByRole("heading", { name: "Retail", level: 1 })).toBeVisible();
   await expect(page.getByRole("tab", { name: "Retailers" })).toHaveAttribute("aria-selected", "true");
 });

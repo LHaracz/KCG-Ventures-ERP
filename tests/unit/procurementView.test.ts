@@ -30,7 +30,7 @@ const sup = (id: string, name: string, over: Partial<Supplier> = {}): Supplier =
 const mat = (id: string, name: string, on: number, par: number | null, unit = "kg"): RawMaterial => ({ id, name, unit, quantity_on_hand: on, par_level: par });
 const link = (id: string, raw: string, supplier: string, over: Partial<SupplierLink> = {}): SupplierLink => ({
   id, raw_material_id: raw, supplier_id: supplier, is_preferred: false, product_url: null, supplier_item: null, pack_info: null,
-  coa_policy: "unknown", notes: null, link_updated_at: null, price: null, price_note: null, price_updated_at: null, archived_at: null, created_at: "", updated_at: "", ...over,
+  coa_policy: "unknown", notes: null, link_updated_at: null, price: null, price_note: null, price_updated_at: null, lead_time_days: null, lead_time_note: null, archived_at: null, created_at: "", updated_at: "", ...over,
 });
 
 function data(): ProcurementData {

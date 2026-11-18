@@ -3,6 +3,8 @@
  * guardApi() (feature inventory.purchase_orders) with the service-role
  * client. Every input is validated here; the database checks again.
  */
+import { launchPoItems } from "@/lib/growth/launches";
+import { GrowthError } from "@/lib/growth/errors";
 import {
   buildEquipmentPoPrefill,
   buildEquipmentSupplierInfo,
@@ -250,7 +252,12 @@ export type PoPrefillResult = {
  * Rejects unknown or archived suppliers, unknown raw materials, and raw
  * materials this supplier is not (actively) listed for.
  */
-export async function loadPoPrefill(db: Db, supplierId: unknown, materialIds: unknown): Promise<PoPrefillResult> {
+export async function loadPoPrefill(
+  db: Db,
+  supplierId: unknown,
+  materialIds: unknown,
+  quantities?: ReadonlyMap<string, string>,
+): Promise<PoPrefillResult> {
   const supplier = await getActiveSupplier(db, supplierId);
   if (materialIds !== undefined && !Array.isArray(materialIds)) throw new ProcurementError("Unknown raw material.", 404);
   const ids = [...new Set((materialIds ?? []) as unknown[])];
@@ -272,7 +279,7 @@ export async function loadPoPrefill(db: Db, supplierId: unknown, materialIds: un
       if (!material) throw new ProcurementError("Unknown raw material.", 404);
       const link = links.get(id);
       if (!link) throw new ProcurementError(`${supplier.name} is not listed as a supplier for ${material.name}.`, 400);
-      return { material, link };
+      return quantities ? { material, link, quantity: quantities.get(id) ?? "" } : { material, link };
     });
   }
   return {
@@ -281,6 +288,25 @@ export async function loadPoPrefill(db: Db, supplierId: unknown, materialIds: un
     prefill: buildPoPrefill(supplier, items, { payment_terms: "" }),
     supplierInfo: buildSupplierInfo(supplier, items),
   };
+}
+
+/**
+ * Create PO from a launch (Launch Pipeline): only the launch id, the
+ * ingredient row ids and the supplier id come from the browser. The rows are
+ * checked against the launch and the supplier, and each quantity defaults to
+ * the row's shortfall worked out on the server. The PO form stays editable.
+ */
+export async function loadLaunchPoPrefill(db: Db, supplierId: unknown, launchId: unknown, rowIds: unknown): Promise<PoPrefillResult & { launch_id: string }> {
+  const supplier = await getActiveSupplier(db, supplierId);
+  let items: Array<{ raw_material_id: string; quantity: string }>;
+  try {
+    items = await launchPoItems(db, launchId, rowIds, supplier.id);
+  } catch (e) {
+    if (e instanceof GrowthError) throw new ProcurementError(e.message, e.status === 404 ? 404 : e.status === 409 ? 409 : 400);
+    throw e;
+  }
+  const result = await loadPoPrefill(db, supplier.id, items.map((i) => i.raw_material_id), new Map(items.map((i) => [i.raw_material_id, i.quantity])));
+  return { ...result, launch_id: launchId as string };
 }
 
 // --- Equipment categories -------------------------------------------------------------
