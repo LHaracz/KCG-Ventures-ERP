@@ -10,6 +10,7 @@
 import { GrowthError, idOrThrow, isUuid } from "./errors";
 import { isIsoDate } from "./dates";
 import { claimsReadyCheck, isReadyStatus, scanText } from "./text";
+import { validateAssetCategory } from "./assetCategories";
 import { listAssignableEmployees } from "./employees";
 import type { Db } from "./routeHelpers";
 
@@ -51,6 +52,10 @@ export type Asset = {
   notes: string | null;
   created_by_name: string | null;
   created_at: string;
+  category: "product" | "group_product" | "ingredient" | "market" | "retail" | "other" | null;
+  context_label: string | null;
+  shot_date: string | null;
+  is_full_lineup: boolean | null;
 };
 export type Profile = {
   id: string;
@@ -86,6 +91,8 @@ export type Post = {
   risky_words_checked: boolean;
   archived_at: string | null;
   created_by_name: string | null;
+  premade_post_id: string | null;
+  premade_synced_at: string | null;
   asset_ids: string[];
   claim_ids: string[];
 };
@@ -94,10 +101,11 @@ export type RiskyWord = { id: string; phrase: string; note: string | null; archi
 
 const CLAIM_COLUMNS =
   "id, claim_text, formulation_product_id, claim_type, status, evidence_note, evidence_url, review_note, reviewed_by_name, reviewed_at, review_again_on, created_by_name, updated_at";
-const ASSET_COLUMNS = "id, title, business, formulation_product_id, asset_type, source, file_path, url, mime_type, size_bytes, project_url, status, notes, created_by_name, created_at";
+const ASSET_COLUMNS =
+  "id, title, business, formulation_product_id, asset_type, source, file_path, url, mime_type, size_bytes, project_url, status, notes, created_by_name, created_at, category, context_label, shot_date, is_full_lineup";
 const PROFILE_COLUMNS = "id, formulation_product_id, tagline, short_description, long_description, label_ingredients, key_points, hashtags, do_not_say, primary_asset_id, updated_by_name, updated_at";
 const POST_COLUMNS =
-  "id, title, business, formulation_product_id, platform, post_type, status, scheduled_date, scheduled_time, owner_account_id, caption, hashtags, project_url, posted_url, posted_at, notes, risky_words_checked, archived_at, created_by_name";
+  "id, title, business, formulation_product_id, platform, post_type, status, scheduled_date, scheduled_time, owner_account_id, caption, hashtags, project_url, posted_url, posted_at, notes, risky_words_checked, archived_at, created_by_name, premade_post_id, premade_synced_at";
 
 const iso = (v: unknown): string | null => (v instanceof Date ? v.toISOString().slice(0, 10) : typeof v === "string" && v ? v.slice(0, 10) : null);
 const time = (v: unknown): string | null => (typeof v === "string" && v ? v.slice(0, 5) : null);
@@ -155,7 +163,7 @@ export async function loadMarketing(db: Db) {
     profiles: (pr.data ?? []) as Profile[],
     claims: ((cl.data ?? []) as Claim[]).map((c) => ({ ...c, review_again_on: iso(c.review_again_on) })).sort((a, b) => (a.updated_at < b.updated_at ? 1 : -1)),
     claimEvents: ((ev.data ?? []) as ClaimEvent[]).sort((a, b) => (a.created_at < b.created_at ? 1 : -1)),
-    assets: ((as.data ?? []) as Asset[]).sort((a, b) => (a.created_at < b.created_at ? 1 : -1)),
+    assets: ((as.data ?? []) as Asset[]).map((a) => ({ ...a, shot_date: iso(a.shot_date) })).sort((a, b) => (a.created_at < b.created_at ? 1 : -1)),
     posts: ((po.data ?? []) as Post[]).map((p) => ({
       ...p,
       scheduled_date: iso(p.scheduled_date),
@@ -308,7 +316,13 @@ export async function reviewClaim(db: Db, id: unknown, input: Record<string, unk
 const ASSET_TYPES = ["photo", "video", "logo", "template", "packaging", "document", "other"];
 const BUSINESSES = ["botaniqals", "minileaf", "brand"];
 
-async function assetFields(db: Db, raw: Record<string, unknown>) {
+/**
+ * Asset fields with the category and its tags. Product and ingredient tags
+ * are written to the link tables; the legacy formulation_product_id column
+ * is no longer written. A category is required for new assets; an existing
+ * asset with none stays Uncategorized until someone sorts it.
+ */
+async function assetFields(db: Db, raw: Record<string, unknown>, opts: { isNew: boolean; currentCategory?: string | null } = { isNew: true }) {
   const errors: Errors = {};
   const title = txt(raw, "title");
   if (!title) errors.title = "Enter a title.";
@@ -319,8 +333,49 @@ async function assetFields(db: Db, raw: Record<string, unknown>) {
   if (!ASSET_TYPES.includes(asset_type)) errors.asset_type = "Choose a type.";
   const project_url = urlField(raw, "project_url", errors);
   const notes = textField(raw, "notes", 1000, "Notes", errors);
+  const shot_date = txt(raw, "shot_date");
+  if (shot_date && !isIsoDate(shot_date)) errors.shot_date = "Enter a valid date.";
+  const tags = await assetTagsFrom(db, raw);
+  const category = txt(raw, "category") || null;
+  const context_label = textField(raw, "context_label", 200, "Label", errors);
+  const is_full_lineup = raw.is_full_lineup === true;
+  Object.assign(
+    errors,
+    validateAssetCategory({ category, productIds: tags.productIds, ingredientIds: tags.ingredientIds, isFullLineup: is_full_lineup, contextLabel: context_label, requireCategory: opts.isNew || !!opts.currentCategory }),
+  );
   check(errors);
-  return { title, business, asset_type, project_url, notes, formulation_product_id: await productOrThrow(db, raw.formulation_product_id) };
+  return {
+    row: { title, business, asset_type, project_url, notes, category, context_label, shot_date: shot_date || null, is_full_lineup },
+    productIds: tags.productIds,
+    ingredientIds: tags.ingredientIds,
+  };
+}
+
+/** Product and ingredient tag ids from the request, checked against the database. */
+export async function assetTagsFrom(db: Db, raw: Record<string, unknown>) {
+  const list = (k: string) => (Array.isArray(raw[k]) ? [...new Set((raw[k] as unknown[]).map(String))] : []);
+  const productIds = list("product_ids");
+  const ingredientIds = list("ingredient_ids");
+  if ([...productIds, ...ingredientIds].some((x) => !isUuid(x))) throw new GrowthError("Unknown product or ingredient tag.", 400);
+  if (productIds.length) {
+    const { data } = await db.from("formulation_products").select("id, deleted_at").in("id", productIds);
+    if (((data ?? []) as Array<{ deleted_at: string | null }>).filter((p) => !p.deleted_at).length !== productIds.length) throw new GrowthError("Choose products from the list.", 400, { products: "Choose products from the list." });
+  }
+  if (ingredientIds.length) {
+    const { data } = await db.from("asset_ingredient_tags").select("id").in("id", ingredientIds);
+    if ((data ?? []).length !== ingredientIds.length) throw new GrowthError("Choose ingredient tags from the list.", 400, { ingredients: "Choose tags from the list." });
+  }
+  return { productIds, ingredientIds };
+}
+
+/** Replaces an asset's product and ingredient tags (link rows). */
+export async function setAssetTags(db: Db, assetId: string, productIds: readonly string[], ingredientIds: readonly string[]) {
+  for (const [table, key, ids] of [["asset_product_links", "formulation_product_id", productIds], ["asset_ingredient_links", "ingredient_tag_id", ingredientIds]] as const) {
+    const { data: cur } = await db.from(table).select(`asset_id, ${key}`).eq("asset_id", assetId);
+    const have = new Set(((cur ?? []) as Array<Record<string, string>>).map((r) => r[key]));
+    for (const x of have) if (!ids.includes(x)) await db.from(table).delete().eq("asset_id", assetId).eq(key, x);
+    for (const x of ids) if (!have.has(x)) await db.from(table).insert({ asset_id: assetId, [key]: x });
+  }
 }
 
 export async function createLinkAsset(db: Db, input: Record<string, unknown>, actor: string | null): Promise<Asset> {
@@ -329,8 +384,9 @@ export async function createLinkAsset(db: Db, input: Record<string, unknown>, ac
   const url = urlField(input, "url", errors);
   if (!url) errors.url = "Paste the share link (starting with http:// or https://).";
   check(errors);
-  const { data, error } = await db.from("marketing_assets").insert({ ...v, source: "link", url, created_by_name: actor }).select(ASSET_COLUMNS).single();
+  const { data, error } = await db.from("marketing_assets").insert({ ...v.row, source: "link", url, created_by_name: actor }).select(ASSET_COLUMNS).single();
   if (error) fail(error, "Could not save the asset.");
+  await setAssetTags(db, data.id, v.productIds, v.ingredientIds);
   return data;
 }
 
@@ -378,10 +434,11 @@ export async function finalizeUpload(db: Db, input: Record<string, unknown>, act
   }
   const { data, error } = await db
     .from("marketing_assets")
-    .insert({ ...v, source: "upload", file_path: path, mime_type: mime, size_bytes: size, created_by_name: actor })
+    .insert({ ...v.row, source: "upload", file_path: path, mime_type: mime, size_bytes: size, created_by_name: actor })
     .select(ASSET_COLUMNS)
     .single();
   if (error) fail(error, "Could not save the asset.");
+  await setAssetTags(db, data.id, v.productIds, v.ingredientIds);
   return data;
 }
 
@@ -390,12 +447,15 @@ export async function updateAsset(db: Db, id: unknown, input: Record<string, unk
   const { data: cur } = await db.from("marketing_assets").select(ASSET_COLUMNS).eq("id", aid).maybeSingle();
   if (!cur) throw new GrowthError("Unknown asset.", 404);
   let patch: Record<string, unknown>;
+  let tags: { productIds: string[]; ingredientIds: string[] } | null = null;
   if (input.status !== undefined && Object.keys(input).length === 1) {
     const s = txt(input, "status");
     if (!["draft", "ready", "archived"].includes(s)) throw new GrowthError("Choose a status.", 400);
     patch = { status: s };
   } else {
-    patch = await assetFields(db, input);
+    const v = await assetFields(db, input, { isNew: false, currentCategory: cur.category });
+    patch = v.row;
+    tags = { productIds: v.productIds, ingredientIds: v.ingredientIds };
     if (cur.source === "link") {
       const errors: Errors = {};
       const url = urlField(input, "url", errors);
@@ -406,6 +466,8 @@ export async function updateAsset(db: Db, id: unknown, input: Record<string, unk
   }
   const { data, error } = await db.from("marketing_assets").update(patch).eq("id", aid).select(ASSET_COLUMNS).single();
   if (error) fail(error, "Could not save the asset.");
+  // Tags change only after the asset itself saved.
+  if (tags) await setAssetTags(db, aid, tags.productIds, tags.ingredientIds);
   return data;
 }
 

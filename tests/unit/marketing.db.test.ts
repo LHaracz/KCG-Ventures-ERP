@@ -66,7 +66,7 @@ function withStorage(base: Db): Db {
 async function upload(bytes: Uint8Array, mime: string, title = "Photo A") {
   const { path } = await createAssetUploadUrl(db, { mime_type: mime, size_bytes: bytes.length });
   files.set(path, bytes);
-  return finalizeUpload(db, { path, mime_type: mime, title, formulation_product_id: fp }, "Test Person");
+  return finalizeUpload(db, { path, mime_type: mime, title, category: "product", product_ids: [fp] }, "Test Person");
 }
 
 beforeEach(async () => {
@@ -80,7 +80,7 @@ beforeEach(async () => {
     alter table products add column if not exists deleted_at timestamptz;
     alter table products add column if not exists is_microgreen boolean default false;
   `);
-  for (const f of ["formulation.sql", "procurement_suppliers.sql", "retail_invoices.sql", "marketing_sales.sql"]) await pg.exec(migration(f));
+  for (const f of ["formulation.sql", "procurement_suppliers.sql", "retail_invoices.sql", "marketing_sales.sql", "ad_library.sql"]) await pg.exec(migration(f));
   db = withStorage(pgliteSupabase(pg) as unknown as Db);
   fp = (await pg.query<{ id: string }>(`insert into formulation_products (name) values ('Product A') returning id`)).rows[0].id;
   await pg.query(`insert into formulation_products (name, deleted_at) values ('Product Gone', now())`);
@@ -106,12 +106,12 @@ describe("assets", () => {
     // A file whose bytes don't match its stated type is removed and not saved.
     const { path } = await createAssetUploadUrl(db, { mime_type: "image/png", size_bytes: 6 });
     files.set(path, new TextEncoder().encode("<html>"));
-    await rejects(() => finalizeUpload(db, { path, mime_type: "image/png", title: "Fake" }, null), /isn't a real PNG/);
+    await rejects(() => finalizeUpload(db, { path, mime_type: "image/png", title: "Fake", category: "other", context_label: "Test" }, null), /isn't a real PNG/);
     expect(removed).toEqual([path]);
     await rejects(() => finalizeUpload(db, { path: "../../etc/passwd", mime_type: "image/png", title: "x" }, null), /Unknown upload/);
-    const link = await createLinkAsset(db, { title: "Reel A", asset_type: "video", url: "https://video.example.test/a" }, null);
+    const link = await createLinkAsset(db, { title: "Reel A", asset_type: "video", url: "https://video.example.test/a", category: "other", context_label: "Reel" }, null);
     expect(link).toMatchObject({ source: "link", url: "https://video.example.test/a" });
-    await rejects(() => createLinkAsset(db, { title: "Reel B", url: "javascript:alert(1)" }, null), /missing or not valid/);
+    await rejects(() => createLinkAsset(db, { title: "Reel B", url: "javascript:alert(1)", category: "other", context_label: "Reel" }, null), /missing or not valid/);
     expect((await updateAsset(db, link.id, { status: "ready" })).status).toBe("ready");
     expect((await updateAsset(db, link.id, { status: "archived" })).status).toBe("archived");
   });

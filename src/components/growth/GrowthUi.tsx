@@ -35,13 +35,35 @@ export {
 export const fmtDate = (d: string | null | undefined) => (d ? formatShortDate(d) : "—");
 export const fmtLongDate = (d: string | null | undefined) => (d ? formatLongDate(d) : "—");
 
-export function UrlTabs<T extends string>({ base, tabs, current, param = "tab" }: { base: string; tabs: Array<{ key: T; label: string }>; current: T; param?: string }) {
+export function UrlTabs<T extends string>({
+  base,
+  tabs,
+  current,
+  param = "tab",
+  keepQuery,
+}: {
+  base: string;
+  tabs: Array<{ key: T; label: string }>;
+  current: T;
+  param?: string;
+  /** Other query parameters (filters) to carry across tabs, without the tab parameter. */
+  keepQuery?: string;
+}) {
+  const keep = keepQuery ? new URLSearchParams(keepQuery) : null;
+  keep?.delete(param);
+  const href = (key: T, first: boolean) => {
+    if (!keep) return first ? base : `${base}${base.includes("?") ? "&" : "?"}${param}=${key}`;
+    const q = new URLSearchParams(keep);
+    if (!first) q.set(param, key);
+    const qs = q.toString();
+    return qs ? `${base}?${qs}` : base;
+  };
   return (
     <div className="flex flex-wrap gap-1 border-b border-zinc-200" role="tablist">
       {tabs.map((t, i) => (
         <Link
           key={t.key}
-          href={i === 0 ? base : `${base}${base.includes("?") ? "&" : "?"}${param}=${t.key}`}
+          href={href(t.key, i === 0)}
           role="tab"
           aria-selected={current === t.key}
           data-testid={`tab-${t.key}`}

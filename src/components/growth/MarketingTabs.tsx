@@ -5,12 +5,10 @@
  * Ready gate), Assets (uploads and links, signed previews), Claims (review
  * is Admin only), Products (profiles), Templates and Settings (Admin only).
  */
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import dynamic from "next/dynamic";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   archivePostApi,
   createClaimApi,
-  createLinkAssetApi,
   reviewClaimApi,
   saveProfileApi,
   savePostApi,
@@ -18,18 +16,18 @@ import {
   saveTemplateApi,
   signedAssetUrlsApi,
   submitClaimApi,
-  updateAssetApi,
   updateClaimApi,
-  uploadAsset,
   type GrowthApiError,
   type MarketingData,
 } from "@/lib/growth/client";
 import { TEMPLATE_PLACEHOLDERS, applyTemplate, claimsReadyCheck, isReadyStatus, scanText } from "@/lib/growth/text";
 import { addDays, todayNy } from "@/lib/growth/dates";
 import type { Asset, Claim, Post, Template } from "@/lib/growth/marketingService";
+import { useUrlParams } from "./useUrlParams";
+import { AddToCalendarDialog, AvoidListSection, LibraryBasis, PillarMixStrip, ScheduleHintLine, rhythmLabel } from "./LibraryCalendar";
+import { ClosingLinesSection } from "./LibraryTabs";
+import { ASSET_TYPES } from "./AssetLibrary";
 import { Badge, Checkbox, Chip, ConfirmDialog, Dialog, ErrorSummary, Select, TextArea, TextField, btn, btnPrimary, card, errorBox, fmtDate, infoBox, input, warnBox } from "./GrowthUi";
-
-const PdfViewer = dynamic(() => import("@/components/PdfViewer").then((m) => m.PdfViewer), { ssr: false, loading: () => <p className="p-4 text-xs text-black">Loading…</p> });
 
 type TabProps = { data: MarketingData; reload: () => Promise<void> };
 
@@ -60,15 +58,6 @@ const BUSINESSES = [
   { value: "botaniqals", label: "BotanIQals" },
   { value: "minileaf", label: "MiniLeaf" },
   { value: "brand", label: "Brand (both)" },
-];
-const ASSET_TYPES = [
-  { value: "photo", label: "Photo" },
-  { value: "video", label: "Video" },
-  { value: "logo", label: "Logo" },
-  { value: "template", label: "Template" },
-  { value: "packaging", label: "Packaging" },
-  { value: "document", label: "Document" },
-  { value: "other", label: "Other" },
 ];
 const CLAIM_TYPES = [
   { value: "ingredient_fact", label: "Ingredient fact" },
@@ -431,209 +420,6 @@ function ReviewDialog({ r, onClose, onDone }: { r: { claim: Claim; action: "appr
   );
 }
 
-// --- Assets ------------------------------------------------------------------------------------
-export function AssetsTab({ data, reload }: TabProps) {
-  const [type, setType] = useState("");
-  const [product, setProduct] = useState("");
-  const [business, setBusiness] = useState("");
-  const [status, setStatus] = useState("active");
-  const [q, setQ] = useState("");
-  const [adding, setAdding] = useState(false);
-  const [editing, setEditing] = useState<Asset | null>(null);
-  const [viewing, setViewing] = useState<{ asset: Asset; url: string } | null>(null);
-  const [thumbs, setThumbs] = useState<Record<string, string>>({});
-  const [error, setError] = useState<string | null>(null);
-  const rows = data.assets.filter(
-    (a) =>
-      (!type || a.asset_type === type) &&
-      (!product || a.formulation_product_id === product) &&
-      (!business || a.business === business) &&
-      (status === "active" ? a.status !== "archived" : !status || a.status === status) &&
-      (!q.trim() || a.title.toLowerCase().includes(q.trim().toLowerCase())),
-  );
-  const imageIds = rows.filter((a) => a.source === "upload" && (a.mime_type ?? "").startsWith("image/")).map((a) => a.id).slice(0, 100);
-  const key = imageIds.join(",");
-  useEffect(() => {
-    if (!key) return;
-    void signedAssetUrlsApi(key.split(",")).then((r) => setThumbs(r.urls)).catch(() => undefined);
-  }, [key]);
-  const act = async (fn: () => Promise<unknown>) => {
-    setError(null);
-    try {
-      await fn();
-      await reload();
-    } catch (e) {
-      setError((e as Error).message);
-    }
-  };
-  const open = async (a: Asset, download: boolean) => {
-    if (a.source === "link") {
-      window.open(a.url!, "_blank", "noopener");
-      return;
-    }
-    try {
-      const r = await signedAssetUrlsApi([a.id], download);
-      const url = r.urls[a.id];
-      if (!url) throw new Error("Could not open the file.");
-      if (download) {
-        const link = document.createElement("a");
-        link.href = url;
-        link.click();
-      } else if (a.mime_type === "application/pdf") {
-        const blob = await (await fetch(url)).blob();
-        setViewing({ asset: a, url: URL.createObjectURL(blob) });
-      } else setViewing({ asset: a, url });
-    } catch (e) {
-      setError((e as Error).message);
-    }
-  };
-  const productName = (id: string | null) => (id ? data.products.find((p) => p.id === id)?.name ?? "" : "");
-  return (
-    <section className="space-y-3">
-      {error && <p className={errorBox} role="alert">{error}</p>}
-      <div className="flex flex-wrap items-end gap-2">
-        <input aria-label="Search assets" placeholder="Search" value={q} onChange={(e) => setQ(e.target.value)} className={`${input} w-48`} />
-        <select aria-label="Type" value={type} onChange={(e) => setType(e.target.value)} className={`${input} w-32`}><option value="">All types</option>{ASSET_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}</select>
-        <select aria-label="Product" value={product} onChange={(e) => setProduct(e.target.value)} className={`${input} w-40`}><option value="">All products</option>{data.products.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</select>
-        <select aria-label="Business" value={business} onChange={(e) => setBusiness(e.target.value)} className={`${input} w-36`}><option value="">All businesses</option>{BUSINESSES.map((b) => <option key={b.value} value={b.value}>{b.label}</option>)}</select>
-        <select aria-label="Status" value={status} onChange={(e) => setStatus(e.target.value)} className={`${input} w-36`}>
-          <option value="active">Draft and ready</option><option value="draft">Draft</option><option value="ready">Ready</option><option value="archived">Archived</option><option value="">All</option>
-        </select>
-        <button type="button" className={`${btnPrimary} ml-auto`} onClick={() => setAdding(true)}>Add asset</button>
-      </div>
-      {rows.length === 0 ? (
-        <p className="rounded-md border border-dashed border-zinc-300 p-6 text-center text-sm">No assets match.</p>
-      ) : (
-        <ul className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3" data-testid="assets-grid">
-          {rows.map((a) => (
-            <li key={a.id} className={`${card} space-y-2`} data-testid="asset-card">
-              <button type="button" onClick={() => open(a, false)} className="block w-full" aria-label={`Open ${a.title}`}>
-                {thumbs[a.id] ? (
-                  // eslint-disable-next-line @next/next/no-img-element -- short-lived signed URL from private storage
-                  <img src={thumbs[a.id]} alt={a.title} className="h-36 w-full rounded object-cover" />
-                ) : (
-                  <div className="flex h-36 w-full items-center justify-center rounded bg-zinc-100 text-xs">{a.source === "link" ? "Link" : a.mime_type === "application/pdf" ? "PDF" : "File"}</div>
-                )}
-              </button>
-              <div>
-                <p className="font-medium">{a.title}</p>
-                <p className="text-xs">{label(ASSET_TYPES, a.asset_type)} · {label(BUSINESSES, a.business)}{productName(a.formulation_product_id) ? ` · ${productName(a.formulation_product_id)}` : ""}</p>
-                <div className="mt-1 flex flex-wrap gap-1">
-                  <Chip tone={a.status === "ready" ? "green" : a.status === "archived" ? "zinc" : "amber"}>{a.status === "ready" ? "Ready" : a.status === "archived" ? "Archived" : "Draft"}</Chip>
-                  {a.project_url && <a href={a.project_url} target="_blank" rel="noopener noreferrer" className="text-xs underline">Editing project</a>}
-                </div>
-              </div>
-              <div className="flex flex-wrap gap-1">
-                <button type="button" className={btn} onClick={() => open(a, false)}>Open</button>
-                {a.source === "upload" && <button type="button" className={btn} onClick={() => open(a, true)}>Download</button>}
-                {a.status === "draft" && <button type="button" className={btn} onClick={() => act(() => updateAssetApi(a.id, { status: "ready" }))}>Mark ready</button>}
-                {a.source === "upload" && (a.mime_type ?? "").startsWith("image/") && a.formulation_product_id && a.status !== "archived" && (
-                  <button
-                    type="button"
-                    className={btn}
-                    onClick={() => {
-                      const profile = data.profiles.find((p) => p.formulation_product_id === a.formulation_product_id);
-                      void act(() => saveProfileApi(a.formulation_product_id!, { ...(profile ?? {}), primary_asset_id: a.id }));
-                    }}
-                  >
-                    Set as primary photo
-                  </button>
-                )}
-                <button type="button" className={btn} onClick={() => setEditing(a)}>Edit</button>
-                <button type="button" className={btn} onClick={() => act(() => updateAssetApi(a.id, { status: a.status === "archived" ? "draft" : "archived" }))}>{a.status === "archived" ? "Restore" : "Archive"}</button>
-              </div>
-            </li>
-          ))}
-        </ul>
-      )}
-      {(adding || editing) && <AssetDialog data={data} asset={editing} onClose={() => { setAdding(false); setEditing(null); }} onSaved={() => { setAdding(false); setEditing(null); void reload(); }} />}
-      {viewing && (
-        <Dialog title={viewing.asset.title} onClose={() => { if (viewing.asset.mime_type === "application/pdf") URL.revokeObjectURL(viewing.url); setViewing(null); }} wide>
-          {viewing.asset.mime_type === "application/pdf" ? (
-            <div className="h-[70vh] overflow-hidden rounded border border-zinc-200"><PdfViewer fileUrl={viewing.url} /></div>
-          ) : (
-            // eslint-disable-next-line @next/next/no-img-element -- short-lived signed URL from private storage
-            <img src={viewing.url} alt={viewing.asset.title} className="max-h-[70vh] w-full object-contain" />
-          )}
-        </Dialog>
-      )}
-    </section>
-  );
-}
-
-function AssetDialog({ data, asset, onClose, onSaved }: { data: MarketingData; asset: Asset | null; onClose: () => void; onSaved: () => void }) {
-  const [mode, setMode] = useState<"upload" | "link">(asset?.source ?? "upload");
-  const [file, setFile] = useState<File | null>(null);
-  const [v, setV] = useState({
-    title: asset?.title ?? "",
-    business: asset?.business ?? "botaniqals",
-    formulation_product_id: asset?.formulation_product_id ?? "",
-    asset_type: asset?.asset_type ?? "photo",
-    url: asset?.url ?? "",
-    project_url: asset?.project_url ?? "",
-    notes: asset?.notes ?? "",
-  });
-  const [errors, setErrors] = useState<Record<string, string>>({});
-  const [message, setMessage] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  const set = (k: keyof typeof v) => (x: string) => setV((s) => ({ ...s, [k]: x }));
-  const fileRef = useRef<HTMLInputElement>(null);
-  const save = async () => {
-    setBusy(true);
-    setMessage(null);
-    try {
-      const meta = { ...v, formulation_product_id: v.formulation_product_id || null };
-      if (asset) await updateAssetApi(asset.id, meta);
-      else if (mode === "link") await createLinkAssetApi(meta);
-      else {
-        if (!file) throw new Error("Choose a file.");
-        if (!["image/png", "image/jpeg", "image/webp", "application/pdf"].includes(file.type)) throw new Error("Only PNG, JPG, WebP and PDF files can be uploaded. Videos are stored as links.");
-        if (file.size > 25 * 1024 * 1024) throw new Error("Files can be at most 25 MB.");
-        await uploadAsset(file, { ...meta, title: meta.title || file.name.replace(/\.[^.]+$/, "") });
-      }
-      onSaved();
-    } catch (e) {
-      setMessage((e as Error).message);
-      setErrors((e as GrowthApiError).fields ?? {});
-      setBusy(false);
-    }
-  };
-  return (
-    <Dialog title={asset ? "Edit asset" : "Add asset"} onClose={onClose} wide>
-      <div className="space-y-3 text-black">
-        <ErrorSummary message={message} errors={errors} />
-        {!asset && (
-          <div className="flex gap-4 text-sm">
-            <label className="flex items-center gap-2"><input type="radio" checked={mode === "upload"} onChange={() => setMode("upload")} /> Upload a file</label>
-            <label className="flex items-center gap-2"><input type="radio" checked={mode === "link"} onChange={() => setMode("link")} /> Paste a link</label>
-          </div>
-        )}
-        {!asset && mode === "upload" && (
-          <div>
-            <input ref={fileRef} type="file" accept="image/png,image/jpeg,image/webp,application/pdf" aria-label="File" onChange={(e) => setFile(e.target.files?.[0] ?? null)} className="text-sm" />
-            <p className="mt-1 text-[11px]">PNG, JPG, WebP or PDF, up to 25 MB. Files are private and open with short-lived links.</p>
-          </div>
-        )}
-        {(asset?.source === "link" || (!asset && mode === "link")) && (
-          <TextField name="a-url" label="Link" value={v.url} onChange={set("url")} placeholder="https://" error={errors.url} hint="Videos are stored as links. Paste the share link from wherever the file lives." />
-        )}
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <TextField name="a-title" label="Title" value={v.title} onChange={set("title")} required={!!asset || mode === "link"} error={errors.title} />
-          <Select name="a-type" label="Type" value={v.asset_type} onChange={set("asset_type")} options={ASSET_TYPES} />
-          <Select name="a-business" label="Business" value={v.business} onChange={set("business")} options={BUSINESSES} />
-          <Select name="a-product" label="Product" value={v.formulation_product_id} onChange={set("formulation_product_id")} options={[{ value: "", label: "None" }, ...data.products.map((p) => ({ value: p.id, label: p.name }))]} error={errors.formulation_product_id} />
-        </div>
-        <TextField name="a-project" label="Editing project link (optional)" value={v.project_url} onChange={set("project_url")} placeholder="https://" error={errors.project_url} />
-        <TextArea name="a-notes" label="Notes" value={v.notes} onChange={set("notes")} rows={2} error={errors.notes} />
-        <div className="flex justify-end gap-2">
-          <button type="button" className={btn} onClick={onClose}>Cancel</button>
-          <button type="button" className={btnPrimary} onClick={save} disabled={busy}>{busy ? "Saving…" : "Save"}</button>
-        </div>
-      </div>
-    </Dialog>
-  );
-}
-
 // --- Calendar ----------------------------------------------------------------------------------
 export function CalendarTab({ data, reload }: TabProps) {
   const today = todayNy();
@@ -642,6 +428,20 @@ export function CalendarTab({ data, reload }: TabProps) {
   const [f, setF] = useState({ platform: "", status: "", owner: "", product: "", business: "", mine: false });
   const [editing, setEditing] = useState<Post | "new" | null>(null);
   const [draftFrom, setDraftFrom] = useState<Partial<Post> | null>(null);
+  const [fromLibrary, setFromLibrary] = useState(false);
+  const url = useUrlParams();
+  const showRhythm = url.get("cal_rhythm") !== "0";
+  const deepLink = url.get("post");
+  useEffect(() => {
+    if (!deepLink) return;
+    const p = data.posts.find((x) => x.id === deepLink);
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- open the entry named in the URL once the data is loaded
+    if (p) setEditing(p);
+  }, [deepLink, data.posts]);
+  const closeEditor = () => {
+    setEditing(null);
+    if (deepLink) url.set({ post: null });
+  };
   const me = data.me;
   const rows = data.posts.filter(
     (p) =>
@@ -672,8 +472,14 @@ export function CalendarTab({ data, reload }: TabProps) {
         <select aria-label="Product" value={f.product} onChange={(e) => setF({ ...f, product: e.target.value })} className={`${input} w-36`}><option value="">All products</option>{data.products.map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}</select>
         <select aria-label="Business" value={f.business} onChange={(e) => setF({ ...f, business: e.target.value })} className={`${input} w-32`}><option value="">All businesses</option>{BUSINESSES.map((x) => <option key={x.value} value={x.value}>{x.label}</option>)}</select>
         <Checkbox name="mine" label="Mine" checked={f.mine} onChange={(v) => setF({ ...f, mine: v })} />
-        <button type="button" className={`${btnPrimary} ml-auto`} onClick={() => { setDraftFrom(null); setEditing("new"); }}>New post</button>
+        <Checkbox name="cal-rhythm" label="Show rhythm hints" checked={showRhythm} onChange={(v) => url.set({ cal_rhythm: v ? null : "0" })} />
+        <div className="ml-auto flex gap-2">
+          <button type="button" className={btn} onClick={() => setFromLibrary(true)}>Start from the library</button>
+          <button type="button" className={btnPrimary} onClick={() => { setDraftFrom(null); setEditing("new"); }}>New post</button>
+        </div>
       </div>
+      <PillarMixStrip data={data} />
+      {showRhythm && view === "list" && <UpcomingRhythm data={data} posts={rows} today={today} />}
       {view === "list" ? (
         sorted.length === 0 ? (
           <p className="rounded-md border border-dashed border-zinc-300 p-6 text-center text-sm">No posts match.</p>
@@ -697,23 +503,40 @@ export function CalendarTab({ data, reload }: TabProps) {
           </div>
         )
       ) : (
-        <MonthGrid month={month} setMonth={setMonth} posts={rows} today={today} onOpen={(p) => setEditing(p)} />
+        <MonthGrid month={month} setMonth={setMonth} posts={rows} today={today} onOpen={(p) => setEditing(p)} rhythmFor={showRhythm ? (d) => rhythmLabel(data, d) : undefined} />
       )}
       {editing && (
         <PostEditor
           data={data}
           post={editing === "new" ? null : editing}
           initial={editing === "new" ? draftFrom : null}
-          onClose={() => setEditing(null)}
-          onSaved={() => { setEditing(null); void reload(); }}
+          onClose={closeEditor}
+          onSaved={() => { closeEditor(); void reload(); }}
           onDuplicate={editing !== "new" ? () => duplicate(editing) : undefined}
+          reload={reload}
         />
       )}
+      {fromLibrary && <AddToCalendarDialog data={data} premade={null} onClose={() => setFromLibrary(false)} onDone={() => { setFromLibrary(false); void reload(); }} />}
     </section>
   );
 }
 
-function MonthGrid({ month, setMonth, posts, today, onOpen }: { month: string; setMonth: (m: string) => void; posts: Post[]; today: string; onOpen: (p: Post) => void }) {
+/** List view: the active rhythm label for empty days in the next 14 days. */
+function UpcomingRhythm({ data, posts, today }: { data: MarketingData; posts: Post[]; today: string }) {
+  const days = Array.from({ length: 14 }, (_, i) => addDays(today, i)).filter((d) => !posts.some((p) => p.scheduled_date === d));
+  const hints = days.map((d) => ({ d, label: rhythmLabel(data, d) })).filter((x) => x.label);
+  if (hints.length === 0) return null;
+  return (
+    <div className="rounded-md border border-zinc-200 bg-white p-2 text-[11px]" data-testid="upcoming-rhythm">
+      <p className="mb-1 font-semibold">Open days in the next 14 days, with the rhythm</p>
+      <ul className="flex flex-wrap gap-x-4 gap-y-1">
+        {hints.map((h) => <li key={h.d}>{fmtDate(h.d)}: {h.label}</li>)}
+      </ul>
+    </div>
+  );
+}
+
+function MonthGrid({ month, setMonth, posts, today, onOpen, rhythmFor }: { month: string; setMonth: (m: string) => void; posts: Post[]; today: string; onOpen: (p: Post) => void; rhythmFor?: (date: string) => string | null }) {
   const [y, m] = month.split("-").map(Number);
   const first = `${month}-01`;
   const startDow = new Date(Date.UTC(y, m - 1, 1)).getUTCDay();
@@ -738,6 +561,7 @@ function MonthGrid({ month, setMonth, posts, today, onOpen }: { month: string; s
         {cells.map((d, i) => (
           <div key={i} className={`min-h-24 bg-white p-1 ${d === today ? "ring-2 ring-inset ring-emerald-500" : ""}`}>
             {d && <div className="text-right text-[11px]">{Number(d.slice(8))}</div>}
+            {d && rhythmFor && !posts.some((p) => p.scheduled_date === d) && rhythmFor(d) && <p className="text-[10px] leading-tight" data-testid="rhythm-hint">{rhythmFor(d)}</p>}
             {d && posts.filter((p) => p.scheduled_date === d).map((p) => (
               <button key={p.id} type="button" onClick={() => onOpen(p)} className="mb-0.5 block w-full truncate rounded border border-zinc-200 px-1 text-left">
                 {statusChip(p.status)} {p.title}
@@ -751,7 +575,7 @@ function MonthGrid({ month, setMonth, posts, today, onOpen }: { month: string; s
   );
 }
 
-function PostEditor({ data, post, initial, onClose, onSaved, onDuplicate }: { data: MarketingData; post: Post | null; initial: Partial<Post> | null; onClose: () => void; onSaved: () => void; onDuplicate?: () => void }) {
+function PostEditor({ data, post, initial, onClose, onSaved, onDuplicate, reload }: { data: MarketingData; post: Post | null; initial: Partial<Post> | null; onClose: () => void; onSaved: () => void; onDuplicate?: () => void; reload: () => Promise<void> }) {
   const src = post ?? initial;
   const [v, setV] = useState({
     title: src?.title ?? "",
@@ -815,6 +639,8 @@ function PostEditor({ data, post, initial, onClose, onSaved, onDuplicate }: { da
           <TextField name="post-time" label="Time" type="time" value={v.scheduled_time} onChange={set("scheduled_time")} error={errors.scheduled_time} />
           <Select name="post-owner" label="Owner" value={v.owner_account_id} onChange={set("owner_account_id")} options={[{ value: "", label: "Nobody" }, ...data.employees.map((e) => ({ value: e.id, label: e.name }))]} />
         </div>
+        <ScheduleHintLine data={data} date={v.scheduled_date} time={v.scheduled_time} platform={v.platform} intent={v.post_type === "ad" ? "paid" : null} />
+        {post && <LibraryBasis data={data} post={post} onSynced={() => void reload()} />}
         <div>
           <div className="mb-1 flex items-center justify-between">
             <label htmlFor="f-post-caption" className="text-xs font-medium">Caption ({v.caption.length}/4000)</label>
@@ -990,6 +816,7 @@ export function TemplatesTab({ data, reload }: TabProps) {
         </ul>
       )}
       {editing && <TemplateDialog data={data} template={editing === "new" ? null : editing} onClose={() => setEditing(null)} onSaved={() => { setEditing(null); void reload(); }} />}
+      <ClosingLinesSection data={data} reload={reload} />
     </section>
   );
 }
@@ -1063,7 +890,7 @@ export function SettingsTab({ data, reload }: TabProps) {
   };
   return (
     <section className="space-y-3">
-      <h2 className="text-sm font-semibold">Risky-word watch list</h2>
+      <h2 className="text-sm font-semibold">Watch words</h2>
       <p className={infoBox}>A starter list to catch wording that may need review. It is not a legal check.</p>
       {error && <p className={errorBox} role="alert">{error}</p>}
       <div className="flex flex-wrap items-end gap-2">
@@ -1102,6 +929,7 @@ export function SettingsTab({ data, reload }: TabProps) {
           </li>
         ))}
       </ul>
+      <AvoidListSection data={data} reload={reload} />
     </section>
   );
 }

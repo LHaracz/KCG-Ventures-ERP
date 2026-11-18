@@ -9,6 +9,8 @@ import type { AssignableEmployee } from "./employees";
 import type { LaunchDetail, LaunchListRow, MyTask } from "./launches";
 import type { Lead, LeadActivity, LeadListRow, Trip, TripStop } from "./prospectingService";
 import type { Asset, Claim, ClaimEvent, Post, Profile, RiskyWord, Template } from "./marketingService";
+import type { AvoidPhrase, ClosingLine, IngredientTag, Pillar, PremadeRow, RhythmDb, Series, WindowRowDb } from "./libraryService";
+import type { ReletterPlan } from "./adLibrary";
 
 export class GrowthApiError extends Error {
   constructor(
@@ -100,6 +102,19 @@ export type MarketingData = {
   employees: AssignableEmployee[];
   is_admin: boolean;
   me: string | null;
+  // Ad Library
+  pillars: Pillar[];
+  series: Series[];
+  premades: PremadeRow[];
+  closingLines: ClosingLine[];
+  avoidPhrases: AvoidPhrase[];
+  windows: WindowRowDb[];
+  dayNotes: Array<{ day_of_week: number; note: string | null }>;
+  rhythm: RhythmDb[];
+  referenceNotes: Record<string, string | null>;
+  ingredientTags: IngredientTag[];
+  assetProductLinks: Array<{ asset_id: string; formulation_product_id: string }>;
+  assetIngredientLinks: Array<{ asset_id: string; ingredient_tag_id: string }>;
 };
 const M = "/api/growth/marketing";
 export const fetchMarketing = () => growthCall<MarketingData>(M);
@@ -125,3 +140,25 @@ export async function uploadAsset(file: File, meta: Record<string, unknown>) {
   if (error) throw new GrowthApiError(error.message || "The upload failed.", 500, null);
   return finalizeAssetApi({ ...meta, path, mime_type: file.type });
 }
+
+// Ad Library, pillars, series and closing lines
+export const createPillarApi = (body: Record<string, unknown>) => growthCall<{ pillar: Pillar }>(`${M}/pillars`, body);
+export const updatePillarApi = (id: string, body: Record<string, unknown>) => growthCall(`${M}/pillars/${enc(id)}`, body);
+export const reletterApi = (apply: boolean) => growthCall<{ plan: ReletterPlan }>(`${M}/pillars/reletter`, { apply });
+export const saveSeriesApi = (id: string | null, body: Record<string, unknown>) => growthCall(id ? `${M}/series/${enc(id)}` : `${M}/series`, body);
+export const createPremadeApi = (body: Record<string, unknown>) => growthCall<{ id: string; notice: string | null }>(`${M}/library`, body);
+export const updatePremadeApi = (id: string, body: Record<string, unknown>) => growthCall<{ id: string; notice: string | null }>(`${M}/library/${enc(id)}`, body);
+export const premadeActionApi = (id: string, body: Record<string, unknown>) => growthCall<{ id: string }>(`${M}/library/${enc(id)}/action`, body);
+export const premadeBulkApi = (body: Record<string, unknown>) => growthCall<{ count: number }>(`${M}/library/bulk`, body);
+export const saveClosingLineApi = (id: string | null, body: Record<string, unknown>) => growthCall(id ? `${M}/closing-lines/${enc(id)}` : `${M}/closing-lines`, body);
+export const needsActionApi = (id: string, body: Record<string, unknown>) => growthCall<{ notices: string[]; changed?: number }>(`${M}/library/${enc(id)}/needs`, body);
+export const needsGroupApi = (body: Record<string, unknown>) => growthCall<{ changed: number; notices: string[] }>(`${M}/library/needs`, body);
+export const scheduleFromLibraryApi = (id: string, body: Record<string, unknown>) => growthCall<{ ids: string[]; warnings: string[]; open_needs: number }>(`${M}/library/${enc(id)}/schedule`, body);
+export const syncFromLibraryApi = (postId: string) => growthCall<{ notices: string[] }>(`${M}/posts/${enc(postId)}/sync`, {});
+export const assetBulkApi = (body: Record<string, unknown>) => growthCall<{ updated: number; failed: Array<{ id: string; title: string; error: string }> }>(`${M}/assets/bulk`, body);
+export const saveIngredientTagApi = (id: string | null, body: Record<string, unknown>) => growthCall<{ id: string }>(id ? `${M}/ingredient-tags/${enc(id)}` : `${M}/ingredient-tags`, body);
+export const rawMaterialNamesApi = () => growthCall<{ names: string[] }>(`${M}/ingredient-tags/raw-materials`);
+export const tagsFromRawMaterialsApi = (names: string[]) => growthCall<{ added: number }>(`${M}/ingredient-tags/raw-materials`, { names });
+export const updateWindowApi = (id: string, body: Record<string, unknown>) => growthCall(`${M}/windows/${enc(id)}`, body);
+export const saveRhythmApi = (id: string | null, body: Record<string, unknown>) => growthCall(id ? `${M}/rhythm/${enc(id)}` : `${M}/rhythm`, body);
+export const saveAvoidPhraseApi = (id: string | null, body: Record<string, unknown>) => growthCall(id ? `${M}/avoid-phrases/${enc(id)}` : `${M}/avoid-phrases`, body);
