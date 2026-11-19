@@ -5,6 +5,7 @@
  * the editor's Needs section, the asset picker with suggestions, "Upload and
  * attach", and the Needs panel that groups needs across the library.
  */
+import { assetNameError, hasDuplicateName } from "@/lib/growth/assetNames";
 import { useMemo, useState } from "react";
 import { createLinkAssetApi, needsActionApi, needsGroupApi, uploadAsset, type GrowthApiError, type MarketingData } from "@/lib/growth/client";
 import { mergeNeeds, type AssetNeed, type MergedNeed } from "@/lib/growth/adLibrary";
@@ -248,13 +249,15 @@ function UploadAttachDialog({ data, item, need, alsoCount, onClose, onDone }: { 
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const save = async () => {
-    const errs = validateAssetCategory({ category: v.category, productIds: v.product_ids, ingredientIds: [], contextLabel: v.context_label });
+    const errs: Record<string, string> = { ...validateAssetCategory({ category: v.category, productIds: v.product_ids, ingredientIds: [], contextLabel: v.context_label }) };
+    const nameErr = assetNameError(v.title);
+    if (nameErr) errs.title = nameErr;
     setErrors(errs);
     if (Object.keys(errs).length) return setMessage("Some fields are missing or not valid.");
     setBusy(true);
     setMessage(null);
     try {
-      const meta = { title: v.title, category: v.category, product_ids: v.product_ids, asset_type: v.asset_type, business: v.business, context_label: v.context_label, url: v.url };
+      const meta = { title: v.title.trim(), category: v.category, product_ids: v.product_ids, asset_type: v.asset_type, business: v.business, context_label: v.context_label, url: v.url };
       let asset: Asset;
       if (mode === "link") asset = (await createLinkAssetApi(meta)).asset;
       else {
@@ -281,7 +284,7 @@ function UploadAttachDialog({ data, item, need, alsoCount, onClose, onDone }: { 
         ) : (
           <TextField name="ua-url" label="Link" value={v.url} onChange={(x) => setV({ ...v, url: x })} placeholder="https://" hint="Videos are stored as links. Paste the share link from wherever the file lives." error={errors.url} />
         )}
-        <TextField name="ua-title" label="Title" value={v.title} onChange={(x) => setV({ ...v, title: x })} required error={errors.title} />
+        <TextField name="ua-title" label="Name" value={v.title} onChange={(x) => setV({ ...v, title: x })} required error={errors.title} hint={hasDuplicateName(data.assets, v.title) ? "Another asset has this name" : undefined} />
         <Select name="ua-category" label="Category" value={v.category} onChange={(x) => setV({ ...v, category: x })} options={[{ value: "", label: "Choose…" }, ...ASSET_CATEGORIES.map((c) => ({ value: c, label: CATEGORY_LABEL[c] }))]} error={errors.category} />
         <fieldset>
           <legend className="mb-1 text-xs font-medium">Products</legend>

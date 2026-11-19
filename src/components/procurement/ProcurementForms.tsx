@@ -12,10 +12,11 @@ import {
   addEquipmentLinkApi,
   addLinkApi,
   archiveCategoryApi,
-  archiveEquipmentApi,
   createCategoryApi,
   createEquipmentApi,
   createSupplierApi,
+  deleteEquipmentApi,
+  previewEquipmentDeleteApi,
   ProcurementApiError,
   renameCategoryApi,
   reorderCategoriesApi,
@@ -47,7 +48,8 @@ import {
 } from "@/lib/procurement/validation";
 import { formatQuantity } from "@/lib/procurement/stockAlert";
 import { usageText, type EquipmentLinkWithSupplier, type LinkWithSupplier, type MaterialRow, type ShortageGroup } from "@/lib/procurement/view";
-import { StockBadge, btn, btnPrimary, linkBtn } from "./ProcurementUi";
+import { StockBadge, btn, btnDanger, btnPrimary, linkBtn } from "./ProcurementUi";
+import { deleteResultMessage, type EquipmentDeletePreview } from "@/lib/procurement/equipmentDelete";
 
 const input =
   "w-full rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-xs text-black placeholder:text-zinc-600 shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500";
@@ -742,22 +744,23 @@ export function ShortagesModal({
 const NEW_CATEGORY = "__new__";
 
 /**
- * Name, category (with "New category" inline) and description. Edit also
- * offers Archive (the item and its supplier listings; nothing is deleted).
+ * Name, category (with "New category" inline) and description. For Admins,
+ * Edit also offers Delete (see DeleteEquipmentDialog).
  */
 export function EquipmentModal({
   item,
   categories,
   onClose,
   onSaved,
-  onArchived,
+  onDelete,
 }: {
   item: EquipmentItem | null;
   /** Active categories, in order. */
   categories: readonly EquipmentCategory[];
   onClose: () => void;
   onSaved: (item: EquipmentItem, created: boolean) => void;
-  onArchived: () => void;
+  /** Admins only: opens the delete dialog. */
+  onDelete?: () => void;
 }) {
   const [name, setName] = useState(item?.name ?? "");
   const [categoryId, setCategoryId] = useState(item?.category_id ?? categories[0]?.id ?? NEW_CATEGORY);
@@ -766,7 +769,6 @@ export function EquipmentModal({
   const [errors, setErrors] = useState<Errors>({});
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
-  const [confirmArchive, setConfirmArchive] = useState(false);
 
   const save = async () => {
     setError(null);
@@ -801,41 +803,8 @@ export function EquipmentModal({
     }
   };
 
-  const archive = async () => {
-    if (!item) return;
-    setSaving(true);
-    setError(null);
-    try {
-      await archiveEquipmentApi(item.id);
-      onArchived();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not archive the item.");
-      setConfirmArchive(false);
-    } finally {
-      setSaving(false);
-    }
-  };
-
   return (
     <Dialog title={item ? `Edit ${item.name}` : "Add equipment"} onClose={onClose}>
-      {confirmArchive ? (
-        <div className="space-y-3 text-xs text-black">
-          <p>Archive {item?.name}? It is hidden from the Equipment tab, and its supplier listings are archived too. Nothing is deleted, and you can restore it with “Show archived”.</p>
-          {error && (
-            <p className="rounded-md border border-red-300 bg-red-50 p-2 text-xs text-red-800" role="alert">
-              {error}
-            </p>
-          )}
-          <div className="flex justify-end gap-2">
-            <button type="button" className={btn} onClick={() => setConfirmArchive(false)} disabled={saving}>
-              Cancel
-            </button>
-            <button type="button" className={btnPrimary} onClick={archive} disabled={saving}>
-              {saving ? "Working…" : "Archive item"}
-            </button>
-          </div>
-        </div>
-      ) : (
         <div className="space-y-3">
           <Text name="name" text="Equipment name" required value={name} onChange={setName} error={errors.name} />
           <div>
@@ -860,9 +829,9 @@ export function EquipmentModal({
             </p>
           )}
           <div className="flex items-center justify-between gap-2">
-            {item ? (
-              <button type="button" className={btn} onClick={() => setConfirmArchive(true)} disabled={saving}>
-                Archive…
+            {item && onDelete ? (
+              <button type="button" className={btnDanger} onClick={onDelete} disabled={saving}>
+                Delete…
               </button>
             ) : (
               <span />
@@ -877,7 +846,6 @@ export function EquipmentModal({
             </div>
           </div>
         </div>
-      )}
     </Dialog>
   );
 }
@@ -997,6 +965,93 @@ export function CategoriesModal({
         <button type="button" className={btn} onClick={onClose}>
           Done
         </button>
+      </div>
+    </Dialog>
+  );
+}
+
+// --- Delete equipment (Admins) ---------------------------------------------------------
+/**
+ * "Delete {equipment}?": what the delete removes and which suppliers are
+ * kept, from the server's preview. "Keep" is the default button.
+ */
+export function DeleteEquipmentDialog({ equipmentId, onClose, onDeleted }: { equipmentId: string; onClose: () => void; onDeleted: (message: string) => void }) {
+  const [preview, setPreview] = useState<EquipmentDeletePreview | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [working, setWorking] = useState(false);
+  useEffect(() => {
+    let live = true;
+    previewEquipmentDeleteApi(equipmentId)
+      .then((p) => live && setPreview(p))
+      .catch((e) => live && setError(e instanceof Error ? e.message : "Could not load the equipment item."));
+    return () => {
+      live = false;
+    };
+  }, [equipmentId]);
+  const toDelete = preview?.suppliers.filter((s) => s.willDelete) ?? [];
+  const toKeep = preview?.suppliers.filter((s) => !s.willDelete) ?? [];
+  const run = async () => {
+    if (!preview) return;
+    setWorking(true);
+    setError(null);
+    try {
+      const r = await deleteEquipmentApi(preview.equipment_id, toDelete.map((s) => s.id));
+      onDeleted(deleteResultMessage(r));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not delete the equipment item.");
+      setWorking(false);
+    }
+  };
+  return (
+    <Dialog title={preview ? `Delete ${preview.equipment_name}?` : "Delete equipment?"} onClose={working ? () => undefined : onClose}>
+      <div className="space-y-3 text-xs text-black" data-testid="delete-equipment-dialog">
+        {!preview && !error && <p>Loading…</p>}
+        {preview && (
+          <>
+            <p>
+              This permanently deletes the equipment and its {preview.listing_count} supplier listing{preview.listing_count === 1 ? "" : "s"}. This cannot be undone.
+            </p>
+            <div>
+              <p className="font-semibold">Suppliers that will also be deleted (not used for anything else)</p>
+              {toDelete.length === 0 ? (
+                <p>None</p>
+              ) : (
+                <ul className="list-disc pl-5" data-testid="delete-suppliers">
+                  {toDelete.map((s) => (
+                    <li key={s.id}>{s.name}</li>
+                  ))}
+                </ul>
+              )}
+            </div>
+            <div>
+              <p className="font-semibold">Suppliers that will be kept</p>
+              {toKeep.length === 0 ? (
+                <p>None</p>
+              ) : (
+                <ul className="list-disc pl-5" data-testid="keep-suppliers">
+                  {toKeep.map((s) => (
+                    <li key={s.id}>
+                      {s.name}: {s.reason}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </>
+        )}
+        {error && (
+          <p className="rounded-md border border-red-300 bg-red-50 p-2 text-xs text-red-800" role="alert">
+            {error}
+          </p>
+        )}
+        <div className="flex justify-end gap-2">
+          <button type="button" className={btn} onClick={onClose} disabled={working} autoFocus>
+            Keep
+          </button>
+          <button type="button" className={btnDanger} onClick={run} disabled={working || !preview}>
+            {working ? "Deleting…" : "Delete permanently"}
+          </button>
+        </div>
       </div>
     </Dialog>
   );

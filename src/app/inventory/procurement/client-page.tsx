@@ -5,10 +5,12 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { AuthGuard } from "@/components/AuthGuard";
 import { useSupabase } from "@/components/InstantProvider";
+import { useAccess } from "@/components/access/AccessProvider";
 import { EquipmentTable, ProcurementTable, ProcurementTabs, btn, btnPrimary } from "@/components/procurement/ProcurementUi";
 import {
   CategoriesModal,
   ConfirmDialog,
+  DeleteEquipmentDialog,
   EquipmentModal,
   LinkModal,
   ShortagesModal,
@@ -77,6 +79,9 @@ function ProcurementInner() {
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [confirm, setConfirm] = useState<Confirm | null>(null);
+  const [deleting, setDeleting] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const isAdmin = !!useAccess().me?.isAdmin;
   const [editSupplier, setEditSupplier] = useState<Supplier | null>(null);
 
   // Raw Materials tab
@@ -209,6 +214,11 @@ function ProcurementInner() {
       {loadError && (
         <p className="rounded-md border border-red-300 bg-red-50 p-2 text-xs text-red-800" role="alert">
           {loadError}
+        </p>
+      )}
+      {notice && (
+        <p className="rounded-md border border-emerald-300 bg-emerald-50 p-2 text-xs text-black" role="status" data-testid="procurement-notice">
+          {notice}
         </p>
       )}
       {actionError && !confirm && (
@@ -377,6 +387,7 @@ function ProcurementInner() {
                   ? setConfirm({ kind: "eq-preferred", row, link })
                   : void act(() => makeEquipmentPreferredApi(link.id)),
               onCreatePo: (supplierId, equipmentId) => router.push(newEquipmentPoHref(supplierId, equipmentId)),
+              onDelete: isAdmin ? (row) => { setActionError(null); setNotice(null); setDeleting(row.item.id); } : undefined,
             }}
           />
         </div>
@@ -421,14 +432,23 @@ function ProcurementInner() {
           item={editingItem}
           categories={cats.map((c) => c.category)}
           onClose={() => setEquipmentModal(null)}
-          onArchived={async () => {
-            setEquipmentModal(null);
-            await load();
-          }}
+          onDelete={isAdmin && editingItem ? () => { setEquipmentModal(null); setDeleting(editingItem.id); } : undefined}
           onSaved={async (item, created) => {
             setEquipmentModal(null);
             await load();
             if (created) setEqLinkModal({ equipmentId: item.id, linkId: null, justCreated: true });
+          }}
+        />
+      )}
+      {deleting && (
+        <DeleteEquipmentDialog
+          key={deleting}
+          equipmentId={deleting}
+          onClose={() => setDeleting(null)}
+          onDeleted={async (message) => {
+            setDeleting(null);
+            setNotice(message);
+            await load();
           }}
         />
       )}

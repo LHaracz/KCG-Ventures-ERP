@@ -7,6 +7,7 @@
  *
  * Nothing here reads formulas: label ingredients are typed by hand.
  */
+import { assetExtension, assetNameError, safeDownloadName } from "./assetNames";
 import { GrowthError, idOrThrow, isUuid } from "./errors";
 import { isIsoDate } from "./dates";
 import { claimsReadyCheck, isReadyStatus, scanText } from "./text";
@@ -452,6 +453,12 @@ export async function updateAsset(db: Db, id: unknown, input: Record<string, unk
     const s = txt(input, "status");
     if (!["draft", "ready", "archived"].includes(s)) throw new GrowthError("Choose a status.", 400);
     patch = { status: s };
+  } else if (input.title !== undefined && Object.keys(input).length === 1) {
+    // Rename only.
+    const title = txt(input, "title");
+    const err = assetNameError(title);
+    if (err) throw new GrowthError(err, 400, { title: err });
+    patch = { title };
   } else {
     const v = await assetFields(db, input, { isNew: false, currentCategory: cur.category });
     patch = v.row;
@@ -480,8 +487,7 @@ export async function signedAssetUrls(db: Db, ids: unknown, opts: { download?: b
   const out: Record<string, string> = {};
   for (const a of (data ?? []) as Array<{ id: string; title: string; file_path: string | null; source: string; mime_type: string | null }>) {
     if (a.source !== "upload" || !a.file_path) continue;
-    const ext = ASSET_MIME[a.mime_type ?? ""] ?? "bin";
-    const name = `${a.title.replace(/[^\w .-]/g, "").trim() || "asset"}.${ext}`;
+    const name = safeDownloadName(a.title, assetExtension(a.file_path, a.mime_type));
     const { data: s } = await db.storage.from(MARKETING_BUCKET).createSignedUrl(a.file_path, SIGNED_URL_SECONDS, opts.download ? { download: name } : undefined);
     if (s?.signedUrl) out[a.id] = s.signedUrl;
   }

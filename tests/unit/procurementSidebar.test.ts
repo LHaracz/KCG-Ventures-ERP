@@ -128,7 +128,13 @@ describe("sidebar", () => {
 
 describe("access", () => {
   const procurementPages = ["/inventory/procurement", "/inventory/procurement/suppliers"];
-  const procurementApis = Object.keys(API_RULES).filter((k) => k.startsWith("/api/procurement"));
+  // Permanently deleting equipment is Admin only (its own two routes).
+  const adminOnlyApis = ["/api/procurement/equipment/[equipmentId]/delete", "/api/procurement/equipment/[equipmentId]/delete-preview"];
+  const procurementApis = Object.keys(API_RULES).filter((k) => k.startsWith("/api/procurement") && !adminOnlyApis.includes(k));
+
+  it("equipment delete routes are Admin only", () => {
+    for (const a of adminOnlyApis) expect(API_RULES[a]).toEqual({ kind: "admin" });
+  });
 
   it("Procurement pages and API routes are guarded by the Purchase Orders feature, with no new feature key", () => {
     expect(FEATURES.filter((f) => f.key.includes("procurement"))).toEqual([]);

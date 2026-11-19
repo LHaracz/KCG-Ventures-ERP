@@ -5,6 +5,7 @@
  * routes (validated and access-checked there). Field errors from the server
  * are kept so forms can show them next to the right field.
  */
+import type { EquipmentDeletePreview, EquipmentDeleteResult } from "./equipmentDelete";
 import { supabase } from "@/lib/supabaseClient";
 import type { PoPrefillResult } from "./service";
 import type { EquipmentCategory, EquipmentItem, EquipmentLink, ProcurementData, Supplier, SupplierLink } from "./types";
@@ -64,6 +65,9 @@ export const reorderCategoriesApi = (ids: string[]) => call<{ categories: Equipm
 export const createEquipmentApi = (equipment: EquipmentValues) => call<{ equipment: EquipmentItem }>("/api/procurement/equipment", { equipment });
 export const updateEquipmentApi = (id: string, equipment: EquipmentValues) => call<{ equipment: EquipmentItem }>(`/api/procurement/equipment/${enc(id)}`, { equipment });
 export const archiveEquipmentApi = (id: string) => call<{ archivedLinks: number }>(`/api/procurement/equipment/${enc(id)}/archive`, {});
+export const previewEquipmentDeleteApi = (id: string) => call<EquipmentDeletePreview>(`/api/procurement/equipment/${enc(id)}/delete-preview`);
+export const deleteEquipmentApi = (id: string, expectedSupplierIds: string[]) =>
+  call<EquipmentDeleteResult>(`/api/procurement/equipment/${enc(id)}/delete`, { expected_supplier_ids: expectedSupplierIds });
 export const restoreEquipmentApi = (id: string) => call<{ equipment: EquipmentItem }>(`/api/procurement/equipment/${enc(id)}/restore`, {});
 export const addEquipmentLinkApi = (body: {
   equipment_id: string;

@@ -170,6 +170,7 @@ function ListingSubtable<L extends AnyListing>({
   onRemove,
   onMakePreferred,
   onCreatePo,
+  onDeleteOwner,
 }: {
   kind: "raw" | "equipment";
   ownerId: string;
@@ -181,9 +182,18 @@ function ListingSubtable<L extends AnyListing>({
   onRemove: (l: L) => void;
   onMakePreferred: (l: L) => void;
   onCreatePo: (l: L) => void;
+  /** Equipment, Admins only: "Delete equipment" in the header. */
+  onDeleteOwner?: () => void;
 }) {
   return (
     <div className="space-y-2 bg-zinc-50 px-3 py-3" data-testid={`subtable-${ownerId}`}>
+      {onDeleteOwner && (
+        <div className="flex justify-end">
+          <button type="button" className={btnDanger} onClick={onDeleteOwner} data-testid="equipment-delete">
+            Delete equipment
+          </button>
+        </div>
+      )}
       {listings.length === 0 ? (
         <p className="text-xs text-black">No suppliers yet for {ownerName}.</p>
       ) : (
@@ -509,6 +519,8 @@ export type EquipmentHandlers = {
   onRemoveLink: (row: EquipmentRow, link: EquipmentLinkWithSupplier) => void;
   onMakePreferred: (row: EquipmentRow, link: EquipmentLinkWithSupplier) => void;
   onCreatePo: (supplierId: string, equipmentId: string) => void;
+  /** Admins only; when missing, no Delete buttons show. */
+  onDelete?: (row: EquipmentRow) => void;
 };
 
 /** Equipment: no quantity, par level or stock alert. Sorted by name (natural order). */
@@ -579,9 +591,16 @@ export function EquipmentTable({
                   </td>
                   <td className="px-2 py-2">
                     {row.archived ? (
-                      <button type="button" className={btn} onClick={() => h.onRestore(row)}>
-                        Restore
-                      </button>
+                      <div className="flex flex-wrap gap-1">
+                        <button type="button" className={btn} onClick={() => h.onRestore(row)}>
+                          Restore
+                        </button>
+                        {h.onDelete && (
+                          <button type="button" className={btnDanger} onClick={() => h.onDelete!(row)} data-testid="equipment-delete">
+                            Delete
+                          </button>
+                        )}
+                      </div>
                     ) : row.links.length === 0 ? (
                       <div className="flex flex-col items-start gap-1">
                         <NoSupplierBadge />
@@ -642,6 +661,7 @@ export function EquipmentTable({
                         onRemove={(l) => h.onRemoveLink(row, l)}
                         onMakePreferred={(l) => h.onMakePreferred(row, l)}
                         onCreatePo={(l) => h.onCreatePo(l.supplier_id, id)}
+                        onDeleteOwner={h.onDelete ? () => h.onDelete!(row) : undefined}
                       />
                     </td>
                   </tr>

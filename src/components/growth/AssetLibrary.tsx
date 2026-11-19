@@ -3,11 +3,13 @@
 /**
  * Marketing Hub › Assets: the categorized asset library. Category chips with
  * counts (including Uncategorized), filters kept in the URL (as_*), add
- * several files or links at once with a shared category and tags, edit,
+ * several files or links at once with a shared category and tags (each
+ * with its own required Name, plus a "Name pattern" helper), rename inline,
+ * edit,
  * bulk actions, ingredient tags (the Admin-only "Add from Raw Materials"
  * copies names only), and the in-app viewer.
  */
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import {
   assetBulkApi,
@@ -22,6 +24,7 @@ import {
   type GrowthApiError,
   type MarketingData,
 } from "@/lib/growth/client";
+import { applyNamePattern, assetNameError, hasDuplicateName, titleFromFileName } from "@/lib/growth/assetNames";
 import { ASSET_CATEGORIES, CATEGORY_LABEL, categoryCounts, validateAssetCategory, type AssetCategory } from "@/lib/growth/assetCategories";
 import { Badge, Checkbox, Chip, ConfirmDialog, Dialog, ErrorSummary, Select, TextArea, TextField, btn, btnPrimary, card, errorBox, infoBox, input, warnBox } from "./GrowthUi";
 import { assetsWithProducts, type AssetX } from "./LibraryNeeds";
@@ -171,12 +174,13 @@ export function AssetsTab({ data, reload }: TabProps) {
     if (f.business && a.business !== f.business) return false;
     if (f.source && a.source !== f.source) return false;
     const q = f.q.trim().toLowerCase();
-    if (q && ![a.title, a.context_label ?? "", a.notes ?? ""].some((s) => s.toLowerCase().includes(q))) return false;
+    if (q && ![a.title, a.file_path ?? "", a.url ?? "", a.context_label ?? "", a.notes ?? ""].some((s) => s.toLowerCase().includes(q))) return false;
     return true;
   });
   const [selected, setSelected] = useState<string[]>([]);
   const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState<AssetX | null>(null);
+  const [renaming, setRenaming] = useState<string | null>(null);
   const [bulk, setBulk] = useState<"category" | null>(null);
   const [tagsOpen, setTagsOpen] = useState(false);
   const [viewing, setViewing] = useState<{ asset: AssetX; url: string } | null>(null);
@@ -245,7 +249,7 @@ export function AssetsTab({ data, reload }: TabProps) {
         </p>
       )}
       <div className="flex flex-wrap items-end gap-2">
-        <input aria-label="Search assets" placeholder="Search title, label or notes" value={f.q} onChange={(e) => url.set({ as_q: e.target.value })} className={`${input} w-56`} />
+        <input aria-label="Search assets" placeholder="Search name, label or notes" value={f.q} onChange={(e) => url.set({ as_q: e.target.value })} className={`${input} w-56`} />
         <select aria-label="Product" value={f.product} onChange={(e) => url.set({ as_product: e.target.value })} className={`${input} w-40`}><option value="">All products</option>{data.products.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</select>
         <select aria-label="Ingredient tag" value={f.tag} onChange={(e) => url.set({ as_tag: e.target.value })} className={`${input} w-40`}><option value="">All ingredients</option>{data.ingredientTags.filter((t) => !t.archived_at).map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}</select>
         <select aria-label="Type" value={f.type} onChange={(e) => url.set({ as_type: e.target.value })} className={`${input} w-32`}><option value="">All types</option>{ASSET_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}</select>
@@ -285,7 +289,11 @@ export function AssetsTab({ data, reload }: TabProps) {
                 </button>
               </div>
               <div>
-                <p className="font-medium">{a.title}</p>
+                {renaming === a.id ? (
+                  <RenameAsset asset={a} assets={data.assets} onDone={(saved) => { setRenaming(null); if (saved) void reload(); }} />
+                ) : (
+                  <p className="font-medium" data-testid="asset-name">{a.title}</p>
+                )}
                 <p className="text-xs" data-testid="asset-tag-line">{tagLine(data, a)}</p>
                 <p className="text-xs">{label(ASSET_TYPES, a.asset_type)} · {label(BUSINESSES, a.business)}{a.shot_date ? ` · Shot ${a.shot_date}` : ""}</p>
                 <div className="mt-1 flex flex-wrap gap-1">
@@ -311,6 +319,7 @@ export function AssetsTab({ data, reload }: TabProps) {
                     Set as primary photo
                   </button>
                 )}
+                <button type="button" className={btn} onClick={() => setRenaming(a.id)}>Rename</button>
                 <button type="button" className={btn} onClick={() => setEditing(a)}>Edit</button>
                 <button type="button" className={btn} onClick={() => act(() => updateAssetApi(a.id, { status: a.status === "archived" ? "draft" : "archived" }))}>{a.status === "archived" ? "Restore" : "Archive"}</button>
               </div>
@@ -337,6 +346,23 @@ export function AssetsTab({ data, reload }: TabProps) {
       {tagsOpen && <IngredientTagsDialog data={data} reload={reload} onClose={() => setTagsOpen(false)} />}
       {viewing && (
         <Dialog title={viewing.asset.title} onClose={() => { if (viewing.asset.mime_type === "application/pdf") URL.revokeObjectURL(viewing.url); setViewing(null); }} wide>
+          <div className="mb-2 flex items-center gap-2 text-sm text-black">
+            {renaming === `view:${viewing.asset.id}` ? (
+              <RenameAsset
+                asset={viewing.asset}
+                assets={data.assets}
+                onDone={(saved, title) => {
+                  setRenaming(null);
+                  if (saved && title) {
+                    setViewing((v) => (v ? { ...v, asset: { ...v.asset, title } } : v));
+                    void reload();
+                  }
+                }}
+              />
+            ) : (
+              <button type="button" className={btn} onClick={() => setRenaming(`view:${viewing.asset.id}`)}>Rename</button>
+            )}
+          </div>
           {viewing.asset.mime_type === "application/pdf" ? (
             <div className="h-[70vh] overflow-hidden rounded border border-zinc-200"><PdfViewer fileUrl={viewing.url} /></div>
           ) : (
@@ -350,11 +376,59 @@ export function AssetsTab({ data, reload }: TabProps) {
 }
 
 // --- Add several at once ------------------------------------------------------------------------------
-type Pending = { key: string; file: File | null; url: string; title: string; asset_type: string; state: "waiting" | "saving" | "done" | "error"; error?: string };
+type Pending = { key: string; file: File | null; url: string; title: string; asset_type: string; checked: boolean; state: "waiting" | "saving" | "done" | "error"; error?: string };
 let seq = 0;
-const titleFromFile = (n: string) => n.replace(/\.[^.]+$/, "").replace(/[_-]+/g, " ").trim().slice(0, 200);
 
-function AddAssetsDialog({ data, onClose, onDone, reload }: { data: MarketingData; onClose: () => void; onDone: () => void; reload: () => Promise<void> }) {
+/** Inline rename: Enter or leaving the field saves, Escape cancels. Same rules as adding (1 to 200 characters). */
+export function RenameAsset({ asset, assets, onDone }: { asset: { id: string; title: string }; assets: ReadonlyArray<{ id: string; title: string; status: string }>; onDone: (saved: boolean, title?: string) => void }) {
+  const [value, setValue] = useState(asset.title);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const finished = useRef(false);
+  const save = async () => {
+    if (finished.current || busy) return;
+    const t = value.trim();
+    if (t === asset.title) {
+      finished.current = true;
+      onDone(false);
+      return;
+    }
+    const err = assetNameError(t);
+    if (err) return setError(err);
+    setBusy(true);
+    try {
+      await updateAssetApi(asset.id, { title: t });
+      finished.current = true;
+      onDone(true, t);
+    } catch (e) {
+      setError((e as Error).message);
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="w-full">
+      <input
+        aria-label="Name"
+        autoFocus
+        value={value}
+        maxLength={250}
+        disabled={busy}
+        onFocus={(e) => e.currentTarget.select()}
+        onChange={(e) => { setValue(e.target.value); setError(null); }}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") { e.preventDefault(); void save(); }
+          if (e.key === "Escape") { e.preventDefault(); finished.current = true; onDone(false); }
+        }}
+        onBlur={() => void save()}
+        className={`${input} w-full`}
+      />
+      {error && <p className="text-xs text-red-700" role="alert">{error}</p>}
+      {!error && hasDuplicateName(assets, value, asset.id) && <p className="text-xs text-amber-800">Another asset has this name</p>}
+    </div>
+  );
+}
+
+export function AddAssetsDialog({ data, onClose, onDone, reload }: { data: MarketingData; onClose: () => void; onDone: () => void; reload: () => Promise<void> }) {
   const [cat, setCat] = useState<CategoryValue>(emptyCategory());
   const [business, setBusiness] = useState("botaniqals");
   const [projectUrl, setProjectUrl] = useState("");
@@ -370,7 +444,7 @@ function AddAssetsDialog({ data, onClose, onDone, reload }: { data: MarketingDat
     for (const f of Array.from(list ?? [])) {
       if (!ALLOWED.includes(f.type)) bad.push(`${f.name}: only PNG, JPG, WebP and PDF files can be uploaded.`);
       else if (f.size > MAX_BYTES) bad.push(`${f.name}: files can be at most 25 MB.`);
-      else next.push({ key: `f${++seq}`, file: f, url: "", title: titleFromFile(f.name), asset_type: f.type === "application/pdf" ? "document" : "photo", state: "waiting" });
+      else next.push({ key: `f${++seq}`, file: f, url: "", title: titleFromFileName(f.name), asset_type: f.type === "application/pdf" ? "document" : "photo", checked: true, state: "waiting" });
     }
     setFileError(bad.length ? bad.join(" ") : null);
     setItems((s) => [...s, ...next]);
@@ -382,20 +456,36 @@ function AddAssetsDialog({ data, onClose, onDone, reload }: { data: MarketingDat
       return;
     }
     setFileError(null);
-    setItems((s) => [...s, { key: `l${++seq}`, file: null, url: u, title: "", asset_type: "video", state: "waiting" }]);
+    setItems((s) => [...s, { key: `l${++seq}`, file: null, url: u, title: "", asset_type: "video", checked: true, state: "waiting" }]);
     setLink("");
   };
   const setItem = (k: string, patch: Partial<Pending>) => setItems((s) => s.map((x) => (x.key === k ? { ...x, ...patch } : x)));
+  const [pattern, setPattern] = useState("");
+  const [nameErrors, setNameErrors] = useState<Record<string, string>>({});
+  const open = items.filter((i) => i.state !== "done");
+  const patternRows = open.filter((i) => i.checked);
+  const patternNames = pattern.trim() ? applyNamePattern(pattern, patternRows.length) : [];
+  const applyPattern = () => {
+    const names = new Map(patternRows.map((r, i) => [r.key, patternNames[i]]));
+    setItems((s) => s.map((x) => (names.has(x.key) ? { ...x, title: names.get(x.key)! } : x)));
+    setNameErrors({});
+  };
   const saveAll = async () => {
     const errs = clientErrors(cat);
+    const nErrs: Record<string, string> = {};
+    for (const it of open) {
+      const e = assetNameError(it.title);
+      if (e) nErrs[it.key] = e;
+    }
     setErrors(errs);
-    if (Object.keys(errs).length) return;
+    setNameErrors(nErrs);
+    if (Object.keys(errs).length || Object.keys(nErrs).length) return;
     setBusy(true);
     for (const it of items) {
       if (it.state === "done") continue;
       setItem(it.key, { state: "saving", error: undefined });
       const meta = {
-        title: it.title || (it.file ? titleFromFile(it.file.name) : "Link"),
+        title: it.title.trim(),
         asset_type: it.asset_type,
         business,
         project_url: projectUrl || null,
@@ -442,17 +532,41 @@ function AddAssetsDialog({ data, onClose, onDone, reload }: { data: MarketingDat
           <TextArea name="aa-notes" label="Notes" value={notes} onChange={setNotes} rows={2} />
         </div>
         <div className="space-y-1">
-          <p className="text-xs font-semibold">3. Check the titles ({items.length})</p>
+          <p className="text-xs font-semibold">3. Name each item ({items.length})</p>
+          {open.length > 1 && (
+            <div className="flex flex-wrap items-end gap-2 rounded-md border border-zinc-200 p-2" data-testid="name-pattern">
+              <label className="text-xs">
+                Name pattern
+                <input aria-label="Name pattern" placeholder="Gum flat lay {n}" value={pattern} onChange={(e) => setPattern(e.target.value)} className={`${input} ml-2 w-56`} />
+              </label>
+              <button type="button" className={btn} onClick={applyPattern} disabled={!pattern.trim() || patternRows.length === 0}>Apply to {patternRows.length} checked</button>
+              {patternNames.length > 0 && <p className="w-full text-[11px]" data-testid="name-pattern-preview">Preview: {patternNames.slice(0, 3).join(", ")}{patternNames.length > 3 ? ", …" : ""}</p>}
+            </div>
+          )}
           {items.length === 0 ? (
             <p className="text-xs">Nothing added yet.</p>
           ) : (
             <table className="min-w-full text-left text-xs" data-testid="add-assets-table">
-              <thead className="bg-zinc-50"><tr>{["Item", "Title", "Type", "Status", ""].map((h) => <th key={h || "x"} className="px-2 py-1 font-semibold">{h}</th>)}</tr></thead>
+              <thead className="bg-zinc-50"><tr>{["", "Item", "Name", "Type", "Status", ""].map((h, i) => <th key={i} className="px-2 py-1 font-semibold">{h}</th>)}</tr></thead>
               <tbody>
                 {items.map((it) => (
                   <tr key={it.key} className="border-t border-zinc-100 align-top">
+                    <td className="px-2 py-1">{it.state !== "done" && <input type="checkbox" aria-label="Include in name pattern" checked={it.checked} onChange={() => setItem(it.key, { checked: !it.checked })} />}</td>
                     <td className="max-w-40 truncate px-2 py-1">{it.file ? it.file.name : it.url}</td>
-                    <td className="px-2 py-1"><input aria-label="Title" value={it.title} onChange={(e) => setItem(it.key, { title: e.target.value })} className={`${input} w-48`} disabled={it.state === "done"} /></td>
+                    <td className="px-2 py-1">
+                      <input
+                        aria-label="Name"
+                        required
+                        placeholder={it.file ? "" : "Name this link"}
+                        value={it.title}
+                        onFocus={(e) => e.currentTarget.select()}
+                        onChange={(e) => { setItem(it.key, { title: e.target.value }); setNameErrors((n) => ({ ...n, [it.key]: "" })); }}
+                        className={`${input} w-48`}
+                        disabled={it.state === "done"}
+                      />
+                      {nameErrors[it.key] && <p className="text-xs text-red-700" role="alert">{nameErrors[it.key]}</p>}
+                      {!nameErrors[it.key] && it.state !== "done" && hasDuplicateName(data.assets, it.title) && <p className="text-xs text-amber-800">Another asset has this name</p>}
+                    </td>
                     <td className="px-2 py-1">
                       <select aria-label="Type" value={it.asset_type} onChange={(e) => setItem(it.key, { asset_type: e.target.value })} className={`${input} w-28`} disabled={it.state === "done"}>
                         {ASSET_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
@@ -498,6 +612,8 @@ function EditAssetDialog({ data, asset, onClose, onSaved, reload }: { data: Mark
   const set = (k: keyof typeof v) => (x: string) => setV((s) => ({ ...s, [k]: x }));
   const save = async () => {
     const errs = clientErrors(cat, !!asset.category || !!cat.category);
+    const nameErr = assetNameError(v.title);
+    if (nameErr) errs.title = nameErr;
     setErrors(errs);
     if (Object.keys(errs).length) return;
     try {
@@ -523,7 +639,7 @@ function EditAssetDialog({ data, asset, onClose, onSaved, reload }: { data: Mark
         <ErrorSummary message={message} errors={errors} />
         {!asset.category && <p className={infoBox}>This asset has no category yet. Choose one to sort it.</p>}
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <TextField name="ea-title" label="Title" value={v.title} onChange={set("title")} required error={errors.title} />
+          <TextField name="ea-title" label="Name" value={v.title} onChange={set("title")} required error={errors.title} hint={hasDuplicateName(data.assets, v.title, asset.id) ? "Another asset has this name" : undefined} />
           <Select name="ea-type" label="Type" value={v.asset_type} onChange={set("asset_type")} options={ASSET_TYPES} />
           <Select name="ea-business" label="Business" value={v.business} onChange={set("business")} options={BUSINESSES} />
           <Select name="ea-status" label="Status" value={v.status} onChange={set("status")} options={[{ value: "draft", label: "Draft" }, { value: "ready", label: "Ready" }, { value: "archived", label: "Archived" }]} />

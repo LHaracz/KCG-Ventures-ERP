@@ -249,6 +249,8 @@ export const API_RULES: Record<string, Rule> = {
   "/api/procurement/equipment/[equipmentId]": F("inventory.purchase_orders"),
   "/api/procurement/equipment/[equipmentId]/archive": F("inventory.purchase_orders"),
   "/api/procurement/equipment/[equipmentId]/restore": F("inventory.purchase_orders"),
+  "/api/procurement/equipment/[equipmentId]/delete": ADMIN,
+  "/api/procurement/equipment/[equipmentId]/delete-preview": ADMIN,
   "/api/procurement/equipment-links": F("inventory.purchase_orders"),
   "/api/procurement/equipment-links/[linkId]": F("inventory.purchase_orders"),
   "/api/procurement/equipment-links/[linkId]/archive": F("inventory.purchase_orders"),
