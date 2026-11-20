@@ -34,7 +34,7 @@ export async function checkUploadFile(file: File): Promise<{ ok: true; file: Det
 }
 
 /** The asset type a new upload starts with (the user can change it). */
-export const defaultAssetType = (kind: FileKind) => (kind === "mp4" ? "video" : kind === "pdf" ? "document" : "photo");
+export const defaultAssetType = (kind: FileKind) => (kind === "mp4" || kind === "mov" ? "video" : kind === "pdf" ? "document" : "photo");
 
 /** PUT to a signed upload URL with progress. Replaceable in tests. */
 export const uploadTransport = {
@@ -68,7 +68,7 @@ export type UploadOptions = { onStage?: (s: UploadStage) => void; onProgress?: (
 
 /**
  * Uploads one file as an asset with the given fields (title, category, tags…).
- * previewFailed is true when a HEIC, GIF or MP4 was saved without its preview.
+ * previewFailed is true when a HEIC, GIF, MP4 or MOV was saved without its preview.
  */
 export async function uploadAsset(file: File, meta: Record<string, unknown>, opts: UploadOptions = {}): Promise<{ asset: Asset; previewFailed: boolean }> {
   const checked = await checkUploadFile(file);

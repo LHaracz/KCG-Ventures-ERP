@@ -60,7 +60,7 @@ export type Asset = {
   is_full_lineup: boolean | null;
   /** HEIC: the JPG made in the browser. */
   preview_path: string | null;
-  /** GIF and MP4: a still frame (JPG). */
+  /** GIF, MP4 and MOV: a still frame (JPG). */
   poster_path: string | null;
   width: number | null;
   height: number | null;
@@ -399,10 +399,10 @@ export async function createLinkAsset(db: Db, input: Record<string, unknown>, ac
   return data;
 }
 
-/** The extra JPG stored next to an original: a preview for HEIC, a poster for GIF and MP4. */
-const EXTRA_FOR: Partial<Record<FileKind, "preview" | "poster">> = { heic: "preview", gif: "poster", mp4: "poster" };
+/** The extra JPG stored next to an original: a preview for HEIC, a poster for GIF, MP4 and MOV. */
+const EXTRA_FOR: Partial<Record<FileKind, "preview" | "poster">> = { heic: "preview", gif: "poster", mp4: "poster", mov: "poster" };
 const extraPath = (path: string, extra: "preview" | "poster") => `${path}.${extra}.jpg`;
-const UPLOAD_TYPES_MSG = "Only PNG, JPG, WebP, PDF, HEIC, GIF and MP4 files can be uploaded. Paste a link for other videos.";
+const UPLOAD_TYPES_MSG = "Only PNG, JPG, WebP, PDF, HEIC, GIF, MP4 and MOV files can be uploaded. Paste a link for other videos.";
 
 /**
  * Step 1 of an upload: signed upload URLs for a new private path (the
@@ -509,7 +509,7 @@ const intOrNull = (v: unknown, max: number) => {
  */
 export async function finalizeUpload(db: Db, input: Record<string, unknown>, actor: string | null): Promise<Asset> {
   const path = txt(input, "path");
-  if (!/^assets\/\d{4}-\d{2}\/[0-9a-f-]{36}\.(png|jpg|webp|pdf|heic|heif|gif|mp4)$/.test(path)) throw new GrowthError("Unknown upload.", 400);
+  if (!/^assets\/\d{4}-\d{2}\/[0-9a-f-]{36}\.(png|jpg|webp|pdf|heic|heif|gif|mp4|mov)$/.test(path)) throw new GrowthError("Unknown upload.", 400);
   const v = await assetFields(db, input);
   const mime = txt(input, "mime_type");
   const type = UPLOAD_MIME[mime];

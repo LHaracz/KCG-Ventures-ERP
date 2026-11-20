@@ -48,12 +48,23 @@ describe("detectFileKind", () => {
 
   it("rejects an .mp4 that is really text, and unknown files", () => {
     expect(detect("Clip A.mp4", bytes("just some text, not a video"))).toEqual({ ok: false, error: expect.stringMatching(/isn't a real MP4/) });
-    expect(detect("notes.txt", bytes("plain text"))).toEqual({ ok: false, error: expect.stringMatching(/Only PNG, JPG, WebP, PDF, HEIC, GIF and MP4/) });
+    expect(detect("notes.txt", bytes("plain text"))).toEqual({ ok: false, error: expect.stringMatching(/Only PNG, JPG, WebP, PDF, HEIC, GIF, MP4 and MOV/) });
   });
 
-  it("rejects MOV (QuickTime) even when named .mp4", () => {
-    expect(detect("Clip A.mov", ftyp("qt  "))).toEqual({ ok: false, error: expect.stringMatching(/MOV/) });
-    expect(detect("Clip A.mp4", ftyp("qt  "))).toEqual({ ok: false, error: expect.stringMatching(/MOV/) });
+  it("recognises MOV (QuickTime) by its brand, or by its first atom with a .mov extension", () => {
+    expect(detect("Clip A.MOV", ftyp("qt  "), "")).toEqual({ ok: true, file: { kind: "mov", mime: "video/quicktime", extension: "mov" } });
+    expect(detect("upload", ftyp("qt  "))).toMatchObject({ ok: true, file: { kind: "mov" } });
+    for (const atom of ["moov", "mdat", "wide", "free"]) {
+      expect(detect("Clip A.mov", bytes([0, 0, 0, 8], atom, [0, 0, 0, 0]))).toMatchObject({ ok: true, file: { kind: "mov" } });
+    }
+    // Without the .mov extension a bare atom proves nothing.
+    expect(detect("Clip A.mp4", bytes([0, 0, 0, 8], "mdat", [0, 0, 0, 0]))).toMatchObject({ ok: false });
+  });
+
+  it("rejects a MOV named .mp4 (and an MP4 named .mov), and a .mov that is really text", () => {
+    expect(detect("Clip A.mp4", ftyp("qt  "))).toEqual({ ok: false, error: expect.stringMatching(/don't match its \.mp4 extension/) });
+    expect(detect("Clip A.mov", ftyp("mp42"))).toEqual({ ok: false, error: expect.stringMatching(/don't match its \.mov extension/) });
+    expect(detect("Clip A.mov", bytes("just some text, not a video"))).toEqual({ ok: false, error: expect.stringMatching(/isn't a real MOV/) });
   });
 
   it("rejects truncated files", () => {
@@ -67,7 +78,7 @@ describe("detectFileKind", () => {
 
 describe("sizeLimitFor", () => {
   it("has one limit per kind", () => {
-    expect(SIZE_LIMITS).toEqual({ image: 25 * MB, heic: 25 * MB, pdf: 25 * MB, gif: 50 * MB, mp4: 200 * MB });
+    expect(SIZE_LIMITS).toEqual({ image: 25 * MB, heic: 25 * MB, pdf: 25 * MB, gif: 50 * MB, mp4: 200 * MB, mov: 200 * MB });
   });
   it.each([
     ["image", 25],
@@ -75,6 +86,7 @@ describe("sizeLimitFor", () => {
     ["pdf", 25],
     ["gif", 50],
     ["mp4", 200],
+    ["mov", 200],
   ] as const)("%s: %i MB is allowed, one byte more is not", (kind, mb) => {
     expect(sizeLimitFor(kind)).toBe(mb * MB);
     expect(sizeError(kind, mb * MB)).toBeNull();
@@ -82,6 +94,7 @@ describe("sizeLimitFor", () => {
   });
   it("tells people to paste a link for big videos, and rejects empty files", () => {
     expect(sizeError("mp4", 200 * MB + 1)).toBe("MP4 files can be up to 200 MB. Paste a link for larger videos.");
+    expect(sizeError("mov", 200 * MB + 1)).toBe("MOV files can be up to 200 MB. Paste a link for larger videos.");
     expect(sizeError("gif", 0)).toBe("The file is empty.");
   });
 });

@@ -219,7 +219,7 @@ export function AssetPicker({
               <button type="button" className={`flex w-full items-center justify-between gap-2 rounded-md border border-zinc-200 p-2 text-left text-sm hover:bg-zinc-50 ${touch}`} onClick={() => onPick(a.id, also)}>
                 <span>
                   <span className="font-medium">{a.title}</span>
-                  {a.source === "upload" && ["heic", "gif", "mp4"].includes(UPLOAD_MIME[a.mime_type ?? ""]?.kind ?? "") && <span className="ml-2 rounded bg-zinc-100 px-1 text-[11px]">{UPLOAD_MIME[a.mime_type ?? ""].kind.toUpperCase()}</span>}
+                  {a.source === "upload" && ["heic", "gif", "mp4", "mov"].includes(UPLOAD_MIME[a.mime_type ?? ""]?.kind ?? "") && <span className="ml-2 rounded bg-zinc-100 px-1 text-[11px]">{UPLOAD_MIME[a.mime_type ?? ""].kind.toUpperCase()}</span>}
                   <span className="ml-2 text-[11px]">{a.category ? CATEGORY_LABEL[a.category] : "Uncategorized"} · {a.asset_type}{a.product_names.length ? ` · ${a.product_names.join(", ")}` : ""}</span>
                 </span>
                 {a.status === "draft" && <Chip tone="amber">Draft</Chip>}
@@ -303,7 +303,7 @@ function UploadAttachDialog({ data, item, need, alsoCount, onClose, onDone }: { 
             )}
           </div>
         ) : (
-          <TextField name="ua-url" label="Link" value={v.url} onChange={(x) => setV({ ...v, url: x })} placeholder="https://" hint="You can upload MP4 files up to 200 MB, or paste a link for bigger videos." error={errors.url} />
+          <TextField name="ua-url" label="Link" value={v.url} onChange={(x) => setV({ ...v, url: x })} placeholder="https://" hint="You can upload MP4 or MOV files up to 200 MB, or paste a link for bigger videos." error={errors.url} />
         )}
         <TextField name="ua-title" label="Name" value={v.title} onChange={(x) => setV({ ...v, title: x })} required error={errors.title} hint={hasDuplicateName(data.assets, v.title) ? "Another asset has this name" : undefined} />
         <Select name="ua-category" label="Category" value={v.category} onChange={(x) => setV({ ...v, category: x })} options={[{ value: "", label: "Choose…" }, ...ASSET_CATEGORIES.map((c) => ({ value: c, label: CATEGORY_LABEL[c] }))]} error={errors.category} />

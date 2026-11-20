@@ -49,14 +49,16 @@ const BUSINESSES = [
   { value: "minileaf", label: "MiniLeaf" },
   { value: "brand", label: "Brand (both)" },
 ];
-export const VIDEO_LINK_HINT = "You can upload MP4 files up to 200 MB, or paste a link for bigger videos.";
+export const VIDEO_LINK_HINT = "You can upload MP4 or MOV files up to 200 MB, or paste a link for bigger videos.";
 export const NO_PREVIEW = "Preview unavailable. Download the original.";
 export const CANT_PLAY = "This video can't be played in this browser. It may use HEVC. Download it, or export it as H.264.";
-/** HEIC, GIF or MP4 (they get a badge and a preview or poster), else null. */
-export const mediaKind = (a: { source: string; mime_type: string | null }): "heic" | "gif" | "mp4" | null => {
+/** HEIC, GIF, MP4 or MOV (they get a badge and a preview or poster), else null. */
+export const mediaKind = (a: { source: string; mime_type: string | null }): "heic" | "gif" | "mp4" | "mov" | null => {
   const k = a.source === "upload" ? UPLOAD_MIME[a.mime_type ?? ""]?.kind : undefined;
-  return k === "heic" || k === "gif" || k === "mp4" ? k : null;
+  return k === "heic" || k === "gif" || k === "mp4" || k === "mov" ? k : null;
 };
+/** MP4 or MOV: played in a video player, with a duration. */
+export const isVideoKind = (k: FileKind | null | undefined) => k === "mp4" || k === "mov";
 /** True when the grid can show a picture: a poster or preview JPG, or a browser image. */
 const hasThumb = (a: { source: string; mime_type: string | null; preview_path: string | null; poster_path: string | null }) =>
   a.source === "upload" && (!!a.poster_path || !!a.preview_path || ["image/png", "image/jpeg", "image/webp", "image/gif"].includes(a.mime_type ?? ""));
@@ -69,7 +71,7 @@ export const durationLabel = (sec: number | null | undefined) => {
   const x = String(t % 60).padStart(2, "0");
   return h ? `${h}:${String(m).padStart(2, "0")}:${x}` : `${m}:${x}`;
 };
-const KIND_BADGE: Record<FileKind, string> = { image: "Image", pdf: "PDF", heic: "HEIC", gif: "GIF", mp4: "MP4" };
+const KIND_BADGE: Record<FileKind, string> = { image: "Image", pdf: "PDF", heic: "HEIC", gif: "GIF", mp4: "MP4", mov: "MOV" };
 const sizeLabel = (n: number) => (n >= 1024 * 1024 ? `${(n / 1024 / 1024).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`);
 const label = (list: ReadonlyArray<{ value: string; label: string }>, v: string | null) => list.find((x) => x.value === v)?.label ?? v ?? "—";
 const isImage = (a: { source: string; mime_type: string | null }) => a.source === "upload" && (a.mime_type ?? "").startsWith("image/");
@@ -235,7 +237,7 @@ export function AssetsTab({ data, reload }: TabProps) {
         setViewing({ asset: a, url: u });
         return;
       }
-      if (!download && kind === "mp4") {
+      if (!download && isVideoKind(kind)) {
         const [o, p] = await Promise.all([signedAssetUrlsApi([a.id]), a.poster_path ? signedAssetUrlsApi([a.id], false, "thumb") : Promise.resolve({ urls: {} as Record<string, string> })]);
         setViewing({ asset: a, url: o.urls[a.id] ?? null, poster: p.urls[a.id] ?? null });
         return;
@@ -318,7 +320,7 @@ export function AssetsTab({ data, reload }: TabProps) {
                   ) : mediaKind(a) && !a.poster_path && !a.preview_path ? (
                     <div className="flex h-36 w-full flex-col items-center justify-center gap-1 rounded bg-zinc-100 p-2 text-center text-xs text-black" data-testid="asset-placeholder">
                       <span>{NO_PREVIEW}</span>
-                      {mediaKind(a) === "mp4" && <span className="text-[11px]">This browser couldn&apos;t read a frame from the video.</span>}
+                      {isVideoKind(mediaKind(a)) && <span className="text-[11px]">This browser couldn&apos;t read a frame from the video.</span>}
                     </div>
                   ) : (
                     <div className="flex h-36 w-full items-center justify-center rounded bg-zinc-100 text-xs">{a.source === "link" ? "Link" : a.mime_type === "application/pdf" ? "PDF" : "File"}</div>
@@ -336,7 +338,7 @@ export function AssetsTab({ data, reload }: TabProps) {
                 <div className="mt-1 flex flex-wrap gap-1">
                   <Chip tone={a.status === "ready" ? "green" : a.status === "archived" ? "zinc" : "amber"}>{a.status === "ready" ? "Ready" : a.status === "archived" ? "Archived" : "Draft"}</Chip>
                   {!a.category && <Badge tone="amber">Uncategorized</Badge>}
-                  {mediaKind(a) && <Badge tone="zinc">{KIND_BADGE[mediaKind(a)!]}{mediaKind(a) === "mp4" && a.duration_seconds !== null ? ` · ${durationLabel(a.duration_seconds)}` : ""}</Badge>}
+                  {mediaKind(a) && <Badge tone="zinc">{KIND_BADGE[mediaKind(a)!]}{isVideoKind(mediaKind(a)) && a.duration_seconds !== null ? ` · ${durationLabel(a.duration_seconds)}` : ""}</Badge>}
                   {mediaKind(a) && !a.poster_path && !a.preview_path && <Badge tone="amber">No preview</Badge>}
                   {a.project_url && <a href={a.project_url} target="_blank" rel="noopener noreferrer" className="text-xs underline">Editing project</a>}
                 </div>
@@ -413,7 +415,7 @@ export function AssetsTab({ data, reload }: TabProps) {
             <div className="flex h-48 items-center justify-center rounded bg-zinc-100 text-sm text-black" data-testid="viewer-placeholder">{NO_PREVIEW}</div>
           ) : viewing.asset.mime_type === "application/pdf" ? (
             <div className="h-[70vh] overflow-hidden rounded border border-zinc-200"><PdfViewer fileUrl={viewing.url} /></div>
-          ) : mediaKind(viewing.asset) === "mp4" ? (
+          ) : isVideoKind(mediaKind(viewing.asset)) ? (
             viewing.playFailed ? (
               <p className={warnBox} role="alert">{CANT_PLAY}</p>
             ) : (
@@ -611,7 +613,7 @@ export function AddAssetsDialog({ data, onClose, onDone, reload }: { data: Marke
         <div className={`${card} space-y-2`}>
           <p className="text-xs font-semibold">1. Files and links</p>
           <input type="file" multiple accept={UPLOAD_ACCEPT} aria-label="Files" onChange={(e) => { const files = e.target.files; void addFiles(files).then(() => { e.target.value = ""; }); }} className="text-sm" />
-          <p className="text-[11px]">PNG, JPG, WebP, PDF or HEIC up to 25 MB, GIF up to 50 MB, MP4 up to 200 MB. Files are private and open with short-lived links.</p>
+          <p className="text-[11px]">PNG, JPG, WebP, PDF or HEIC up to 25 MB, GIF up to 50 MB, MP4 or MOV up to 200 MB. Files are private and open with short-lived links.</p>
           <div className="flex flex-wrap items-end gap-2">
             <input aria-label="Paste a link" placeholder="https://" value={link} onChange={(e) => setLink(e.target.value)} className={`${input} w-72`} />
             <button type="button" className={btn} onClick={addLink}>Add link</button>
@@ -673,7 +675,7 @@ export function AddAssetsDialog({ data, onClose, onDone, reload }: { data: Marke
                     <td className="px-2 py-1">
                       <span data-testid="add-status">
                         {it.state === "waiting" && "Waiting"}
-                        {it.state === "converting" && (it.kind === "heic" || it.kind === "gif" || it.kind === "mp4" ? "Making preview…" : "Checking…")}
+                        {it.state === "converting" && (it.kind === "heic" || it.kind === "gif" || isVideoKind(it.kind) ? "Making preview…" : "Checking…")}
                         {it.state === "uploading" && `Uploading${it.progress !== undefined ? ` ${Math.round(it.progress * 100)}%` : "…"}`}
                         {it.state === "saving" && "Saving…"}
                         {it.state === "done" && <span className="text-emerald-800">{it.previewFailed ? "Saved (no preview)" : "Saved"}</span>}

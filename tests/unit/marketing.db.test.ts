@@ -86,7 +86,7 @@ beforeEach(async () => {
     alter table products add column if not exists deleted_at timestamptz;
     alter table products add column if not exists is_microgreen boolean default false;
   `);
-  for (const f of ["formulation.sql", "procurement_suppliers.sql", "retail_invoices.sql", "marketing_sales.sql", "ad_library.sql", "marketing_assets_media.sql"]) await pg.exec(migration(f));
+  for (const f of ["formulation.sql", "procurement_suppliers.sql", "retail_invoices.sql", "marketing_sales.sql", "ad_library.sql", "marketing_assets_media.sql", "marketing_assets_mov.sql"]) await pg.exec(migration(f));
   db = withStorage(pgliteSupabase(pg) as unknown as Db);
   fp = (await pg.query<{ id: string }>(`insert into formulation_products (name) values ('Product A') returning id`)).rows[0].id;
   await pg.query(`insert into formulation_products (name, deleted_at) values ('Product Gone', now())`);
@@ -105,7 +105,7 @@ describe("file signatures", () => {
 
 describe("assets", () => {
   it("uploads are checked on the server; links are stored as links", async () => {
-    await rejects(() => createAssetUploadUrl(db, { mime_type: "video/quicktime", size_bytes: 10 }), /Paste a link for other videos/);
+    await rejects(() => createAssetUploadUrl(db, { mime_type: "video/webm", size_bytes: 10 }), /Paste a link for other videos/);
     await rejects(() => createAssetUploadUrl(db, { mime_type: "image/png", size_bytes: 26 * 1024 * 1024 }), /25 MB/);
     const a = await upload(PNG, "image/png");
     expect(a).toMatchObject({ source: "upload", mime_type: "image/png", size_bytes: PNG.length, status: "draft", created_by_name: "Test Person" });

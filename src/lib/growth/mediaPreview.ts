@@ -6,7 +6,7 @@
  *    Safari can show HEIC. The converter (heic-to, LGPL-3.0) loads only when
  *    a HEIC is chosen.
  *  - GIF: the first frame as a JPG poster (long side at most 800 px).
- *  - MP4: a frame at 1 second (or the middle of a shorter clip) as a JPG
+ *  - MP4 and MOV: a frame at 1 second (or the middle of a shorter clip) as a JPG
  *    poster, plus the duration.
  * One conversion runs at a time to limit memory. A failed conversion returns
  * blob: null; the original is still uploaded and shows a placeholder.
@@ -117,6 +117,6 @@ async function videoPoster(file: Blob): Promise<MediaPreview> {
 export function makeMediaPreview(file: Blob, kind: FileKind): Promise<MediaPreview | null> {
   if (kind === "heic") return oneAtATime(() => heicPreview(file));
   if (kind === "gif") return oneAtATime(() => gifPoster(file));
-  if (kind === "mp4") return oneAtATime(() => videoPoster(file));
+  if (kind === "mp4" || kind === "mov") return oneAtATime(() => videoPoster(file));
   return Promise.resolve(null);
 }

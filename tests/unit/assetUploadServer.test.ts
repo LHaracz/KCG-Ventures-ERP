@@ -62,7 +62,8 @@ const fields = { title: "Clip A", category: "market", asset_type: "video" };
 describe("signed upload URLs", () => {
   it("rejects a type that isn't allowed and an oversize declared size", async () => {
     const db = fakeDb();
-    await rejects(() => createAssetUploadUrl(db, { mime_type: "video/quicktime", size_bytes: 10 }), /Only PNG, JPG, WebP, PDF, HEIC, GIF and MP4/);
+    await rejects(() => createAssetUploadUrl(db, { mime_type: "video/webm", size_bytes: 10 }), /Only PNG, JPG, WebP, PDF, HEIC, GIF, MP4 and MOV/);
+    await rejects(() => createAssetUploadUrl(db, { mime_type: "video/quicktime", size_bytes: 200 * MB + 1 }), /MOV files can be up to 200 MB/);
     await rejects(() => createAssetUploadUrl(db, { mime_type: "image/svg+xml", size_bytes: 10 }), /Only PNG/);
     await rejects(() => createAssetUploadUrl(db, { mime_type: "video/mp4", size_bytes: 200 * MB + 1 }), /MP4 files can be up to 200 MB/);
     await rejects(() => createAssetUploadUrl(db, { mime_type: "image/gif", size_bytes: 50 * MB + 1 }), /GIF files can be up to 50 MB/);
@@ -78,6 +79,17 @@ describe("signed upload URLs", () => {
 });
 
 describe("verification", () => {
+  it("saves a MOV with its poster", async () => {
+    const MOV = new Uint8Array([0, 0, 0, 0x14, ...enc("ftypqt  "), 0, 0, 0, 0, ...enc("qt  "), 0, 0, 0, 8, ...enc("wide")]);
+    const db = fakeDb();
+    const up = await createAssetUploadUrl(db, { mime_type: "video/quicktime", size_bytes: MOV.length, extra: "poster", extra_size_bytes: JPG.length });
+    expect(up.path).toMatch(/\.mov$/);
+    files.set(up.path, MOV);
+    files.set(up.extra!.path, JPG);
+    await finalizeUpload(db, { ...fields, path: up.path, mime_type: "video/quicktime", poster_path: up.extra!.path, duration_seconds: 3 }, null);
+    expect(inserted[0]).toMatchObject({ mime_type: "video/quicktime", poster_path: up.extra!.path, duration_seconds: 3 });
+  });
+
   it("saves an MP4 with its poster, size and duration", async () => {
     const db = fakeDb();
     const up = await createAssetUploadUrl(db, { mime_type: "video/mp4", size_bytes: MP4.length, extra: "poster", extra_size_bytes: JPG.length });
