@@ -25,8 +25,8 @@ import {
   type GrowthApiError,
   type MarketingData,
 } from "@/lib/growth/client";
-import { checkUploadFile, defaultAssetType, uploadAsset, type UploadStage } from "@/lib/growth/assetUpload";
-import { UPLOAD_ACCEPT, UPLOAD_MIME, type FileKind } from "@/lib/growth/fileKinds";
+import { checkUploadFile, defaultAssetType, makeMissingThumbnails, uploadAsset, type UploadStage } from "@/lib/growth/assetUpload";
+import { UPLOAD_ACCEPT, UPLOAD_MIME, needsThumbnail, type FileKind } from "@/lib/growth/fileKinds";
 import { applyNamePattern, assetNameError, hasDuplicateName, titleFromFileName } from "@/lib/growth/assetNames";
 import { categoryCounts, categoryDeleteBlocker, categoryLabel, categoryNameError, validateAssetCategory } from "@/lib/growth/assetCategories";
 import { Badge, Checkbox, Chip, ConfirmDialog, Dialog, ErrorSummary, Select, TextArea, TextField, btn, btnDanger, btnPrimary, card, errorBox, infoBox, input, warnBox } from "./GrowthUi";
@@ -61,6 +61,11 @@ export const mediaKind = (a: { source: string; mime_type: string | null }): "hei
 };
 /** MP4 or MOV: played in a video player, with a duration. */
 export const isVideoKind = (k: FileKind | null | undefined) => k === "mp4" || k === "mov";
+/** Assets per page on the Assets tab. */
+export const PAGE_SIZE = 20;
+const THUMB_STALE_MS = 50 * 60 * 1000;
+/** Cache key for a grid image: changes when the asset gets a new thumbnail. */
+const thumbKey = (a: { id: string; poster_path: string | null; preview_path: string | null; file_path: string | null }) => `${a.id}|${a.poster_path ?? a.preview_path ?? a.file_path ?? ""}`;
 /** True when the grid can show a picture: a poster or preview JPG, or a browser image. */
 const hasThumb = (a: { source: string; mime_type: string | null; preview_path: string | null; poster_path: string | null }) =>
   a.source === "upload" && (!!a.poster_path || !!a.preview_path || ["image/png", "image/jpeg", "image/webp", "image/gif"].includes(a.mime_type ?? ""));
@@ -218,15 +223,74 @@ export function AssetsTab({ data, reload }: TabProps) {
   const [bulk, setBulk] = useState<"category" | null>(null);
   const [tagsOpen, setTagsOpen] = useState(false);
   const [viewing, setViewing] = useState<{ asset: AssetX; url: string | null; poster?: string | null; playFailed?: boolean } | null>(null);
-  const [thumbs, setThumbs] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
   const [report, setReport] = useState<string | null>(null);
-  const imageIds = rows.filter(hasThumb).map((a) => a.id).slice(0, 100);
-  const key = imageIds.join(",");
+  // Pages of 20 (back to page 1 whenever a filter changes).
+  const sig = JSON.stringify(f);
+  const [pg, setPg] = useState({ n: 1, sig });
+  const pageCount = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
+  const page = Math.min(pg.sig === sig ? pg.n : 1, pageCount);
+  const pageRows = rows.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+  const gridTop = useRef<HTMLDivElement | null>(null);
+  const goTo = (n: number) => {
+    setPg({ n, sig });
+    gridTop.current?.scrollIntoView?.({ block: "start" });
+  };
+  // Thumbnail links: fetched only for the page on screen, kept while you
+  // browse (and re-fetched after about 50 minutes, before they expire), so the
+  // browser reuses images it already has instead of downloading them again.
+  const [thumbs, setThumbs] = useState<Record<string, string>>({});
+  const thumbCache = useRef<Record<string, { url: string; at: number }>>({});
+  const [thumbRetry, setThumbRetry] = useState(0);
+  const pageThumbKeys = pageRows.filter(hasThumb).map(thumbKey).join(",");
   useEffect(() => {
-    if (!key) return;
-    void signedAssetUrlsApi(key.split(","), false, "thumb").then((r) => setThumbs(r.urls)).catch(() => undefined);
-  }, [key]);
+    const want = pageThumbKeys ? pageThumbKeys.split(",") : [];
+    const now = Date.now();
+    const missing = want.filter((k) => {
+      const t = thumbCache.current[k];
+      return !t || now - t.at > THUMB_STALE_MS;
+    });
+    if (!missing.length) return;
+    let live = true;
+    void signedAssetUrlsApi(missing.map((k) => k.split("|")[0]), false, "thumb")
+      .then((r) => {
+        const at = Date.now();
+        const add: Record<string, string> = {};
+        for (const k of missing) {
+          const u = r.urls[k.split("|")[0]];
+          if (u) {
+            thumbCache.current[k] = { url: u, at };
+            add[k] = u;
+          }
+        }
+        if (live) setThumbs((s) => ({ ...s, ...add }));
+      })
+      .catch(() => undefined);
+    return () => {
+      live = false;
+    };
+  }, [pageThumbKeys, thumbRetry]);
+  const thumbFailed = (k: string) => {
+    delete thumbCache.current[k];
+    setThumbs((s) => {
+      const next = { ...s };
+      delete next[k];
+      return next;
+    });
+    setThumbRetry((n) => n + 1);
+  };
+  // Older photos without a small thumbnail.
+  const missingThumbs = data.assets.filter(needsThumbnail);
+  const [thumbJob, setThumbJob] = useState<{ done: number; total: number } | null>(null);
+  const makeThumbs = async () => {
+    setError(null);
+    setReport(null);
+    setThumbJob({ done: 0, total: missingThumbs.length });
+    const r = await makeMissingThumbnails(missingThumbs, (done, total) => setThumbJob({ done, total }));
+    setThumbJob(null);
+    setReport(`Made ${r.made} thumbnail${r.made === 1 ? "" : "s"}.${r.failed.length ? ` Couldn't make: ${r.failed.join(", ")}.` : ""}`);
+    await reload();
+  };
   const act = async (fn: () => Promise<unknown>) => {
     setError(null);
     try {
@@ -318,18 +382,40 @@ export function AssetsTab({ data, reload }: TabProps) {
           <button type="button" className={btn} onClick={() => setSelected([])}>Clear</button>
         </div>
       )}
+      {missingThumbs.length > 0 && (
+        <p className={infoBox} data-testid="make-thumbnails">
+          {thumbJob ? (
+            <>Making thumbnails {thumbJob.done} of {thumbJob.total}… Keep this tab open.</>
+          ) : (
+            <>
+              {missingThumbs.length} older photo{missingThumbs.length === 1 ? " has" : "s have"} no small thumbnail yet, so the grid loads the full-size file{missingThumbs.length === 1 ? "" : "s"}.{" "}
+              <button type="button" className="font-medium underline" onClick={() => void makeThumbs()}>Make thumbnails</button>
+            </>
+          )}
+        </p>
+      )}
+      <div ref={gridTop} />
       {rows.length === 0 ? (
         <p className="rounded-md border border-dashed border-zinc-300 p-6 text-center text-sm">No assets match.</p>
       ) : (
         <ul className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3" data-testid="assets-grid">
-          {rows.map((a) => (
+          {pageRows.map((a) => (
             <li key={a.id} className={`${card} space-y-2`} data-testid="asset-card">
               <div className="flex items-start gap-2">
                 <input type="checkbox" aria-label={`Select ${a.title}`} checked={selected.includes(a.id)} onChange={() => setSelected((s) => (s.includes(a.id) ? s.filter((x) => x !== a.id) : [...s, a.id]))} className="mt-1 h-5 w-5" />
                 <button type="button" onClick={() => open(a, false)} className="block w-full" aria-label={`Open ${a.title}`}>
-                  {thumbs[a.id] ? (
-                    // eslint-disable-next-line @next/next/no-img-element -- short-lived signed URL from private storage
-                    <img src={thumbs[a.id]} alt={a.title} className="h-36 w-full rounded object-cover" />
+                  {thumbs[thumbKey(a)] ? (
+                    // eslint-disable-next-line @next/next/no-img-element -- signed URL from private storage
+                    <img
+                      src={thumbs[thumbKey(a)]}
+                      alt={a.title}
+                      loading="lazy"
+                      decoding="async"
+                      width={400}
+                      height={288}
+                      onError={() => thumbFailed(thumbKey(a))}
+                      className="h-36 w-full rounded object-cover"
+                    />
                   ) : mediaKind(a) && !a.poster_path && !a.preview_path ? (
                     <div className="flex h-36 w-full flex-col items-center justify-center gap-1 rounded bg-zinc-100 p-2 text-center text-xs text-black" data-testid="asset-placeholder">
                       <span>{NO_PREVIEW}</span>
@@ -380,6 +466,15 @@ export function AssetsTab({ data, reload }: TabProps) {
             </li>
           ))}
         </ul>
+      )}
+      {rows.length > PAGE_SIZE && (
+        <nav className="flex flex-wrap items-center justify-center gap-2 text-sm text-black" aria-label="Asset pages" data-testid="asset-pages">
+          <button type="button" className={btn} onClick={() => goTo(page - 1)} disabled={page <= 1}>Previous</button>
+          <span>
+            {(page - 1) * PAGE_SIZE + 1}–{Math.min(page * PAGE_SIZE, rows.length)} of {rows.length} · Page {page} of {pageCount}
+          </span>
+          <button type="button" className={btn} onClick={() => goTo(page + 1)} disabled={page >= pageCount}>Next</button>
+        </nav>
       )}
       {adding && <AddAssetsDialog data={data} onClose={() => setAdding(false)} onDone={() => { setAdding(false); void reload(); }} reload={reload} />}
       {editing && <EditAssetDialog data={data} asset={editing} onClose={() => setEditing(null)} onSaved={() => { setEditing(null); void reload(); }} reload={reload} />}

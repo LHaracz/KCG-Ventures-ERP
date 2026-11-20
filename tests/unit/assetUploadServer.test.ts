@@ -70,7 +70,17 @@ describe("signed upload URLs", () => {
     await rejects(() => createAssetUploadUrl(db, { mime_type: "video/mp4", size_bytes: 200 * MB + 1 }), /MP4 files can be up to 200 MB/);
     await rejects(() => createAssetUploadUrl(db, { mime_type: "image/gif", size_bytes: 50 * MB + 1 }), /GIF files can be up to 50 MB/);
     await rejects(() => createAssetUploadUrl(db, { mime_type: "image/heic", size_bytes: 25 * MB + 1 }), /HEIC files can be up to 25 MB/);
-    await rejects(() => createAssetUploadUrl(db, { mime_type: "image/png", size_bytes: 10, extra: "poster", extra_size_bytes: 5 }), /no preview/);
+    await rejects(() => createAssetUploadUrl(db, { mime_type: "application/pdf", size_bytes: 10, extra: "poster", extra_size_bytes: 5 }), /no preview/);
+  });
+
+  it("photos may send a thumbnail; HEIC a preview and a thumbnail; PDFs nothing", async () => {
+    const png = await createAssetUploadUrl(fakeDb(), { mime_type: "image/png", size_bytes: 10, extras: [{ kind: "poster", size_bytes: 500 }] });
+    expect(png.extras.map((e) => e.path)).toEqual([`${png.path}.poster.jpg`]);
+    const heic = await createAssetUploadUrl(fakeDb(), { mime_type: "image/heic", size_bytes: 10, extras: [{ kind: "preview", size_bytes: 500 }, { kind: "poster", size_bytes: 50 }] });
+    expect(heic.extras.map((e) => e.kind)).toEqual(["preview", "poster"]);
+    await rejects(() => createAssetUploadUrl(fakeDb(), { mime_type: "image/png", size_bytes: 10, extras: [{ kind: "preview", size_bytes: 5 }] }), /no preview/);
+    await rejects(() => createAssetUploadUrl(fakeDb(), { mime_type: "application/pdf", size_bytes: 10, extras: [{ kind: "poster", size_bytes: 5 }] }), /no preview/);
+    await rejects(() => createAssetUploadUrl(fakeDb(), { mime_type: "image/png", size_bytes: 10, extras: [{ kind: "poster", size_bytes: 11 * MB }] }), /too large/);
   });
 
   it("issues one URL for the original and one for its poster", async () => {

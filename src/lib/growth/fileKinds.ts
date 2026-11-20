@@ -126,3 +126,9 @@ export function detectFileKind(input: { name: string; declaredType?: string | nu
 
 /** True for a JPEG (the preview and poster files). */
 export const isJpegBytes = (b: Uint8Array) => b.length >= 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff;
+
+/** Assets that can get a grid thumbnail now: uploaded photos (and HEIC with a JPG preview) with no poster yet. */
+export const needsThumbnail = (a: { source: string; mime_type: string | null; poster_path: string | null; preview_path: string | null }) =>
+  a.source === "upload" &&
+  !a.poster_path &&
+  (["image/png", "image/jpeg", "image/webp"].includes(a.mime_type ?? "") || (["image/heic", "image/heif"].includes(a.mime_type ?? "") && !!a.preview_path));

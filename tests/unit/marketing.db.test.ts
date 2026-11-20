@@ -20,6 +20,8 @@ import {
   saveRiskyWord,
   saveTemplate,
   sniffMime,
+  createThumbnailUploadUrl,
+  saveThumbnail,
   submitClaim,
   updateAsset,
   updateClaim,
@@ -190,5 +192,24 @@ describe("templates and the risky-word list", () => {
     const w = (await loadMarketing(db)).riskyWords.find((x) => x.phrase === "miracle worker")!;
     await saveRiskyWord(db, w.id, { archive: true });
     expect((await loadMarketing(db)).riskyWords.find((x) => x.id === w.id)!.archived_at).not.toBeNull();
+  });
+});
+
+describe("Make thumbnails (older photos)", () => {
+  it("saves a small JPG as the photo's poster, once, and rejects anything else", async () => {
+    const a = await upload(PNG, "image/png");
+    expect(a.poster_path).toBeNull();
+    const up = await createThumbnailUploadUrl(db, a.id);
+    expect(up.path).toBe(`${a.file_path}.poster.jpg`);
+    // Not a JPG: removed, nothing saved.
+    files.set(up.path, new TextEncoder().encode("<svg>"));
+    await rejects(() => saveThumbnail(db, a.id), /missing or not valid/);
+    expect(removed).toContain(up.path);
+    files.set(up.path, new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 1, 2]));
+    expect(await saveThumbnail(db, a.id)).toEqual({ poster_path: up.path });
+    expect((await pg.query<{ poster_path: string }>(`select poster_path from marketing_assets where id = $1`, [a.id])).rows[0].poster_path).toBe(up.path);
+    await rejects(() => createThumbnailUploadUrl(db, a.id), /doesn't need a thumbnail/);
+    const pdf = await upload(PDF, "application/pdf", "Flyer A");
+    await rejects(() => createThumbnailUploadUrl(db, pdf.id), /doesn't need a thumbnail/);
   });
 });

@@ -7,9 +7,9 @@
  * upload URLs (with progress), then let the server check and save it.
  */
 import { SUPABASE_URL } from "@/lib/supabaseConfig";
-import { GrowthApiError, assetUploadUrlApi, finalizeAssetApi } from "./client";
+import { GrowthApiError, assetUploadUrlApi, finalizeAssetApi, saveThumbnailApi, signedAssetUrlsApi, thumbnailUploadUrlApi } from "./client";
 import { SNIFF_BYTES, detectFileKind, sizeError, type DetectedFile, type FileKind } from "./fileKinds";
-import { makeMediaPreview } from "./mediaPreview";
+import { makeMediaPreview, makeThumbnailQueued } from "./mediaPreview";
 import type { Asset } from "./marketingService";
 
 export const TOO_LARGE_FOR_PLAN = "This file is over your storage plan's limit. Ask an admin to check Storage settings, or paste a link.";
@@ -38,12 +38,12 @@ export const defaultAssetType = (kind: FileKind) => (kind === "mp4" || kind === 
 
 /** PUT to a signed upload URL with progress. Replaceable in tests. */
 export const uploadTransport = {
-  put(url: string, body: Blob, contentType: string, onProgress?: (fraction: number) => void): Promise<void> {
+  put(url: string, body: Blob, contentType: string, onProgress?: (fraction: number) => void, upsert = false): Promise<void> {
     return new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest();
       xhr.open("PUT", url);
       xhr.setRequestHeader("content-type", contentType);
-      xhr.setRequestHeader("x-upsert", "false");
+      xhr.setRequestHeader("x-upsert", upsert ? "true" : "false");
       xhr.setRequestHeader("cache-control", "max-age=3600");
       xhr.upload.onprogress = (e) => {
         if (e.lengthComputable && onProgress) onProgress(e.loaded / e.total);
@@ -68,7 +68,8 @@ export type UploadOptions = { onStage?: (s: UploadStage) => void; onProgress?: (
 
 /**
  * Uploads one file as an asset with the given fields (title, category, tags…).
- * previewFailed is true when a HEIC, GIF, MP4 or MOV was saved without its preview.
+ * Photos also get a small thumbnail for the grid. previewFailed is true when
+ * a HEIC, GIF, MP4 or MOV was saved without its preview.
  */
 export async function uploadAsset(file: File, meta: Record<string, unknown>, opts: UploadOptions = {}): Promise<{ asset: Asset; previewFailed: boolean }> {
   const checked = await checkUploadFile(file);
@@ -76,21 +77,59 @@ export async function uploadAsset(file: File, meta: Record<string, unknown>, opt
   const { kind, mime } = checked.file;
   opts.onStage?.("converting");
   const media = await makeMediaPreview(file, kind);
-  const extra = media?.blob ? media.extra : undefined;
-  const urls = await assetUploadUrlApi({ mime_type: mime, size_bytes: file.size, extra, extra_size_bytes: media?.blob?.size });
+  const blobs: Array<{ kind: "preview" | "poster"; blob: Blob }> = [];
+  if (media?.preview) blobs.push({ kind: "preview", blob: media.preview });
+  if (media?.poster) blobs.push({ kind: "poster", blob: media.poster });
+  const urls = await assetUploadUrlApi({ mime_type: mime, size_bytes: file.size, extras: blobs.map((b) => ({ kind: b.kind, size_bytes: b.blob.size })) });
   opts.onStage?.("uploading");
   await uploadTransport.put(signedUploadUrl(urls), file, mime, opts.onProgress);
-  if (media?.blob && urls.extra) await uploadTransport.put(signedUploadUrl(urls.extra), media.blob, "image/jpeg");
+  for (const b of blobs) {
+    const u = urls.extras.find((x) => x.kind === b.kind);
+    if (u) await uploadTransport.put(signedUploadUrl(u), b.blob, "image/jpeg");
+  }
   opts.onStage?.("saving");
   const res = await finalizeAssetApi({
     ...meta,
     path: urls.path,
     mime_type: mime,
-    preview_path: urls.extra?.kind === "preview" ? urls.extra.path : null,
-    poster_path: urls.extra?.kind === "poster" ? urls.extra.path : null,
+    preview_path: urls.extras.find((x) => x.kind === "preview")?.path ?? null,
+    poster_path: urls.extras.find((x) => x.kind === "poster")?.path ?? null,
     width: media?.width ?? null,
     height: media?.height ?? null,
     duration_seconds: media?.duration_seconds ?? null,
   });
-  return { asset: res.asset, previewFailed: !!media && !media.blob };
+  return { asset: res.asset, previewFailed: !!media?.failed };
+}
+
+/**
+ * "Make thumbnails": for each photo uploaded before thumbnails existed, the
+ * browser downloads the photo (or a HEIC's JPG preview) once, makes a small
+ * JPG and saves it. One at a time; a failure skips that photo and goes on.
+ */
+export async function makeMissingThumbnails(
+  assets: ReadonlyArray<{ id: string; title: string; mime_type: string | null }>,
+  onProgress?: (done: number, total: number) => void,
+): Promise<{ made: number; failed: string[] }> {
+  const failed: string[] = [];
+  let made = 0;
+  for (let i = 0; i < assets.length; i++) {
+    const a = assets[i];
+    try {
+      const isHeic = a.mime_type === "image/heic" || a.mime_type === "image/heif";
+      const { urls } = await signedAssetUrlsApi([a.id], false, isHeic ? "preview" : "original");
+      if (!urls[a.id]) throw new Error("not found");
+      const res = await fetch(urls[a.id]);
+      if (!res.ok) throw new Error("download");
+      const thumb = await makeThumbnailQueued(await res.blob());
+      if (!thumb.blob) throw new Error("decode");
+      const up = await thumbnailUploadUrlApi(a.id);
+      await uploadTransport.put(signedUploadUrl(up), thumb.blob, "image/jpeg", undefined, true);
+      await saveThumbnailApi(a.id);
+      made++;
+    } catch {
+      failed.push(a.title);
+    }
+    onProgress?.(i + 1, assets.length);
+  }
+  return { made, failed };
 }

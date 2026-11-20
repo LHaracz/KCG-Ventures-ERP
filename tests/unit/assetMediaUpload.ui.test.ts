@@ -47,11 +47,11 @@ beforeEach(() => {
   root = createRoot(host);
   vi.clearAllMocks();
   put = vi.spyOn(uploadTransport, "put").mockResolvedValue(undefined);
-  api.assetUploadUrlApi.mockImplementation(async (body: { extra?: string }) => ({
+  api.assetUploadUrlApi.mockImplementation(async (body: { extras: Array<{ kind: string }> }) => ({
     path: PATH,
     token: "t",
     signedUrl: "https://storage.example.test/upload/original",
-    extra: body.extra ? { kind: body.extra, path: `${PATH}.${body.extra}.jpg`, token: "t2", signedUrl: "https://storage.example.test/upload/preview" } : null,
+    extras: body.extras.map((e) => ({ kind: e.kind, path: `${PATH}.${e.kind}.jpg`, token: "t2", signedUrl: `https://storage.example.test/upload/${e.kind}` })),
   }));
   api.finalizeAssetApi.mockImplementation(async (body: Record<string, unknown>) => ({ asset: { id: "a1", ...body } }));
 });
@@ -80,29 +80,31 @@ async function chooseMarketAndSave() {
 }
 
 describe("HEIC uploads", () => {
-  it("uploads the original (as image/heic, though the browser declared nothing) and the JPG preview", async () => {
-    converter.makeMediaPreview.mockResolvedValue({ extra: "preview", blob: new Blob([new Uint8Array([0xff, 0xd8, 0xff])], { type: "image/jpeg" }), width: 4032, height: 3024, duration_seconds: null });
+  it("uploads the original (as image/heic, though the browser declared nothing), the JPG preview and the small thumbnail", async () => {
+    const jpg = () => new Blob([new Uint8Array([0xff, 0xd8, 0xff])], { type: "image/jpeg" });
+    converter.makeMediaPreview.mockResolvedValue({ preview: jpg(), poster: jpg(), width: 4032, height: 3024, duration_seconds: null, failed: false });
     await render();
     await addFile(new File([HEIC], "IMG_0001.HEIC", { type: "" }));
     expect(host.querySelector('[data-testid="add-kind"]')?.textContent).toMatch(/^HEIC · /);
     await chooseMarketAndSave();
     expect(converter.makeMediaPreview).toHaveBeenCalledWith(expect.any(File), "heic");
-    expect(api.assetUploadUrlApi).toHaveBeenCalledWith(expect.objectContaining({ mime_type: "image/heic", extra: "preview" }));
-    expect(put).toHaveBeenCalledTimes(2);
-    expect(put.mock.calls[0][2]).toBe("image/heic");
-    expect(put.mock.calls[1][2]).toBe("image/jpeg");
-    expect(api.finalizeAssetApi).toHaveBeenCalledWith(expect.objectContaining({ title: "IMG_0001", mime_type: "image/heic", preview_path: `${PATH}.preview.jpg`, poster_path: null, width: 4032, height: 3024 }));
+    expect(api.assetUploadUrlApi).toHaveBeenCalledWith(expect.objectContaining({ mime_type: "image/heic", extras: [{ kind: "preview", size_bytes: 3 }, { kind: "poster", size_bytes: 3 }] }));
+    expect(put).toHaveBeenCalledTimes(3);
+    expect(put.mock.calls.map((c) => c[2])).toEqual(["image/heic", "image/jpeg", "image/jpeg"]);
+    expect(api.finalizeAssetApi).toHaveBeenCalledWith(
+      expect.objectContaining({ title: "IMG_0001", mime_type: "image/heic", preview_path: `${PATH}.preview.jpg`, poster_path: `${PATH}.poster.jpg`, width: 4032, height: 3024 }),
+    );
     expect(host.querySelector('[data-testid="add-status"]')?.textContent).toBe("Saved");
   });
 
   it("a failed conversion still saves the original, and the grid shows the placeholder", async () => {
-    converter.makeMediaPreview.mockResolvedValue({ extra: "preview", blob: null, width: null, height: null, duration_seconds: null });
+    converter.makeMediaPreview.mockResolvedValue({ preview: null, poster: null, width: null, height: null, duration_seconds: null, failed: true });
     await render();
     await addFile(new File([HEIC], "IMG_0002.heic", { type: "" }));
     await chooseMarketAndSave();
     expect(put).toHaveBeenCalledTimes(1);
-    expect(api.assetUploadUrlApi).toHaveBeenCalledWith(expect.objectContaining({ mime_type: "image/heic", extra: undefined }));
-    expect(api.finalizeAssetApi).toHaveBeenCalledWith(expect.objectContaining({ preview_path: null }));
+    expect(api.assetUploadUrlApi).toHaveBeenCalledWith(expect.objectContaining({ mime_type: "image/heic", extras: [] }));
+    expect(api.finalizeAssetApi).toHaveBeenCalledWith(expect.objectContaining({ preview_path: null, poster_path: null }));
     expect(host.querySelector('[data-testid="add-status"]')?.textContent).toBe("Saved (no preview)");
 
     const saved = { id: "a1", title: "IMG_0002", source: "upload", mime_type: "image/heic", file_path: PATH, preview_path: null, poster_path: null, status: "draft", asset_type: "photo", business: "botaniqals", category: "market", url: null, duration_seconds: null };
@@ -110,6 +112,20 @@ describe("HEIC uploads", () => {
     expect(host.querySelector('[data-testid="asset-placeholder"]')?.textContent).toContain(NO_PREVIEW);
     expect(host.textContent).toContain("No preview");
     expect(host.textContent).toContain("HEIC");
+  });
+});
+
+describe("photo thumbnails", () => {
+  it("a PNG upload also saves a small thumbnail JPG as its poster", async () => {
+    converter.makeMediaPreview.mockResolvedValue({ preview: null, poster: new Blob([new Uint8Array([0xff, 0xd8, 0xff])]), width: 4000, height: 3000, duration_seconds: null, failed: false });
+    await render();
+    const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13]);
+    await addFile(new File([PNG], "Photo A.png", { type: "image/png" }));
+    await chooseMarketAndSave();
+    expect(converter.makeMediaPreview).toHaveBeenCalledWith(expect.any(File), "image");
+    expect(put.mock.calls.map((c) => c[2])).toEqual(["image/png", "image/jpeg"]);
+    expect(api.finalizeAssetApi).toHaveBeenCalledWith(expect.objectContaining({ poster_path: `${PATH}.poster.jpg`, preview_path: null }));
+    expect(host.querySelector('[data-testid="add-status"]')?.textContent).toBe("Saved");
   });
 });
 

@@ -8,7 +8,7 @@
  * Nothing here reads formulas: label ingredients are typed by hand.
  */
 import { assetExtension, assetNameError, safeDownloadName } from "./assetNames";
-import { PREVIEW_MAX_BYTES, SNIFF_BYTES, UPLOAD_MIME, detectFileKind, isJpegBytes, sizeError, type FileKind } from "./fileKinds";
+import { PREVIEW_MAX_BYTES, SNIFF_BYTES, UPLOAD_MIME, detectFileKind, isJpegBytes, needsThumbnail, sizeError, type FileKind } from "./fileKinds";
 import { GrowthError, idOrThrow, isUuid } from "./errors";
 import { isIsoDate } from "./dates";
 import { claimsReadyCheck, isReadyStatus, scanText } from "./text";
@@ -20,6 +20,8 @@ export const MARKETING_BUCKET = "marketing-assets";
 export const MAX_ASSET_BYTES = 25 * 1024 * 1024;
 export const ASSET_MIME: Record<string, string> = { "image/png": "png", "image/jpeg": "jpg", "image/webp": "webp", "application/pdf": "pdf" };
 export const SIGNED_URL_SECONDS = 300;
+/** Grid thumbnails get longer-lived links so the browser can reuse them while you browse. */
+export const THUMB_URL_SECONDS = 3600;
 
 export type Business = "botaniqals" | "minileaf" | "brand";
 export type Claim = {
@@ -409,15 +411,39 @@ export async function createLinkAsset(db: Db, input: Record<string, unknown>, ac
   return data;
 }
 
-/** The extra JPG stored next to an original: a preview for HEIC, a poster for GIF, MP4 and MOV. */
-const EXTRA_FOR: Partial<Record<FileKind, "preview" | "poster">> = { heic: "preview", gif: "poster", mp4: "poster", mov: "poster" };
-const extraPath = (path: string, extra: "preview" | "poster") => `${path}.${extra}.jpg`;
+/**
+ * The extra JPGs stored next to an original: a preview for HEIC (the full
+ * JPG), and a poster for photos, HEIC, GIF, MP4 and MOV (the small grid
+ * image or still frame). PDFs have neither.
+ */
+type ExtraKind = "preview" | "poster";
+const EXTRAS_FOR: Record<FileKind, readonly ExtraKind[]> = { image: ["poster"], heic: ["preview", "poster"], gif: ["poster"], mp4: ["poster"], mov: ["poster"], pdf: [] };
+const extraPath = (path: string, extra: ExtraKind) => `${path}.${extra}.jpg`;
 const UPLOAD_TYPES_MSG = "Only PNG, JPG, WebP, PDF, HEIC, GIF, MP4 and MOV files can be uploaded. Paste a link for other videos.";
+
+type SignedUpload = { path: string; token: string; signedUrl: string | null };
+async function signUpload(db: Db, p: string, upsert = false): Promise<SignedUpload> {
+  const { data, error } = await db.storage.from(MARKETING_BUCKET).createSignedUploadUrl(p, upsert ? { upsert: true } : undefined);
+  if (error || !data) throw new GrowthError("Could not start the upload.", 500);
+  return { path: data.path ?? p, token: data.token as string, signedUrl: (data.signedUrl as string | undefined) ?? null };
+}
+
+/** The extras asked for: { extras: [{ kind, size_bytes }] } (or the older { extra, extra_size_bytes }). */
+function requestedExtras(input: Record<string, unknown>): Array<{ kind: string; size: number }> {
+  if (Array.isArray(input.extras)) {
+    return (input.extras as unknown[]).map((e) => {
+      const r = (e && typeof e === "object" ? e : {}) as Record<string, unknown>;
+      return { kind: String(r.kind ?? ""), size: Number(r.size_bytes) };
+    });
+  }
+  const one = txt(input, "extra");
+  return one ? [{ kind: one, size: Number(input.extra_size_bytes) }] : [];
+}
 
 /**
  * Step 1 of an upload: signed upload URLs for a new private path (the
- * original) and, when asked, its preview or poster JPG. The browser uploads
- * straight to storage. Input: { mime_type, size_bytes, extra?, extra_size_bytes? }.
+ * original) and the preview or poster JPGs asked for. The browser uploads
+ * straight to storage.
  */
 export async function createAssetUploadUrl(db: Db, input: Record<string, unknown>) {
   const mime = txt(input, "mime_type");
@@ -426,20 +452,46 @@ export async function createAssetUploadUrl(db: Db, input: Record<string, unknown
   if (!type) throw new GrowthError(UPLOAD_TYPES_MSG, 400);
   const tooBig = sizeError(type.kind, size);
   if (tooBig) throw new GrowthError(tooBig, 400);
-  const extra = txt(input, "extra");
-  if (extra && extra !== EXTRA_FOR[type.kind]) throw new GrowthError("This file type has no preview.", 400);
-  if (extra) {
-    const es = Number(input.extra_size_bytes);
-    if (!Number.isFinite(es) || es <= 0 || es > PREVIEW_MAX_BYTES) throw new GrowthError("The preview image is too large.", 400);
+  const wanted = requestedExtras(input);
+  const kinds = new Set<string>();
+  for (const e of wanted) {
+    if (!(EXTRAS_FOR[type.kind] as readonly string[]).includes(e.kind) || kinds.has(e.kind)) throw new GrowthError("This file type has no preview.", 400);
+    if (!Number.isFinite(e.size) || e.size <= 0 || e.size > PREVIEW_MAX_BYTES) throw new GrowthError("The preview image is too large.", 400);
+    kinds.add(e.kind);
   }
   const path = `assets/${new Date().toISOString().slice(0, 7)}/${crypto.randomUUID()}.${type.extension}`;
-  const sign = async (p: string) => {
-    const { data, error } = await db.storage.from(MARKETING_BUCKET).createSignedUploadUrl(p);
-    if (error || !data) throw new GrowthError("Could not start the upload.", 500);
-    return { path: data.path ?? p, token: data.token as string, signedUrl: (data.signedUrl as string | undefined) ?? null };
-  };
-  const original = await sign(path);
-  return { ...original, extra: extra ? { kind: extra as "preview" | "poster", ...(await sign(extraPath(path, extra as "preview" | "poster"))) } : null };
+  const original = await signUpload(db, path);
+  const extras: Array<SignedUpload & { kind: ExtraKind }> = [];
+  for (const k of kinds) extras.push({ kind: k as ExtraKind, ...(await signUpload(db, extraPath(path, k as ExtraKind))) });
+  return { ...original, extras, extra: extras[0] ?? null };
+}
+
+// --- Thumbnails for photos uploaded before thumbnails existed ("Make thumbnails") ---------------
+async function thumbnailTarget(db: Db, id: unknown) {
+  const aid = idOrThrow(id, "asset");
+  const { data: a } = await db.from("marketing_assets").select("id, source, file_path, mime_type, poster_path, preview_path").eq("id", aid).maybeSingle();
+  if (!a) throw new GrowthError("Unknown asset.", 404);
+  if (!needsThumbnail(a)) throw new GrowthError("This asset doesn't need a thumbnail.", 400);
+  return { id: aid, posterPath: extraPath(a.file_path as string, "poster") };
+}
+
+/** Step 1: a signed upload URL for the asset's thumbnail ("{file_path}.poster.jpg"; replaces a leftover from a failed try). */
+export async function createThumbnailUploadUrl(db: Db, id: unknown) {
+  const t = await thumbnailTarget(db, id);
+  return signUpload(db, t.posterPath, true);
+}
+
+/** Step 2: checks the uploaded thumbnail (a small JPG) and links it to the asset. Only poster_path changes. */
+export async function saveThumbnail(db: Db, id: unknown) {
+  const t = await thumbnailTarget(db, id);
+  const h = await readObjectHead(db, t.posterPath).catch(() => null);
+  if (!h || !isJpegBytes(h.head) || h.size <= 0 || h.size > PREVIEW_MAX_BYTES) {
+    await db.storage.from(MARKETING_BUCKET).remove([t.posterPath]);
+    throw new GrowthError("The thumbnail is missing or not valid. Try again.", 400);
+  }
+  const { error } = await db.from("marketing_assets").update({ poster_path: t.posterPath }).eq("id", t.id).is("poster_path", null);
+  if (error) fail(error, "Could not save the thumbnail.");
+  return { poster_path: t.posterPath };
 }
 
 /** File signatures: PNG, JPEG, WebP (RIFF....WEBP) and PDF. */
@@ -531,7 +583,8 @@ export async function finalizeUpload(db: Db, input: Record<string, unknown>, act
     throw new GrowthError(message, 400);
   };
   if (!type || !path.endsWith(`.${type.extension}`)) return reject("The file type doesn't match.");
-  if ((previewPath && (previewPath !== extraPath(path, "preview") || EXTRA_FOR[type.kind] !== "preview")) || (posterPath && (posterPath !== extraPath(path, "poster") || EXTRA_FOR[type.kind] !== "poster"))) {
+  const allowed = type ? EXTRAS_FOR[type.kind] : [];
+  if ((previewPath && (previewPath !== extraPath(path, "preview") || !allowed.includes("preview"))) || (posterPath && (posterPath !== extraPath(path, "poster") || !allowed.includes("poster")))) {
     return reject("The preview doesn't belong to this upload.");
   }
   const head = (p: string) => readObjectHead(db, p).catch((e: Error) => (e.message === "timeout" ? ("timeout" as const) : null));
@@ -624,7 +677,7 @@ export async function signedAssetUrls(db: Db, ids: unknown, opts: { download?: b
       variant === "thumb" ? (a.poster_path ?? a.preview_path ?? (browserImage ? a.file_path : null)) : variant === "preview" ? a.preview_path : a.file_path;
     if (!path) continue;
     const name = variant === "original" ? safeDownloadName(a.title, assetExtension(a.file_path, a.mime_type)) : safeDownloadName(a.title, "jpg");
-    const { data: s } = await db.storage.from(MARKETING_BUCKET).createSignedUrl(path, SIGNED_URL_SECONDS, opts.download ? { download: name } : undefined);
+    const { data: s } = await db.storage.from(MARKETING_BUCKET).createSignedUrl(path, variant === "thumb" ? THUMB_URL_SECONDS : SIGNED_URL_SECONDS, opts.download ? { download: name } : undefined);
     if (s?.signedUrl) out[a.id] = s.signedUrl;
   }
   return out;

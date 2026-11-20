@@ -128,7 +128,9 @@ export const reviewClaimApi = (id: string, body: Record<string, unknown>) => gro
 export const createLinkAssetApi = (body: Record<string, unknown>) => growthCall<{ asset: Asset }>(`${M}/assets`, body);
 type SignedUpload = { path: string; token: string; signedUrl: string | null };
 export const assetUploadUrlApi = (body: Record<string, unknown>) =>
-  growthCall<SignedUpload & { extra: (SignedUpload & { kind: "preview" | "poster" }) | null }>(`${M}/assets/upload-url`, body);
+  growthCall<SignedUpload & { extras: Array<SignedUpload & { kind: "preview" | "poster" }> }>(`${M}/assets/upload-url`, body);
+export const thumbnailUploadUrlApi = (assetId: string) => growthCall<SignedUpload>(`${M}/assets/${enc(assetId)}/thumbnail-url`, {});
+export const saveThumbnailApi = (assetId: string) => growthCall<{ poster_path: string }>(`${M}/assets/${enc(assetId)}/thumbnail`, {});
 export const finalizeAssetApi = (body: Record<string, unknown>) => growthCall<{ asset: Asset }>(`${M}/assets/finalize`, body);
 export const updateAssetApi = (id: string, body: Record<string, unknown>) => growthCall<{ asset: Asset }>(`${M}/assets/${enc(id)}`, body);
 /** variant: "original" (default), "thumb" (poster or preview JPG when there is one) or "preview" (a HEIC's JPG). */

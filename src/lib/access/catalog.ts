@@ -283,6 +283,8 @@ export const API_RULES: Record<string, Rule> = {
   "/api/growth/marketing/assets/finalize": F("growth.marketing"),
   "/api/growth/marketing/assets/signed-urls": F("growth.marketing"),
   "/api/growth/marketing/assets/[assetId]": F("growth.marketing"),
+  "/api/growth/marketing/assets/[assetId]/thumbnail-url": F("growth.marketing"),
+  "/api/growth/marketing/assets/[assetId]/thumbnail": F("growth.marketing"),
   "/api/growth/marketing/posts": F("growth.marketing"),
   "/api/growth/marketing/posts/[postId]": F("growth.marketing"),
   "/api/growth/marketing/templates": F("growth.marketing"),
