@@ -12,7 +12,7 @@ import { checkUploadFile, uploadAsset, type UploadStage } from "@/lib/growth/ass
 import { UPLOAD_ACCEPT, UPLOAD_MIME } from "@/lib/growth/fileKinds";
 import { mergeNeeds, type AssetNeed, type MergedNeed } from "@/lib/growth/adLibrary";
 import { productKeyForName } from "@/lib/growth/playbookParse";
-import { ASSET_CATEGORIES, CATEGORY_LABEL, categoryForProducts, suggestAssetsForNeed, validateAssetCategory } from "@/lib/growth/assetCategories";
+import { categoryForProducts, categoryLabel, suggestAssetsForNeed, validateAssetCategory } from "@/lib/growth/assetCategories";
 import type { PremadeRow } from "@/lib/growth/libraryService";
 import type { Asset } from "@/lib/growth/marketingService";
 import { Checkbox, Chip, Dialog, ErrorSummary, Select, TextField, btn, btnPrimary, card, errorBox, infoBox, input, warnBox } from "./GrowthUi";
@@ -204,7 +204,8 @@ export function AssetPicker({
           <input aria-label="Search assets" placeholder="Search" value={q} onChange={(e) => setQ(e.target.value)} className={`${input} w-48`} autoFocus />
           <select aria-label="Category" value={category} onChange={(e) => setCategory(e.target.value)} className={`${input} w-40`}>
             <option value="">All categories</option>
-            {[...ASSET_CATEGORIES, "uncategorized" as const].map((c) => <option key={c} value={c}>{CATEGORY_LABEL[c]}</option>)}
+            {data.assetCategories.map((c) => <option key={c.key} value={c.key}>{c.label}</option>)}
+            <option value="uncategorized">Uncategorized</option>
           </select>
           <select aria-label="Product" value={product} onChange={(e) => setProduct(e.target.value)} className={`${input} w-40`}>
             <option value="">Any product</option>
@@ -220,7 +221,7 @@ export function AssetPicker({
                 <span>
                   <span className="font-medium">{a.title}</span>
                   {a.source === "upload" && ["heic", "gif", "mp4", "mov"].includes(UPLOAD_MIME[a.mime_type ?? ""]?.kind ?? "") && <span className="ml-2 rounded bg-zinc-100 px-1 text-[11px]">{UPLOAD_MIME[a.mime_type ?? ""].kind.toUpperCase()}</span>}
-                  <span className="ml-2 text-[11px]">{a.category ? CATEGORY_LABEL[a.category] : "Uncategorized"} · {a.asset_type}{a.product_names.length ? ` · ${a.product_names.join(", ")}` : ""}</span>
+                  <span className="ml-2 text-[11px]">{categoryLabel(data.assetCategories, a.category)} · {a.asset_type}{a.product_names.length ? ` · ${a.product_names.join(", ")}` : ""}</span>
                 </span>
                 {a.status === "draft" && <Chip tone="amber">Draft</Chip>}
               </button>
@@ -250,7 +251,7 @@ function UploadAttachDialog({ data, item, need, alsoCount, onClose, onDone }: { 
   };
   const [v, setV] = useState({
     title: need.label,
-    category: categoryForProducts(productIds.length) ?? "",
+    category: categoryForProducts(productIds.length, data.assetCategories.map((c) => c.key)) ?? "",
     product_ids: productIds,
     asset_type: KIND_TYPE[need.kind] ?? "other",
     business: item.business,
@@ -262,7 +263,7 @@ function UploadAttachDialog({ data, item, need, alsoCount, onClose, onDone }: { 
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const save = async () => {
-    const errs: Record<string, string> = { ...validateAssetCategory({ category: v.category, productIds: v.product_ids, ingredientIds: [], contextLabel: v.context_label }) };
+    const errs: Record<string, string> = { ...validateAssetCategory({ category: v.category, productIds: v.product_ids, ingredientIds: [], contextLabel: v.context_label, known: data.assetCategories.map((c) => c.key) }) };
     const nameErr = assetNameError(v.title);
     if (nameErr) errs.title = nameErr;
     setErrors(errs);
@@ -306,7 +307,7 @@ function UploadAttachDialog({ data, item, need, alsoCount, onClose, onDone }: { 
           <TextField name="ua-url" label="Link" value={v.url} onChange={(x) => setV({ ...v, url: x })} placeholder="https://" hint="You can upload MP4 or MOV files up to 200 MB, or paste a link for bigger videos." error={errors.url} />
         )}
         <TextField name="ua-title" label="Name" value={v.title} onChange={(x) => setV({ ...v, title: x })} required error={errors.title} hint={hasDuplicateName(data.assets, v.title) ? "Another asset has this name" : undefined} />
-        <Select name="ua-category" label="Category" value={v.category} onChange={(x) => setV({ ...v, category: x })} options={[{ value: "", label: "Choose…" }, ...ASSET_CATEGORIES.map((c) => ({ value: c, label: CATEGORY_LABEL[c] }))]} error={errors.category} />
+        <Select name="ua-category" label="Category" value={v.category} onChange={(x) => setV({ ...v, category: x })} options={[{ value: "", label: "Choose…" }, ...data.assetCategories.map((c) => ({ value: c.key, label: c.label }))]} error={errors.category} />
         <fieldset>
           <legend className="mb-1 text-xs font-medium">Products</legend>
           {errors.products && <p className={errorBox}>{errors.products}</p>}

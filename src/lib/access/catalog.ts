@@ -304,6 +304,8 @@ export const API_RULES: Record<string, Rule> = {
   "/api/growth/marketing/posts/[postId]/sync": F("growth.marketing"),
   "/api/growth/marketing/assets/bulk": F("growth.marketing"),
   "/api/growth/marketing/ingredient-tags": F("growth.marketing"),
+  "/api/growth/marketing/asset-categories": F("growth.marketing"),
+  "/api/growth/marketing/asset-categories/[key]/delete": F("growth.marketing"),
   "/api/growth/marketing/ingredient-tags/[tagId]": F("growth.marketing"),
   "/api/growth/marketing/windows/[windowId]": F("growth.marketing"),
   "/api/growth/marketing/rhythm": F("growth.marketing"),

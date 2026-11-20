@@ -24,6 +24,8 @@ function fakeDb() {
       return { select: () => ({ single: async () => ({ data: { id: "00000000-0000-4000-8000-000000000001", ...row }, error: null }) }) };
     },
     select: () => table,
+    // Awaiting a plain select (the asset category keys) resolves like Supabase.
+    then: (resolve: (v: { data: Array<{ key: string }>; error: null }) => void) => resolve({ data: [{ key: "market" }, { key: "other" }], error: null }),
     delete: () => table,
     eq: async () => ({ data: [], error: null }),
     in: async () => ({ data: [], error: null }),

@@ -12,7 +12,7 @@ import { PREVIEW_MAX_BYTES, SNIFF_BYTES, UPLOAD_MIME, detectFileKind, isJpegByte
 import { GrowthError, idOrThrow, isUuid } from "./errors";
 import { isIsoDate } from "./dates";
 import { claimsReadyCheck, isReadyStatus, scanText } from "./text";
-import { validateAssetCategory } from "./assetCategories";
+import { sortCategories, validateAssetCategory, type AssetCategoryRow } from "./assetCategories";
 import { listAssignableEmployees } from "./employees";
 import type { Db } from "./routeHelpers";
 
@@ -149,7 +149,7 @@ export async function activeRiskyWords(db: Db): Promise<string[]> {
 }
 
 export async function loadMarketing(db: Db) {
-  const [fp, pr, cl, ev, as, po, pa, pc, tp, rw] = await Promise.all([
+  const [fp, pr, cl, ev, as, po, pa, pc, tp, rw, ac] = await Promise.all([
     db.from("formulation_products").select("id, name, status, deleted_at"),
     db.from("marketing_product_profiles").select(PROFILE_COLUMNS),
     db.from("claims").select(CLAIM_COLUMNS),
@@ -160,8 +160,9 @@ export async function loadMarketing(db: Db) {
     db.from("content_post_claims").select("post_id, claim_id"),
     db.from("caption_templates").select("id, name, platform, body, archived_at"),
     db.from("risky_words").select("id, phrase, note, archived_at"),
+    db.from("asset_categories").select("key, label, sort_order, is_builtin"),
   ]);
-  for (const r of [fp, pr, cl, ev, as, po, pa, pc, tp, rw]) if (r.error) fail(r.error, "Could not load the Marketing Hub.");
+  for (const r of [fp, pr, cl, ev, as, po, pa, pc, tp, rw, ac]) if (r.error) fail(r.error, "Could not load the Marketing Hub.");
   const links = (rows: Array<{ post_id: string }>, key: "asset_id" | "claim_id", id: string) =>
     (rows as Array<Record<string, string>>).filter((r) => r.post_id === id).map((r) => r[key]);
   return {
@@ -183,6 +184,7 @@ export async function loadMarketing(db: Db) {
     })),
     templates: ((tp.data ?? []) as Template[]).sort((a, b) => a.name.localeCompare(b.name)),
     riskyWords: ((rw.data ?? []) as RiskyWord[]).sort((a, b) => a.phrase.localeCompare(b.phrase)),
+    assetCategories: sortCategories((ac.data ?? []) as AssetCategoryRow[]),
     employees: await listAssignableEmployees(db),
   };
 }
@@ -348,9 +350,10 @@ async function assetFields(db: Db, raw: Record<string, unknown>, opts: { isNew: 
   const category = txt(raw, "category") || null;
   const context_label = textField(raw, "context_label", 200, "Label", errors);
   const is_full_lineup = raw.is_full_lineup === true;
+  const known = category ? await categoryKeys(db) : [];
   Object.assign(
     errors,
-    validateAssetCategory({ category, productIds: tags.productIds, ingredientIds: tags.ingredientIds, isFullLineup: is_full_lineup, contextLabel: context_label, requireCategory: opts.isNew || !!opts.currentCategory }),
+    validateAssetCategory({ category, productIds: tags.productIds, ingredientIds: tags.ingredientIds, isFullLineup: is_full_lineup, contextLabel: context_label, requireCategory: opts.isNew || !!opts.currentCategory, known }),
   );
   check(errors);
   return {
@@ -358,6 +361,13 @@ async function assetFields(db: Db, raw: Record<string, unknown>, opts: { isNew: 
     productIds: tags.productIds,
     ingredientIds: tags.ingredientIds,
   };
+}
+
+/** The asset category keys that exist now (asset_categories). */
+export async function categoryKeys(db: Db): Promise<string[]> {
+  const { data, error } = await db.from("asset_categories").select("key");
+  if (error) fail(error, "Could not load the asset categories.");
+  return ((data ?? []) as Array<{ key: string }>).map((c) => c.key);
 }
 
 /** Product and ingredient tag ids from the request, checked against the database. */

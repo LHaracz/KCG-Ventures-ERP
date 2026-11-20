@@ -11,6 +11,7 @@ import type { Lead, LeadActivity, LeadListRow, Trip, TripStop } from "./prospect
 import type { Asset, Claim, ClaimEvent, Post, Profile, RiskyWord, Template } from "./marketingService";
 import type { AvoidPhrase, ClosingLine, IngredientTag, Pillar, PremadeRow, RhythmDb, Series, WindowRowDb } from "./libraryService";
 import type { ReletterPlan } from "./adLibrary";
+import type { AssetCategoryRow } from "./assetCategories";
 
 export class GrowthApiError extends Error {
   constructor(
@@ -113,6 +114,7 @@ export type MarketingData = {
   rhythm: RhythmDb[];
   referenceNotes: Record<string, string | null>;
   ingredientTags: IngredientTag[];
+  assetCategories: AssetCategoryRow[];
   assetProductLinks: Array<{ asset_id: string; formulation_product_id: string }>;
   assetIngredientLinks: Array<{ asset_id: string; ingredient_tag_id: string }>;
 };
@@ -136,6 +138,9 @@ export const savePostApi = (id: string | null, body: Record<string, unknown>) =>
 export const archivePostApi = (id: string, archive: boolean) => growthCall(`${M}/posts/${enc(id)}`, archive ? { archive: true } : { restore: true });
 export const saveTemplateApi = (id: string | null, body: Record<string, unknown>) => growthCall(id ? `${M}/templates/${enc(id)}` : `${M}/templates`, body);
 export const saveRiskyWordApi = (id: string | null, body: Record<string, unknown>) => growthCall(id ? `${M}/risky-words/${enc(id)}` : `${M}/risky-words`, body);
+
+export const createAssetCategoryApi = (label: string) => growthCall<{ category: AssetCategoryRow }>(`${M}/asset-categories`, { label });
+export const deleteAssetCategoryApi = (key: string) => growthCall<{ deleted: string }>(`${M}/asset-categories/${enc(key)}/delete`, {});
 
 // Uploads: see assetUpload.ts (checks, previews, progress).
 

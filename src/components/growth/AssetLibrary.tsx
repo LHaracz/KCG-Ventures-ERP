@@ -13,7 +13,9 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import {
   assetBulkApi,
+  createAssetCategoryApi,
   createLinkAssetApi,
+  deleteAssetCategoryApi,
   rawMaterialNamesApi,
   saveIngredientTagApi,
   saveProfileApi,
@@ -26,8 +28,8 @@ import {
 import { checkUploadFile, defaultAssetType, uploadAsset, type UploadStage } from "@/lib/growth/assetUpload";
 import { UPLOAD_ACCEPT, UPLOAD_MIME, type FileKind } from "@/lib/growth/fileKinds";
 import { applyNamePattern, assetNameError, hasDuplicateName, titleFromFileName } from "@/lib/growth/assetNames";
-import { ASSET_CATEGORIES, CATEGORY_LABEL, categoryCounts, validateAssetCategory, type AssetCategory } from "@/lib/growth/assetCategories";
-import { Badge, Checkbox, Chip, ConfirmDialog, Dialog, ErrorSummary, Select, TextArea, TextField, btn, btnPrimary, card, errorBox, infoBox, input, warnBox } from "./GrowthUi";
+import { categoryCounts, categoryDeleteBlocker, categoryLabel, categoryNameError, validateAssetCategory } from "@/lib/growth/assetCategories";
+import { Badge, Checkbox, Chip, ConfirmDialog, Dialog, ErrorSummary, Select, TextArea, TextField, btn, btnDanger, btnPrimary, card, errorBox, infoBox, input, warnBox } from "./GrowthUi";
 import { assetsWithProducts, type AssetX } from "./LibraryNeeds";
 import { useUrlParams } from "./useUrlParams";
 
@@ -78,7 +80,7 @@ const isImage = (a: { source: string; mime_type: string | null }) => a.source ==
 
 /** "Product · Gum Product A" style line: category and tags. */
 export function tagLine(data: MarketingData, a: AssetX): string {
-  const cat = a.category ? CATEGORY_LABEL[a.category as AssetCategory] : "Uncategorized";
+  const cat = categoryLabel(data.assetCategories, a.category);
   const tags = data.ingredientTags.filter((t) => a.ingredient_ids.includes(t.id)).map((t) => t.name);
   return [cat, a.is_full_lineup ? "Full lineup" : null, ...a.product_names.filter(Boolean), ...tags, a.context_label].filter(Boolean).join(" · ");
 }
@@ -99,11 +101,12 @@ export function CategoryFields({ data, value, onChange, errors, onNewTag }: { da
       <fieldset>
         <legend className="mb-1 text-xs font-medium">Category</legend>
         <div className="flex flex-wrap gap-2">
-          {ASSET_CATEGORIES.map((k) => (
+          {data.assetCategories.map(({ key: k, label: l }) => (
             <label key={k} className={`flex items-center gap-2 rounded-md border px-3 text-sm ${touch} ${c === k ? "border-emerald-500 bg-emerald-50" : "border-zinc-300"}`}>
-              <input type="radio" name="asset-category" checked={c === k} onChange={() => onChange({ ...value, category: k })} /> {CATEGORY_LABEL[k]}
+              <input type="radio" name="asset-category" checked={c === k} onChange={() => onChange({ ...value, category: k })} /> {l}
             </label>
           ))}
+          {data.assetCategories.length === 0 && <p className="text-xs">No categories yet. Add one with Manage categories.</p>}
         </div>
         {errors.category && <p className="mt-1 text-xs text-red-700">{errors.category}</p>}
       </fieldset>
@@ -169,8 +172,16 @@ export function CategoryFields({ data, value, onChange, errors, onNewTag }: { da
   );
 }
 
-const clientErrors = (v: CategoryValue, requireCategory = true) =>
-  validateAssetCategory({ category: v.category, productIds: v.product_ids, ingredientIds: v.ingredient_ids, isFullLineup: v.is_full_lineup, contextLabel: v.context_label, requireCategory });
+const clientErrors = (data: MarketingData, v: CategoryValue, requireCategory = true) =>
+  validateAssetCategory({
+    category: v.category,
+    productIds: v.product_ids,
+    ingredientIds: v.ingredient_ids,
+    isFullLineup: v.is_full_lineup,
+    contextLabel: v.context_label,
+    requireCategory,
+    known: data.assetCategories.map((c) => c.key),
+  });
 
 // --- The tab ----------------------------------------------------------------------------------------
 export function AssetsTab({ data, reload }: TabProps) {
@@ -187,7 +198,8 @@ export function AssetsTab({ data, reload }: TabProps) {
   };
   const all = useMemo(() => assetsWithProducts(data), [data]);
   const visibleByStatus = all.filter((a) => (f.status === "active" ? a.status !== "archived" : f.status === "all" || a.status === f.status));
-  const counts = categoryCounts(visibleByStatus);
+  const counts = categoryCounts(visibleByStatus, data.assetCategories.map((c) => c.key));
+  const [managing, setManaging] = useState(false);
   const rows = visibleByStatus.filter((a) => {
     if (f.cat === "uncategorized" ? !!a.category : f.cat && a.category !== f.cat) return false;
     if (f.product && !a.product_ids.includes(f.product)) return false;
@@ -273,8 +285,9 @@ export function AssetsTab({ data, reload }: TabProps) {
       {report && <p className={warnBox}>{report}</p>}
       <div className="flex flex-wrap gap-2" data-testid="category-chips">
         {chip("", "All", counts.all)}
-        {ASSET_CATEGORIES.map((c) => chip(c, CATEGORY_LABEL[c], counts[c]))}
+        {data.assetCategories.map((c) => chip(c.key, c.label, counts[c.key] ?? 0))}
         {chip("uncategorized", "Uncategorized", counts.uncategorized)}
+        <button type="button" className={`${btn} ${touch}`} onClick={() => setManaging(true)} data-testid="manage-categories">Manage categories</button>
       </div>
       {counts.uncategorized > 0 && f.cat !== "uncategorized" && (
         <p className={infoBox}>
@@ -382,6 +395,16 @@ export function AssetsTab({ data, reload }: TabProps) {
             void reload();
           }}
           reload={reload}
+        />
+      )}
+      {managing && (
+        <ManageCategoriesDialog
+          data={data}
+          reload={reload}
+          onClose={() => setManaging(false)}
+          onDeleted={(key) => {
+            if (f.cat === key) url.set({ as_cat: null });
+          }}
         />
       )}
       {tagsOpen && <IngredientTagsDialog data={data} reload={reload} onClose={() => setTagsOpen(false)} />}
@@ -581,7 +604,7 @@ export function AddAssetsDialog({ data, onClose, onDone, reload }: { data: Marke
   };
   /** Checks the shared fields and names, then saves: up to three uploads at a time (previews are made one at a time). */
   const saveAll = async (only?: Pending) => {
-    const errs = clientErrors(cat);
+    const errs = clientErrors(data, cat);
     const nErrs: Record<string, string> = {};
     const todo = only ? [only] : open;
     for (const it of todo) {
@@ -720,7 +743,7 @@ function EditAssetDialog({ data, asset, onClose, onSaved, reload }: { data: Mark
   const [message, setMessage] = useState<string | null>(null);
   const set = (k: keyof typeof v) => (x: string) => setV((s) => ({ ...s, [k]: x }));
   const save = async () => {
-    const errs = clientErrors(cat, !!asset.category || !!cat.category);
+    const errs = clientErrors(data, cat, !!asset.category || !!cat.category);
     const nameErr = assetNameError(v.title);
     if (nameErr) errs.title = nameErr;
     setErrors(errs);
@@ -913,5 +936,106 @@ function RawMaterialsDialog({ data, onClose, onDone }: { data: MarketingData; on
         </ul>
       )}
     </ConfirmDialog>
+  );
+}
+
+// --- Asset categories --------------------------------------------------------------------------
+/**
+ * Add categories, and delete one once no asset uses it (archived assets
+ * count). The six built-ins can be deleted too when empty; their rules
+ * (for example Product needing one product) go with them.
+ */
+export function ManageCategoriesDialog({ data, reload, onClose, onDeleted }: { data: MarketingData; reload: () => Promise<void>; onClose: () => void; onDeleted?: (key: string) => void }) {
+  const [name, setName] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [confirm, setConfirm] = useState<{ key: string; label: string } | null>(null);
+  const add = async () => {
+    const err = categoryNameError(name, data.assetCategories);
+    if (err) return setError(err);
+    setBusy(true);
+    setError(null);
+    setMessage(null);
+    try {
+      const r = await createAssetCategoryApi(name.trim().replace(/\s+/g, " "));
+      setName("");
+      setMessage(`Added ${r.category.label}.`);
+      await reload();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const remove = async (key: string) => {
+    setBusy(true);
+    setError(null);
+    setMessage(null);
+    try {
+      const r = await deleteAssetCategoryApi(key);
+      setConfirm(null);
+      setMessage(`Deleted ${r.deleted}.`);
+      onDeleted?.(key);
+      await reload();
+    } catch (e) {
+      setError((e as Error).message);
+      setConfirm(null);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <Dialog title="Asset categories" onClose={onClose} wide>
+      <div className="space-y-3 text-sm text-black" data-testid="manage-categories-dialog">
+        {error && <p className={errorBox} role="alert">{error}</p>}
+        {message && <p className={infoBox} role="status">{message}</p>}
+        <div className="flex flex-wrap items-end gap-2">
+          <label className="text-xs">
+            New category
+            <input
+              aria-label="New category name"
+              placeholder="Production"
+              value={name}
+              maxLength={80}
+              onChange={(e) => { setName(e.target.value); setError(null); }}
+              onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void add(); } }}
+              className={`${input} ml-2 w-56`}
+            />
+          </label>
+          <button type="button" className={btnPrimary} onClick={() => void add()} disabled={busy || !name.trim()}>Add category</button>
+        </div>
+        <p className="text-[11px]">A category can be deleted once no asset is in it, archived assets included. Move assets with Edit or &quot;Set category and tags&quot; first.</p>
+        <table className="min-w-full text-left text-xs">
+          <thead className="bg-zinc-50"><tr><th className="px-2 py-1 font-semibold">Category</th><th className="px-2 py-1 font-semibold">Assets</th><th className="px-2 py-1 font-semibold" /></tr></thead>
+          <tbody>
+            {data.assetCategories.map((c) => {
+              const inUse = data.assets.filter((a) => a.category === c.key);
+              const archived = inUse.filter((a) => a.status === "archived").length;
+              const blocker = categoryDeleteBlocker(c.key, data.assets);
+              return (
+                <tr key={c.key} className="border-t border-zinc-100 align-top" data-testid="category-row">
+                  <td className="px-2 py-1 font-medium">{c.label}</td>
+                  <td className="px-2 py-1">{inUse.length}{archived ? ` (${archived} archived)` : ""}</td>
+                  <td className="px-2 py-1 text-right">
+                    {confirm?.key === c.key ? (
+                      <span className="inline-flex items-center gap-1">
+                        Delete {c.label}?
+                        <button type="button" className={btn} onClick={() => setConfirm(null)} disabled={busy}>Keep</button>
+                        <button type="button" className={btnDanger} onClick={() => void remove(c.key)} disabled={busy}>Delete</button>
+                      </span>
+                    ) : (
+                      <button type="button" className={btn} onClick={() => setConfirm(c)} disabled={busy || !!blocker} title={blocker ?? `Delete ${c.label}`} aria-label={`Delete ${c.label}`}>Delete</button>
+                    )}
+                    {blocker && <p className="mt-1 text-[11px]">{blocker}</p>}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+        <div className="flex justify-end"><button type="button" className={btn} onClick={onClose}>Done</button></div>
+      </div>
+    </Dialog>
   );
 }

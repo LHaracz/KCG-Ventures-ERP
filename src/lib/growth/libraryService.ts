@@ -24,8 +24,8 @@ import {
   type ScriptBeat,
 } from "./adLibrary";
 import { parseDuration } from "./playbookParse";
-import { validateAssetCategory } from "./assetCategories";
-import { assetTagsFrom, setAssetTags } from "./marketingService";
+import { categoryDeleteBlocker, categoryNameError, validateAssetCategory } from "./assetCategories";
+import { assetTagsFrom, categoryKeys, setAssetTags } from "./marketingService";
 import { todayNy } from "./dates";
 import { calendarEntriesFromPremade } from "./scheduling";
 import type { Db } from "./routeHelpers";
@@ -786,6 +786,7 @@ export async function assetBulk(db: Db, input: Record<string, unknown>) {
   const category = txt(input, "category");
   const replaceTags = Array.isArray(input.product_ids) || Array.isArray(input.ingredient_ids);
   const tags = await assetTagsFrom(db, input);
+  const known = await categoryKeys(db);
   const [{ data: pl }, { data: il }] = await Promise.all([
     db.from("asset_product_links").select("asset_id, formulation_product_id").in("asset_id", ids),
     db.from("asset_ingredient_links").select("asset_id, ingredient_tag_id").in("asset_id", ids),
@@ -796,7 +797,7 @@ export async function assetBulk(db: Db, input: Record<string, unknown>) {
     const ingredientIds = replaceTags ? tags.ingredientIds : ((il ?? []) as Array<{ asset_id: string; ingredient_tag_id: string }>).filter((l) => l.asset_id === a.id).map((l) => l.ingredient_tag_id);
     const isFullLineup = input.is_full_lineup === undefined ? !!a.is_full_lineup : input.is_full_lineup === true;
     const contextLabel = input.context_label === undefined ? a.context_label : txt(input, "context_label") || null;
-    const errs = validateAssetCategory({ category, productIds, ingredientIds, isFullLineup, contextLabel });
+    const errs = validateAssetCategory({ category, productIds, ingredientIds, isFullLineup, contextLabel, known });
     if (Object.keys(errs).length) {
       failed.push({ id: a.id, title: a.title, error: Object.values(errs).join(" ") });
       continue;
@@ -807,6 +808,47 @@ export async function assetBulk(db: Db, input: Record<string, unknown>) {
     updated += 1;
   }
   return { updated, failed };
+}
+
+// --- Asset categories --------------------------------------------------------------------------
+/**
+ * Adds an asset category (anyone with the Marketing feature). Added
+ * categories have no rules; they go before "Other" in the list.
+ */
+export async function createAssetCategory(db: Db, input: Record<string, unknown>, actor: string | null) {
+  const label = txt(input, "label").replace(/\s+/g, " ");
+  const { data: rows, error: lErr } = await db.from("asset_categories").select("key, label, sort_order");
+  if (lErr) fail(lErr, "Could not load the asset categories.");
+  const existing = (rows ?? []) as Array<{ key: string; label: string; sort_order: number }>;
+  const err = categoryNameError(label, existing);
+  if (err) throw new GrowthError(err, err.startsWith("A category") ? 409 : 400, { label: err });
+  const before = existing.filter((c) => c.sort_order < 1000).map((c) => c.sort_order);
+  const sort_order = Math.min(999, (before.length ? Math.max(...before) : 0) + 10);
+  const key = `c_${crypto.randomUUID().replace(/-/g, "").slice(0, 12)}`;
+  const { data, error } = await db.from("asset_categories").insert({ key, label, sort_order, is_builtin: false, created_by_name: actor }).select("key, label, sort_order, is_builtin").single();
+  if (error) {
+    if (/asset_categories_label_unique|duplicate key/.test(error.message ?? "")) throw new GrowthError("A category with this name already exists.", 409, { label: "A category with this name already exists." });
+    fail(error, "Could not add the category.");
+  }
+  return { category: data };
+}
+
+/** Deletes a category, but only while no asset uses it (archived ones count too). The database enforces this as well. */
+export async function deleteAssetCategory(db: Db, key: unknown) {
+  const k = typeof key === "string" ? key : "";
+  if (!/^[a-z0-9_]{1,40}$/.test(k)) throw new GrowthError("Unknown category.", 404);
+  const { data: cat } = await db.from("asset_categories").select("key, label").eq("key", k).maybeSingle();
+  if (!cat) throw new GrowthError("This category was already deleted.", 404);
+  const { data: used, error: uErr } = await db.from("marketing_assets").select("id, status").eq("category", k);
+  if (uErr) fail(uErr, "Could not check the category.");
+  const blocker = categoryDeleteBlocker(k, ((used ?? []) as Array<{ status: string }>).map((a) => ({ category: k, status: a.status })));
+  if (blocker) throw new GrowthError(blocker, 409);
+  const { error } = await db.from("asset_categories").delete().eq("key", k);
+  if (error) {
+    if (/marketing_assets_category_fk|foreign key/.test(error.message ?? "")) throw new GrowthError("Assets were just added to this category. Move them to another category first.", 409);
+    fail(error, "Could not delete the category.");
+  }
+  return { deleted: cat.label as string };
 }
 
 export async function saveIngredientTag(db: Db, id: unknown | null, input: Record<string, unknown>, actor: string | null) {

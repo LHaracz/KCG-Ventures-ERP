@@ -36,7 +36,7 @@ const enc = (s: string) => [...s].map((c) => c.charCodeAt(0));
 const HEIC = new Uint8Array([0, 0, 0, 0x18, ...enc("ftypheic"), 0, 0, 0, 0, ...enc("mif1heic"), 1, 2, 3, 4]);
 const MP4 = new Uint8Array([0, 0, 0, 0x18, ...enc("ftypmp42"), 0, 0, 0, 0, ...enc("isommp42"), 1, 2, 3, 4]);
 const PATH = "assets/2026-11/00000000-0000-4000-8000-0000000000aa.heic";
-const data = (assets: unknown[] = []) => ({ products: [], ingredientTags: [], profiles: [], assetProductLinks: [], assetIngredientLinks: [], assets }) as unknown as MarketingData;
+const data = (assets: unknown[] = []) => ({ products: [], ingredientTags: [], profiles: [], assetProductLinks: [], assetIngredientLinks: [], assetCategories: [{ key: "product", label: "Product", sort_order: 10, is_builtin: true }, { key: "group_product", label: "Group product", sort_order: 20, is_builtin: true }, { key: "ingredient", label: "Ingredient", sort_order: 30, is_builtin: true }, { key: "market", label: "Markets", sort_order: 40, is_builtin: true }, { key: "retail", label: "Retail", sort_order: 50, is_builtin: true }, { key: "other", label: "Other", sort_order: 1000, is_builtin: true }], assets }) as unknown as MarketingData;
 
 let host: HTMLDivElement;
 let root: Root;
