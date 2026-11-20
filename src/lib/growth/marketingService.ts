@@ -442,40 +442,57 @@ export function sniffMime(bytes: Uint8Array): string | null {
   return null;
 }
 
+/** How long the server waits for storage when checking an upload. */
+export const HEAD_TIMEOUT_MS = 10_000;
+
 /**
  * The first bytes and total size of a stored object, read with a ranged
  * request on a short-lived signed URL (the file itself is never downloaded
- * whole). Null when the object doesn't exist.
+ * whole). Null when the object doesn't exist. Throws "timeout" if storage
+ * doesn't answer within HEAD_TIMEOUT_MS.
+ *
+ * The connection is closed by aborting it, never by awaiting the body's
+ * cancel(): on a large file (or if storage ignores the range) that await can
+ * hang until the function times out, which left uploads stuck on "Saving…".
  */
 export async function readObjectHead(db: Db, path: string): Promise<{ size: number; head: Uint8Array } | null> {
   const { data, error } = await db.storage.from(MARKETING_BUCKET).createSignedUrl(path, 60);
   if (error || !data?.signedUrl) return null;
-  const res = await fetch(data.signedUrl, { headers: { Range: `bytes=0-${SNIFF_BYTES - 1}` }, cache: "no-store" });
-  if (res.status !== 200 && res.status !== 206) return null;
-  const range = res.headers.get("content-range");
-  const size = range ? Number(range.split("/")[1]) : Number(res.headers.get("content-length"));
-  // Read only the first chunk(s), even if the server ignored the range.
-  const chunks: Uint8Array[] = [];
-  let got = 0;
-  const reader = res.body?.getReader();
-  if (reader) {
-    while (got < SNIFF_BYTES) {
-      const { value, done } = await reader.read();
-      if (done || !value) break;
-      chunks.push(value);
-      got += value.length;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), HEAD_TIMEOUT_MS);
+  try {
+    const res = await fetch(data.signedUrl, { headers: { Range: `bytes=0-${SNIFF_BYTES - 1}` }, cache: "no-store", signal: controller.signal });
+    if (res.status !== 200 && res.status !== 206) return null;
+    const range = res.headers.get("content-range");
+    const size = range ? Number(range.split("/")[1]) : Number(res.headers.get("content-length"));
+    // Read only the first chunk(s), even if storage ignored the range.
+    const chunks: Uint8Array[] = [];
+    let got = 0;
+    const reader = res.body?.getReader();
+    if (reader) {
+      while (got < SNIFF_BYTES) {
+        const { value, done } = await reader.read();
+        if (done || !value) break;
+        chunks.push(value);
+        got += value.length;
+      }
     }
-    await reader.cancel().catch(() => undefined);
+    const head = new Uint8Array(Math.min(got, SNIFF_BYTES));
+    let at = 0;
+    for (const c of chunks) {
+      const part = c.slice(0, head.length - at);
+      head.set(part, at);
+      at += part.length;
+      if (at >= head.length) break;
+    }
+    return { size: Number.isFinite(size) ? size : got, head };
+  } catch (e) {
+    if (controller.signal.aborted) throw new Error("timeout");
+    throw e;
+  } finally {
+    clearTimeout(timer);
+    controller.abort(); // closes the connection without waiting for the rest of the file
   }
-  const head = new Uint8Array(Math.min(got, SNIFF_BYTES));
-  let at = 0;
-  for (const c of chunks) {
-    const part = c.slice(0, head.length - at);
-    head.set(part, at);
-    at += part.length;
-    if (at >= head.length) break;
-  }
-  return { size: Number.isFinite(size) ? size : got, head };
 }
 
 const intOrNull = (v: unknown, max: number) => {
@@ -507,14 +524,17 @@ export async function finalizeUpload(db: Db, input: Record<string, unknown>, act
   if ((previewPath && (previewPath !== extraPath(path, "preview") || EXTRA_FOR[type.kind] !== "preview")) || (posterPath && (posterPath !== extraPath(path, "poster") || EXTRA_FOR[type.kind] !== "poster"))) {
     return reject("The preview doesn't belong to this upload.");
   }
-  const original = await readObjectHead(db, path);
+  const head = (p: string) => readObjectHead(db, p).catch((e: Error) => (e.message === "timeout" ? ("timeout" as const) : null));
+  const original = await head(path);
+  if (original === "timeout") return reject("Storage took too long to answer while checking the upload. Try again.");
   if (!original) return reject("The upload wasn't found. Try again.");
   const detected = detectFileKind({ name: path, firstBytes: original.head });
   if (!detected.ok || detected.file.mime !== mime) return reject(detected.ok ? "The file's contents don't match its type." : detected.error);
   const tooBig = sizeError(type.kind, original.size);
   if (tooBig) return reject(tooBig);
   for (const p of extras) {
-    const h = await readObjectHead(db, p);
+    const h = await head(p);
+    if (h === "timeout") return reject("Storage took too long to answer while checking the upload. Try again.");
     if (!h || !isJpegBytes(h.head) || h.size <= 0 || h.size > PREVIEW_MAX_BYTES) return reject("The preview image is missing or not valid. Try again.");
   }
   const duration = input.duration_seconds === null || input.duration_seconds === undefined || input.duration_seconds === "" ? null : Number(input.duration_seconds);

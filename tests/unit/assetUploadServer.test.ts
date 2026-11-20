@@ -107,3 +107,48 @@ describe("verification", () => {
     expect(removed.sort()).toEqual([up.path, up.extra!.path].sort());
   });
 });
+
+describe("slow storage", () => {
+  it("never hangs: a check that gets no answer gives up, removes the objects and says so", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      // Storage that accepts the request but never sends anything back.
+      vi.stubGlobal("fetch", (_url: string, init: { signal: AbortSignal }) =>
+        new Promise((_resolve, reject) => init.signal.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")))),
+      );
+      const db = fakeDb();
+      const up = await createAssetUploadUrl(db, { mime_type: "video/mp4", size_bytes: MP4.length });
+      files.set(up.path, MP4);
+      const done = finalizeUpload(db, { ...fields, path: up.path, mime_type: "video/mp4" }, null).catch((e: Error) => e);
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(((await done) as Error).message).toMatch(/took too long/);
+      expect(removed).toEqual([up.path]);
+      expect(inserted).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("reads only the first bytes when storage ignores the range and starts sending the whole file", async () => {
+    let pulled = 0;
+    vi.stubGlobal("fetch", async (url: string) => {
+      const f = files.get(url.replace("https://storage.example.test/object/", ""))!;
+      // An endless body: 64 KB chunks forever, like a very large file.
+      const body = new ReadableStream<Uint8Array>({
+        pull(c) {
+          pulled++;
+          const chunk = new Uint8Array(64 * 1024);
+          if (pulled === 1) chunk.set(f);
+          c.enqueue(chunk);
+        },
+      });
+      return new Response(body, { status: 200, headers: { "content-length": String(150 * MB) } });
+    });
+    const db = fakeDb();
+    const up = await createAssetUploadUrl(db, { mime_type: "video/mp4", size_bytes: 150 * MB });
+    files.set(up.path, MP4);
+    await finalizeUpload(db, { ...fields, path: up.path, mime_type: "video/mp4" }, null);
+    expect(inserted[0]).toMatchObject({ size_bytes: 150 * MB, mime_type: "video/mp4" });
+    expect(pulled).toBeLessThan(5);
+  });
+});
