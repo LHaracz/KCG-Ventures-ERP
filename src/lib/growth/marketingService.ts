@@ -8,6 +8,7 @@
  * Nothing here reads formulas: label ingredients are typed by hand.
  */
 import { assetExtension, assetNameError, safeDownloadName } from "./assetNames";
+import { PREVIEW_MAX_BYTES, SNIFF_BYTES, UPLOAD_MIME, detectFileKind, isJpegBytes, sizeError, type FileKind } from "./fileKinds";
 import { GrowthError, idOrThrow, isUuid } from "./errors";
 import { isIsoDate } from "./dates";
 import { claimsReadyCheck, isReadyStatus, scanText } from "./text";
@@ -57,6 +58,13 @@ export type Asset = {
   context_label: string | null;
   shot_date: string | null;
   is_full_lineup: boolean | null;
+  /** HEIC: the JPG made in the browser. */
+  preview_path: string | null;
+  /** GIF and MP4: a still frame (JPG). */
+  poster_path: string | null;
+  width: number | null;
+  height: number | null;
+  duration_seconds: number | null;
 };
 export type Profile = {
   id: string;
@@ -103,7 +111,7 @@ export type RiskyWord = { id: string; phrase: string; note: string | null; archi
 const CLAIM_COLUMNS =
   "id, claim_text, formulation_product_id, claim_type, status, evidence_note, evidence_url, review_note, reviewed_by_name, reviewed_at, review_again_on, created_by_name, updated_at";
 const ASSET_COLUMNS =
-  "id, title, business, formulation_product_id, asset_type, source, file_path, url, mime_type, size_bytes, project_url, status, notes, created_by_name, created_at, category, context_label, shot_date, is_full_lineup";
+  "id, title, business, formulation_product_id, asset_type, source, file_path, url, mime_type, size_bytes, project_url, status, notes, created_by_name, created_at, category, context_label, shot_date, is_full_lineup, preview_path, poster_path, width, height, duration_seconds";
 const PROFILE_COLUMNS = "id, formulation_product_id, tagline, short_description, long_description, label_ingredients, key_points, hashtags, do_not_say, primary_asset_id, updated_by_name, updated_at";
 const POST_COLUMNS =
   "id, title, business, formulation_product_id, platform, post_type, status, scheduled_date, scheduled_time, owner_account_id, caption, hashtags, project_url, posted_url, posted_at, notes, risky_words_checked, archived_at, created_by_name, premade_post_id, premade_synced_at";
@@ -391,16 +399,37 @@ export async function createLinkAsset(db: Db, input: Record<string, unknown>, ac
   return data;
 }
 
-/** Step 1 of an upload: a signed upload URL for a new private path. The browser uploads straight to storage. */
+/** The extra JPG stored next to an original: a preview for HEIC, a poster for GIF and MP4. */
+const EXTRA_FOR: Partial<Record<FileKind, "preview" | "poster">> = { heic: "preview", gif: "poster", mp4: "poster" };
+const extraPath = (path: string, extra: "preview" | "poster") => `${path}.${extra}.jpg`;
+const UPLOAD_TYPES_MSG = "Only PNG, JPG, WebP, PDF, HEIC, GIF and MP4 files can be uploaded. Paste a link for other videos.";
+
+/**
+ * Step 1 of an upload: signed upload URLs for a new private path (the
+ * original) and, when asked, its preview or poster JPG. The browser uploads
+ * straight to storage. Input: { mime_type, size_bytes, extra?, extra_size_bytes? }.
+ */
 export async function createAssetUploadUrl(db: Db, input: Record<string, unknown>) {
   const mime = txt(input, "mime_type");
   const size = Number(input.size_bytes);
-  if (!ASSET_MIME[mime]) throw new GrowthError("Only PNG, JPG, WebP and PDF files can be uploaded. Videos are stored as links.", 400);
-  if (!Number.isFinite(size) || size <= 0 || size > MAX_ASSET_BYTES) throw new GrowthError("Files can be at most 25 MB.", 400);
-  const path = `assets/${new Date().toISOString().slice(0, 7)}/${crypto.randomUUID()}.${ASSET_MIME[mime]}`;
-  const { data, error } = await db.storage.from(MARKETING_BUCKET).createSignedUploadUrl(path);
-  if (error || !data) throw new GrowthError("Could not start the upload.", 500);
-  return { path: data.path ?? path, token: data.token };
+  const type = UPLOAD_MIME[mime];
+  if (!type) throw new GrowthError(UPLOAD_TYPES_MSG, 400);
+  const tooBig = sizeError(type.kind, size);
+  if (tooBig) throw new GrowthError(tooBig, 400);
+  const extra = txt(input, "extra");
+  if (extra && extra !== EXTRA_FOR[type.kind]) throw new GrowthError("This file type has no preview.", 400);
+  if (extra) {
+    const es = Number(input.extra_size_bytes);
+    if (!Number.isFinite(es) || es <= 0 || es > PREVIEW_MAX_BYTES) throw new GrowthError("The preview image is too large.", 400);
+  }
+  const path = `assets/${new Date().toISOString().slice(0, 7)}/${crypto.randomUUID()}.${type.extension}`;
+  const sign = async (p: string) => {
+    const { data, error } = await db.storage.from(MARKETING_BUCKET).createSignedUploadUrl(p);
+    if (error || !data) throw new GrowthError("Could not start the upload.", 500);
+    return { path: data.path ?? p, token: data.token as string, signedUrl: (data.signedUrl as string | undefined) ?? null };
+  };
+  const original = await sign(path);
+  return { ...original, extra: extra ? { kind: extra as "preview" | "poster", ...(await sign(extraPath(path, extra as "preview" | "poster"))) } : null };
 }
 
 /** File signatures: PNG, JPEG, WebP (RIFF....WEBP) and PDF. */
@@ -414,31 +443,97 @@ export function sniffMime(bytes: Uint8Array): string | null {
 }
 
 /**
- * Step 2: the server checks what was actually uploaded (size and file
- * signature must match the stated type) before the asset is saved. A file
- * that fails the check is removed from storage.
+ * The first bytes and total size of a stored object, read with a ranged
+ * request on a short-lived signed URL (the file itself is never downloaded
+ * whole). Null when the object doesn't exist.
+ */
+export async function readObjectHead(db: Db, path: string): Promise<{ size: number; head: Uint8Array } | null> {
+  const { data, error } = await db.storage.from(MARKETING_BUCKET).createSignedUrl(path, 60);
+  if (error || !data?.signedUrl) return null;
+  const res = await fetch(data.signedUrl, { headers: { Range: `bytes=0-${SNIFF_BYTES - 1}` }, cache: "no-store" });
+  if (res.status !== 200 && res.status !== 206) return null;
+  const range = res.headers.get("content-range");
+  const size = range ? Number(range.split("/")[1]) : Number(res.headers.get("content-length"));
+  // Read only the first chunk(s), even if the server ignored the range.
+  const chunks: Uint8Array[] = [];
+  let got = 0;
+  const reader = res.body?.getReader();
+  if (reader) {
+    while (got < SNIFF_BYTES) {
+      const { value, done } = await reader.read();
+      if (done || !value) break;
+      chunks.push(value);
+      got += value.length;
+    }
+    await reader.cancel().catch(() => undefined);
+  }
+  const head = new Uint8Array(Math.min(got, SNIFF_BYTES));
+  let at = 0;
+  for (const c of chunks) {
+    const part = c.slice(0, head.length - at);
+    head.set(part, at);
+    at += part.length;
+    if (at >= head.length) break;
+  }
+  return { size: Number.isFinite(size) ? size : got, head };
+}
+
+const intOrNull = (v: unknown, max: number) => {
+  if (v === null || v === undefined || v === "") return null;
+  const n = Number(v);
+  return Number.isInteger(n) && n >= 1 && n <= max ? n : null;
+};
+
+/**
+ * Step 2: the server checks what was actually uploaded (the first bytes and
+ * the size must match the stated type and its limit; a preview or poster must
+ * be a small JPG next to it) before the asset is saved. If anything is wrong,
+ * every uploaded object for this asset is removed.
  */
 export async function finalizeUpload(db: Db, input: Record<string, unknown>, actor: string | null): Promise<Asset> {
   const path = txt(input, "path");
-  if (!/^assets\/\d{4}-\d{2}\/[0-9a-f-]{36}\.(png|jpg|webp|pdf)$/.test(path)) throw new GrowthError("Unknown upload.", 400);
+  if (!/^assets\/\d{4}-\d{2}\/[0-9a-f-]{36}\.(png|jpg|webp|pdf|heic|heif|gif|mp4)$/.test(path)) throw new GrowthError("Unknown upload.", 400);
   const v = await assetFields(db, input);
   const mime = txt(input, "mime_type");
-  if (!ASSET_MIME[mime] || !path.endsWith(`.${ASSET_MIME[mime]}`)) throw new GrowthError("The file type doesn't match.", 400);
-  const { data: blob, error: dlError } = await db.storage.from(MARKETING_BUCKET).download(path);
-  if (dlError || !blob) throw new GrowthError("The upload wasn't found. Try again.", 400);
-  const size = blob.size as number;
-  const head = new Uint8Array(await (blob as Blob).slice(0, 16).arrayBuffer());
-  const sniffed = sniffMime(head);
-  if (size <= 0 || size > MAX_ASSET_BYTES || sniffed !== mime) {
-    await db.storage.from(MARKETING_BUCKET).remove([path]);
-    throw new GrowthError(size > MAX_ASSET_BYTES ? "Files can be at most 25 MB." : "That file isn't a real PNG, JPG, WebP or PDF.", 400);
+  const type = UPLOAD_MIME[mime];
+  const previewPath = txt(input, "preview_path") || null;
+  const posterPath = txt(input, "poster_path") || null;
+  const extras = [previewPath === extraPath(path, "preview") ? previewPath : null, posterPath === extraPath(path, "poster") ? posterPath : null].filter((x): x is string => !!x);
+  const reject = async (message: string): Promise<never> => {
+    await db.storage.from(MARKETING_BUCKET).remove([path, ...extras]);
+    throw new GrowthError(message, 400);
+  };
+  if (!type || !path.endsWith(`.${type.extension}`)) return reject("The file type doesn't match.");
+  if ((previewPath && (previewPath !== extraPath(path, "preview") || EXTRA_FOR[type.kind] !== "preview")) || (posterPath && (posterPath !== extraPath(path, "poster") || EXTRA_FOR[type.kind] !== "poster"))) {
+    return reject("The preview doesn't belong to this upload.");
   }
+  const original = await readObjectHead(db, path);
+  if (!original) return reject("The upload wasn't found. Try again.");
+  const detected = detectFileKind({ name: path, firstBytes: original.head });
+  if (!detected.ok || detected.file.mime !== mime) return reject(detected.ok ? "The file's contents don't match its type." : detected.error);
+  const tooBig = sizeError(type.kind, original.size);
+  if (tooBig) return reject(tooBig);
+  for (const p of extras) {
+    const h = await readObjectHead(db, p);
+    if (!h || !isJpegBytes(h.head) || h.size <= 0 || h.size > PREVIEW_MAX_BYTES) return reject("The preview image is missing or not valid. Try again.");
+  }
+  const duration = input.duration_seconds === null || input.duration_seconds === undefined || input.duration_seconds === "" ? null : Number(input.duration_seconds);
+  const media = {
+    preview_path: previewPath,
+    poster_path: posterPath,
+    width: intOrNull(input.width, 100000),
+    height: intOrNull(input.height, 100000),
+    duration_seconds: duration !== null && Number.isFinite(duration) && duration >= 0 && duration <= 86400 ? Math.round(duration * 100) / 100 : null,
+  };
   const { data, error } = await db
     .from("marketing_assets")
-    .insert({ ...v.row, source: "upload", file_path: path, mime_type: mime, size_bytes: size, created_by_name: actor })
+    .insert({ ...v.row, source: "upload", file_path: path, mime_type: mime, size_bytes: original.size, created_by_name: actor, ...media })
     .select(ASSET_COLUMNS)
     .single();
-  if (error) fail(error, "Could not save the asset.");
+  if (error) {
+    await db.storage.from(MARKETING_BUCKET).remove([path, ...extras]);
+    fail(error, "Could not save the asset.");
+  }
   await setAssetTags(db, data.id, v.productIds, v.ingredientIds);
   return data;
 }
@@ -478,17 +573,28 @@ export async function updateAsset(db: Db, id: unknown, input: Record<string, unk
   return data;
 }
 
-/** Short-lived signed URLs for uploaded assets (previews, open, download). */
-export async function signedAssetUrls(db: Db, ids: unknown, opts: { download?: boolean } = {}) {
+/**
+ * Short-lived signed URLs for uploaded assets. variant "original" (default)
+ * is the stored file; "thumb" is the poster or preview JPG when there is one,
+ * else the file itself for browser images; "preview" is the HEIC's JPG.
+ * Downloads are named "{title}.{extension}".
+ */
+export async function signedAssetUrls(db: Db, ids: unknown, opts: { download?: boolean; variant?: unknown } = {}) {
   if (!Array.isArray(ids) || ids.length === 0 || ids.length > 100) throw new GrowthError("Choose the assets.", 400);
   for (const id of ids) idOrThrow(id, "asset");
-  const { data, error } = await db.from("marketing_assets").select("id, title, file_path, source, mime_type").in("id", ids);
+  const variant = opts.variant === "thumb" || opts.variant === "preview" ? opts.variant : "original";
+  const { data, error } = await db.from("marketing_assets").select("id, title, file_path, source, mime_type, preview_path, poster_path").in("id", ids);
   if (error) fail(error, "Could not load assets.");
   const out: Record<string, string> = {};
-  for (const a of (data ?? []) as Array<{ id: string; title: string; file_path: string | null; source: string; mime_type: string | null }>) {
+  type Row = { id: string; title: string; file_path: string | null; source: string; mime_type: string | null; preview_path: string | null; poster_path: string | null };
+  for (const a of (data ?? []) as Row[]) {
     if (a.source !== "upload" || !a.file_path) continue;
-    const name = safeDownloadName(a.title, assetExtension(a.file_path, a.mime_type));
-    const { data: s } = await db.storage.from(MARKETING_BUCKET).createSignedUrl(a.file_path, SIGNED_URL_SECONDS, opts.download ? { download: name } : undefined);
+    const browserImage = ["image/png", "image/jpeg", "image/webp", "image/gif"].includes(a.mime_type ?? "");
+    const path =
+      variant === "thumb" ? (a.poster_path ?? a.preview_path ?? (browserImage ? a.file_path : null)) : variant === "preview" ? a.preview_path : a.file_path;
+    if (!path) continue;
+    const name = variant === "original" ? safeDownloadName(a.title, assetExtension(a.file_path, a.mime_type)) : safeDownloadName(a.title, "jpg");
+    const { data: s } = await db.storage.from(MARKETING_BUCKET).createSignedUrl(path, SIGNED_URL_SECONDS, opts.download ? { download: name } : undefined);
     if (s?.signedUrl) out[a.id] = s.signedUrl;
   }
   return out;

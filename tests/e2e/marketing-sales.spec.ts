@@ -94,7 +94,7 @@ test("add a link asset", async ({ page }) => {
   await page.getByRole("button", { name: "Add asset" }).click();
   const dialog = page.getByRole("dialog");
   await dialog.getByLabel("Paste a link").check();
-  await expect(dialog.getByText("Videos are stored as links. Paste the share link from wherever the file lives.")).toBeVisible();
+  await expect(dialog.getByText("You can upload MP4 files up to 200 MB, or paste a link for bigger videos.")).toBeVisible();
   await dialog.getByLabel("Link").fill("https://video.example.test/reel-a");
   await dialog.getByLabel(/^Title/).fill(assetTitle);
   await dialog.getByLabel("Type").selectOption("video");

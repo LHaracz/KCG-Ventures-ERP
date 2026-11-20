@@ -7,7 +7,9 @@
  */
 import { assetNameError, hasDuplicateName } from "@/lib/growth/assetNames";
 import { useMemo, useState } from "react";
-import { createLinkAssetApi, needsActionApi, needsGroupApi, uploadAsset, type GrowthApiError, type MarketingData } from "@/lib/growth/client";
+import { createLinkAssetApi, needsActionApi, needsGroupApi, type GrowthApiError, type MarketingData } from "@/lib/growth/client";
+import { checkUploadFile, uploadAsset, type UploadStage } from "@/lib/growth/assetUpload";
+import { UPLOAD_ACCEPT, UPLOAD_MIME } from "@/lib/growth/fileKinds";
 import { mergeNeeds, type AssetNeed, type MergedNeed } from "@/lib/growth/adLibrary";
 import { productKeyForName } from "@/lib/growth/playbookParse";
 import { ASSET_CATEGORIES, CATEGORY_LABEL, categoryForProducts, suggestAssetsForNeed, validateAssetCategory } from "@/lib/growth/assetCategories";
@@ -217,6 +219,7 @@ export function AssetPicker({
               <button type="button" className={`flex w-full items-center justify-between gap-2 rounded-md border border-zinc-200 p-2 text-left text-sm hover:bg-zinc-50 ${touch}`} onClick={() => onPick(a.id, also)}>
                 <span>
                   <span className="font-medium">{a.title}</span>
+                  {a.source === "upload" && ["heic", "gif", "mp4"].includes(UPLOAD_MIME[a.mime_type ?? ""]?.kind ?? "") && <span className="ml-2 rounded bg-zinc-100 px-1 text-[11px]">{UPLOAD_MIME[a.mime_type ?? ""].kind.toUpperCase()}</span>}
                   <span className="ml-2 text-[11px]">{a.category ? CATEGORY_LABEL[a.category] : "Uncategorized"} · {a.asset_type}{a.product_names.length ? ` · ${a.product_names.join(", ")}` : ""}</span>
                 </span>
                 {a.status === "draft" && <Chip tone="amber">Draft</Chip>}
@@ -235,6 +238,16 @@ function UploadAttachDialog({ data, item, need, alsoCount, onClose, onDone }: { 
   const productIds = productIdsForKeys(data, item.products_mentioned);
   const [mode, setMode] = useState<"upload" | "link">(need.kind === "video" ? "link" : "upload");
   const [file, setFile] = useState<File | null>(null);
+  const [fileError, setFileError] = useState<string | null>(null);
+  const [stage, setStage] = useState<{ stage: UploadStage; progress?: number } | null>(null);
+  const chooseFile = async (f: File | null) => {
+    setFile(null);
+    setFileError(null);
+    if (!f) return;
+    const c = await checkUploadFile(f);
+    if (!c.ok) setFileError(c.error);
+    else setFile(f);
+  };
   const [v, setV] = useState({
     title: need.label,
     category: categoryForProducts(productIds.length) ?? "",
@@ -262,7 +275,7 @@ function UploadAttachDialog({ data, item, need, alsoCount, onClose, onDone }: { 
       if (mode === "link") asset = (await createLinkAssetApi(meta)).asset;
       else {
         if (!file) throw new Error("Choose a file.");
-        asset = (await uploadAsset(file, meta)).asset;
+        asset = (await uploadAsset(file, meta, { onStage: (st) => setStage({ stage: st }), onProgress: (p) => setStage({ stage: "uploading", progress: p }) })).asset;
       }
       onDone(asset.id, also);
     } catch (e) {
@@ -280,9 +293,17 @@ function UploadAttachDialog({ data, item, need, alsoCount, onClose, onDone }: { 
           <label className="flex items-center gap-2"><input type="radio" checked={mode === "link"} onChange={() => setMode("link")} /> Paste a link</label>
         </div>
         {mode === "upload" ? (
-          <input type="file" aria-label="File" accept="image/png,image/jpeg,image/webp,application/pdf" onChange={(e) => setFile(e.target.files?.[0] ?? null)} className="text-sm" />
+          <div>
+            <input type="file" aria-label="File" accept={UPLOAD_ACCEPT} onChange={(e) => void chooseFile(e.target.files?.[0] ?? null)} className="text-sm" />
+            {fileError && <p className="text-xs text-red-700" role="alert">{fileError}</p>}
+            {busy && stage && (
+              <p className="text-xs">
+                {stage.stage === "converting" ? "Making preview…" : stage.stage === "uploading" ? `Uploading${stage.progress !== undefined ? ` ${Math.round(stage.progress * 100)}%` : "…"}` : "Saving…"}
+              </p>
+            )}
+          </div>
         ) : (
-          <TextField name="ua-url" label="Link" value={v.url} onChange={(x) => setV({ ...v, url: x })} placeholder="https://" hint="Videos are stored as links. Paste the share link from wherever the file lives." error={errors.url} />
+          <TextField name="ua-url" label="Link" value={v.url} onChange={(x) => setV({ ...v, url: x })} placeholder="https://" hint="You can upload MP4 files up to 200 MB, or paste a link for bigger videos." error={errors.url} />
         )}
         <TextField name="ua-title" label="Name" value={v.title} onChange={(x) => setV({ ...v, title: x })} required error={errors.title} hint={hasDuplicateName(data.assets, v.title) ? "Another asset has this name" : undefined} />
         <Select name="ua-category" label="Category" value={v.category} onChange={(x) => setV({ ...v, category: x })} options={[{ value: "", label: "Choose…" }, ...ASSET_CATEGORIES.map((c) => ({ value: c, label: CATEGORY_LABEL[c] }))]} error={errors.category} />

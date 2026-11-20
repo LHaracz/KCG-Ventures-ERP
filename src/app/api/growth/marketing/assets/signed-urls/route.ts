@@ -9,7 +9,7 @@ export async function POST(request: Request) {
   if (denied) return denied;
   try {
     const body = await readJson(request);
-    return NextResponse.json({ urls: await signedAssetUrls(growthDb(), body.ids, { download: body.download === true }) });
+    return NextResponse.json({ urls: await signedAssetUrls(growthDb(), body.ids, { download: body.download === true, variant: body.variant }) });
   } catch (error) {
     return growthError(error);
   }

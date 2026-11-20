@@ -124,22 +124,20 @@ export const updateClaimApi = (id: string, body: Record<string, unknown>) => gro
 export const submitClaimApi = (id: string) => growthCall(`${M}/claims/${enc(id)}/submit`, {});
 export const reviewClaimApi = (id: string, body: Record<string, unknown>) => growthCall(`${M}/claims/${enc(id)}/review`, body);
 export const createLinkAssetApi = (body: Record<string, unknown>) => growthCall<{ asset: Asset }>(`${M}/assets`, body);
-export const assetUploadUrlApi = (body: Record<string, unknown>) => growthCall<{ path: string; token: string }>(`${M}/assets/upload-url`, body);
+type SignedUpload = { path: string; token: string; signedUrl: string | null };
+export const assetUploadUrlApi = (body: Record<string, unknown>) =>
+  growthCall<SignedUpload & { extra: (SignedUpload & { kind: "preview" | "poster" }) | null }>(`${M}/assets/upload-url`, body);
 export const finalizeAssetApi = (body: Record<string, unknown>) => growthCall<{ asset: Asset }>(`${M}/assets/finalize`, body);
 export const updateAssetApi = (id: string, body: Record<string, unknown>) => growthCall<{ asset: Asset }>(`${M}/assets/${enc(id)}`, body);
-export const signedAssetUrlsApi = (ids: string[], download = false) => growthCall<{ urls: Record<string, string> }>(`${M}/assets/signed-urls`, { ids, download });
+/** variant: "original" (default), "thumb" (poster or preview JPG when there is one) or "preview" (a HEIC's JPG). */
+export const signedAssetUrlsApi = (ids: string[], download = false, variant: "original" | "thumb" | "preview" = "original") =>
+  growthCall<{ urls: Record<string, string> }>(`${M}/assets/signed-urls`, { ids, download, variant });
 export const savePostApi = (id: string | null, body: Record<string, unknown>) => growthCall<{ id: string; warnings: string[] }>(id ? `${M}/posts/${enc(id)}` : `${M}/posts`, body);
 export const archivePostApi = (id: string, archive: boolean) => growthCall(`${M}/posts/${enc(id)}`, archive ? { archive: true } : { restore: true });
 export const saveTemplateApi = (id: string | null, body: Record<string, unknown>) => growthCall(id ? `${M}/templates/${enc(id)}` : `${M}/templates`, body);
 export const saveRiskyWordApi = (id: string | null, body: Record<string, unknown>) => growthCall(id ? `${M}/risky-words/${enc(id)}` : `${M}/risky-words`, body);
 
-/** Upload: signed URL from the server, straight to private storage, then the server checks the file. */
-export async function uploadAsset(file: File, meta: Record<string, unknown>) {
-  const { path, token } = await assetUploadUrlApi({ mime_type: file.type, size_bytes: file.size });
-  const { error } = await supabase.storage.from("marketing-assets").uploadToSignedUrl(path, token, file, { contentType: file.type });
-  if (error) throw new GrowthApiError(error.message || "The upload failed.", 500, null);
-  return finalizeAssetApi({ ...meta, path, mime_type: file.type });
-}
+// Uploads: see assetUpload.ts (checks, previews, progress).
 
 // Ad Library, pillars, series and closing lines
 export const createPillarApi = (body: Record<string, unknown>) => growthCall<{ pillar: Pillar }>(`${M}/pillars`, body);

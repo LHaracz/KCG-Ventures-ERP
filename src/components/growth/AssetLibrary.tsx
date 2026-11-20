@@ -20,10 +20,11 @@ import {
   signedAssetUrlsApi,
   tagsFromRawMaterialsApi,
   updateAssetApi,
-  uploadAsset,
   type GrowthApiError,
   type MarketingData,
 } from "@/lib/growth/client";
+import { checkUploadFile, defaultAssetType, uploadAsset, type UploadStage } from "@/lib/growth/assetUpload";
+import { UPLOAD_ACCEPT, UPLOAD_MIME, type FileKind } from "@/lib/growth/fileKinds";
 import { applyNamePattern, assetNameError, hasDuplicateName, titleFromFileName } from "@/lib/growth/assetNames";
 import { ASSET_CATEGORIES, CATEGORY_LABEL, categoryCounts, validateAssetCategory, type AssetCategory } from "@/lib/growth/assetCategories";
 import { Badge, Checkbox, Chip, ConfirmDialog, Dialog, ErrorSummary, Select, TextArea, TextField, btn, btnPrimary, card, errorBox, infoBox, input, warnBox } from "./GrowthUi";
@@ -48,9 +49,28 @@ const BUSINESSES = [
   { value: "minileaf", label: "MiniLeaf" },
   { value: "brand", label: "Brand (both)" },
 ];
-const ALLOWED = ["image/png", "image/jpeg", "image/webp", "application/pdf"];
-const MAX_BYTES = 25 * 1024 * 1024;
-export const VIDEO_LINK_HINT = "Videos are stored as links. Paste the share link from wherever the file lives.";
+export const VIDEO_LINK_HINT = "You can upload MP4 files up to 200 MB, or paste a link for bigger videos.";
+export const NO_PREVIEW = "Preview unavailable. Download the original.";
+export const CANT_PLAY = "This video can't be played in this browser. It may use HEVC. Download it, or export it as H.264.";
+/** HEIC, GIF or MP4 (they get a badge and a preview or poster), else null. */
+export const mediaKind = (a: { source: string; mime_type: string | null }): "heic" | "gif" | "mp4" | null => {
+  const k = a.source === "upload" ? UPLOAD_MIME[a.mime_type ?? ""]?.kind : undefined;
+  return k === "heic" || k === "gif" || k === "mp4" ? k : null;
+};
+/** True when the grid can show a picture: a poster or preview JPG, or a browser image. */
+const hasThumb = (a: { source: string; mime_type: string | null; preview_path: string | null; poster_path: string | null }) =>
+  a.source === "upload" && (!!a.poster_path || !!a.preview_path || ["image/png", "image/jpeg", "image/webp", "image/gif"].includes(a.mime_type ?? ""));
+/** "0:07", "1:05:09". */
+export const durationLabel = (sec: number | null | undefined) => {
+  if (sec === null || sec === undefined || !Number.isFinite(Number(sec))) return "";
+  const t = Math.round(Number(sec));
+  const h = Math.floor(t / 3600);
+  const m = Math.floor((t % 3600) / 60);
+  const x = String(t % 60).padStart(2, "0");
+  return h ? `${h}:${String(m).padStart(2, "0")}:${x}` : `${m}:${x}`;
+};
+const KIND_BADGE: Record<FileKind, string> = { image: "Image", pdf: "PDF", heic: "HEIC", gif: "GIF", mp4: "MP4" };
+const sizeLabel = (n: number) => (n >= 1024 * 1024 ? `${(n / 1024 / 1024).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`);
 const label = (list: ReadonlyArray<{ value: string; label: string }>, v: string | null) => list.find((x) => x.value === v)?.label ?? v ?? "—";
 const isImage = (a: { source: string; mime_type: string | null }) => a.source === "upload" && (a.mime_type ?? "").startsWith("image/");
 
@@ -183,15 +203,15 @@ export function AssetsTab({ data, reload }: TabProps) {
   const [renaming, setRenaming] = useState<string | null>(null);
   const [bulk, setBulk] = useState<"category" | null>(null);
   const [tagsOpen, setTagsOpen] = useState(false);
-  const [viewing, setViewing] = useState<{ asset: AssetX; url: string } | null>(null);
+  const [viewing, setViewing] = useState<{ asset: AssetX; url: string | null; poster?: string | null; playFailed?: boolean } | null>(null);
   const [thumbs, setThumbs] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
   const [report, setReport] = useState<string | null>(null);
-  const imageIds = rows.filter(isImage).map((a) => a.id).slice(0, 100);
+  const imageIds = rows.filter(hasThumb).map((a) => a.id).slice(0, 100);
   const key = imageIds.join(",");
   useEffect(() => {
     if (!key) return;
-    void signedAssetUrlsApi(key.split(",")).then((r) => setThumbs(r.urls)).catch(() => undefined);
+    void signedAssetUrlsApi(key.split(","), false, "thumb").then((r) => setThumbs(r.urls)).catch(() => undefined);
   }, [key]);
   const act = async (fn: () => Promise<unknown>) => {
     setError(null);
@@ -202,13 +222,25 @@ export function AssetsTab({ data, reload }: TabProps) {
       setError((e as Error).message);
     }
   };
-  const open = async (a: AssetX, download: boolean) => {
+  const open = async (a: AssetX, download: boolean, variant: "original" | "preview" = "original") => {
     if (a.source === "link") {
       window.open(a.url!, "_blank", "noopener");
       return;
     }
     try {
-      const r = await signedAssetUrlsApi([a.id], download);
+      const kind = mediaKind(a);
+      if (!download && kind === "heic") {
+        // Browsers other than Safari can't show HEIC: show the JPG preview.
+        const u = a.preview_path ? (await signedAssetUrlsApi([a.id], false, "preview")).urls[a.id] ?? null : null;
+        setViewing({ asset: a, url: u });
+        return;
+      }
+      if (!download && kind === "mp4") {
+        const [o, p] = await Promise.all([signedAssetUrlsApi([a.id]), a.poster_path ? signedAssetUrlsApi([a.id], false, "thumb") : Promise.resolve({ urls: {} as Record<string, string> })]);
+        setViewing({ asset: a, url: o.urls[a.id] ?? null, poster: p.urls[a.id] ?? null });
+        return;
+      }
+      const r = await signedAssetUrlsApi([a.id], download, variant);
       const u = r.urls[a.id];
       if (!u) throw new Error("Could not open the file.");
       if (download) {
@@ -283,6 +315,11 @@ export function AssetsTab({ data, reload }: TabProps) {
                   {thumbs[a.id] ? (
                     // eslint-disable-next-line @next/next/no-img-element -- short-lived signed URL from private storage
                     <img src={thumbs[a.id]} alt={a.title} className="h-36 w-full rounded object-cover" />
+                  ) : mediaKind(a) && !a.poster_path && !a.preview_path ? (
+                    <div className="flex h-36 w-full flex-col items-center justify-center gap-1 rounded bg-zinc-100 p-2 text-center text-xs text-black" data-testid="asset-placeholder">
+                      <span>{NO_PREVIEW}</span>
+                      {mediaKind(a) === "mp4" && <span className="text-[11px]">This browser couldn&apos;t read a frame from the video.</span>}
+                    </div>
                   ) : (
                     <div className="flex h-36 w-full items-center justify-center rounded bg-zinc-100 text-xs">{a.source === "link" ? "Link" : a.mime_type === "application/pdf" ? "PDF" : "File"}</div>
                   )}
@@ -299,6 +336,8 @@ export function AssetsTab({ data, reload }: TabProps) {
                 <div className="mt-1 flex flex-wrap gap-1">
                   <Chip tone={a.status === "ready" ? "green" : a.status === "archived" ? "zinc" : "amber"}>{a.status === "ready" ? "Ready" : a.status === "archived" ? "Archived" : "Draft"}</Chip>
                   {!a.category && <Badge tone="amber">Uncategorized</Badge>}
+                  {mediaKind(a) && <Badge tone="zinc">{KIND_BADGE[mediaKind(a)!]}{mediaKind(a) === "mp4" && a.duration_seconds !== null ? ` · ${durationLabel(a.duration_seconds)}` : ""}</Badge>}
+                  {mediaKind(a) && !a.poster_path && !a.preview_path && <Badge tone="amber">No preview</Badge>}
                   {a.project_url && <a href={a.project_url} target="_blank" rel="noopener noreferrer" className="text-xs underline">Editing project</a>}
                 </div>
               </div>
@@ -345,7 +384,7 @@ export function AssetsTab({ data, reload }: TabProps) {
       )}
       {tagsOpen && <IngredientTagsDialog data={data} reload={reload} onClose={() => setTagsOpen(false)} />}
       {viewing && (
-        <Dialog title={viewing.asset.title} onClose={() => { if (viewing.asset.mime_type === "application/pdf") URL.revokeObjectURL(viewing.url); setViewing(null); }} wide>
+        <Dialog title={viewing.asset.title} onClose={() => { if (viewing.asset.mime_type === "application/pdf" && viewing.url) URL.revokeObjectURL(viewing.url); setViewing(null); }} wide>
           <div className="mb-2 flex items-center gap-2 text-sm text-black">
             {renaming === `view:${viewing.asset.id}` ? (
               <RenameAsset
@@ -363,10 +402,33 @@ export function AssetsTab({ data, reload }: TabProps) {
               <button type="button" className={btn} onClick={() => setRenaming(`view:${viewing.asset.id}`)}>Rename</button>
             )}
           </div>
-          {viewing.asset.mime_type === "application/pdf" ? (
+          {mediaKind(viewing.asset) && (
+            <div className="mb-2 flex flex-wrap items-center gap-2 text-sm text-black">
+              {mediaKind(viewing.asset) === "heic" && <Badge tone="zinc">Original: HEIC</Badge>}
+              <button type="button" className={btn} onClick={() => open(viewing.asset, true)}>Download original</button>
+              {mediaKind(viewing.asset) === "heic" && viewing.asset.preview_path && <button type="button" className={btn} onClick={() => open(viewing.asset, true, "preview")}>Download JPG</button>}
+            </div>
+          )}
+          {!viewing.url ? (
+            <div className="flex h-48 items-center justify-center rounded bg-zinc-100 text-sm text-black" data-testid="viewer-placeholder">{NO_PREVIEW}</div>
+          ) : viewing.asset.mime_type === "application/pdf" ? (
             <div className="h-[70vh] overflow-hidden rounded border border-zinc-200"><PdfViewer fileUrl={viewing.url} /></div>
+          ) : mediaKind(viewing.asset) === "mp4" ? (
+            viewing.playFailed ? (
+              <p className={warnBox} role="alert">{CANT_PLAY}</p>
+            ) : (
+              <video
+                src={viewing.url}
+                poster={viewing.poster ?? undefined}
+                controls
+                playsInline
+                preload="metadata"
+                className="max-h-[70vh] w-full"
+                onError={() => setViewing((v) => (v ? { ...v, playFailed: true } : v))}
+              />
+            )
           ) : (
-            // eslint-disable-next-line @next/next/no-img-element -- short-lived signed URL from private storage
+            // eslint-disable-next-line @next/next/no-img-element -- short-lived signed URL from private storage (GIFs animate)
             <img src={viewing.url} alt={viewing.asset.title} className="max-h-[70vh] w-full object-contain" />
           )}
         </Dialog>
@@ -376,7 +438,19 @@ export function AssetsTab({ data, reload }: TabProps) {
 }
 
 // --- Add several at once ------------------------------------------------------------------------------
-type Pending = { key: string; file: File | null; url: string; title: string; asset_type: string; checked: boolean; state: "waiting" | "saving" | "done" | "error"; error?: string };
+type Pending = {
+  key: string;
+  file: File | null;
+  url: string;
+  title: string;
+  asset_type: string;
+  checked: boolean;
+  kind: FileKind | null;
+  state: "waiting" | UploadStage | "done" | "error";
+  progress?: number;
+  previewFailed?: boolean;
+  error?: string;
+};
 let seq = 0;
 
 /** Inline rename: Enter or leaving the field saves, Escape cancels. Same rules as adding (1 to 200 characters). */
@@ -438,13 +512,13 @@ export function AddAssetsDialog({ data, onClose, onDone, reload }: { data: Marke
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
   const [fileError, setFileError] = useState<string | null>(null);
-  const addFiles = (list: FileList | null) => {
+  const addFiles = async (list: FileList | null) => {
     const bad: string[] = [];
     const next: Pending[] = [];
     for (const f of Array.from(list ?? [])) {
-      if (!ALLOWED.includes(f.type)) bad.push(`${f.name}: only PNG, JPG, WebP and PDF files can be uploaded.`);
-      else if (f.size > MAX_BYTES) bad.push(`${f.name}: files can be at most 25 MB.`);
-      else next.push({ key: `f${++seq}`, file: f, url: "", title: titleFromFileName(f.name), asset_type: f.type === "application/pdf" ? "document" : "photo", checked: true, state: "waiting" });
+      const c = await checkUploadFile(f);
+      if (!c.ok) bad.push(`${f.name}: ${c.error}`);
+      else next.push({ key: `f${++seq}`, file: f, url: "", title: titleFromFileName(f.name), asset_type: defaultAssetType(c.file.kind), checked: true, kind: c.file.kind, state: "waiting" });
     }
     setFileError(bad.length ? bad.join(" ") : null);
     setItems((s) => [...s, ...next]);
@@ -456,7 +530,7 @@ export function AddAssetsDialog({ data, onClose, onDone, reload }: { data: Marke
       return;
     }
     setFileError(null);
-    setItems((s) => [...s, { key: `l${++seq}`, file: null, url: u, title: "", asset_type: "video", checked: true, state: "waiting" }]);
+    setItems((s) => [...s, { key: `l${++seq}`, file: null, url: u, title: "", asset_type: "video", checked: true, kind: null, state: "waiting" }]);
     setLink("");
   };
   const setItem = (k: string, patch: Partial<Pending>) => setItems((s) => s.map((x) => (x.key === k ? { ...x, ...patch } : x)));
@@ -470,21 +544,10 @@ export function AddAssetsDialog({ data, onClose, onDone, reload }: { data: Marke
     setItems((s) => s.map((x) => (names.has(x.key) ? { ...x, title: names.get(x.key)! } : x)));
     setNameErrors({});
   };
-  const saveAll = async () => {
-    const errs = clientErrors(cat);
-    const nErrs: Record<string, string> = {};
-    for (const it of open) {
-      const e = assetNameError(it.title);
-      if (e) nErrs[it.key] = e;
-    }
-    setErrors(errs);
-    setNameErrors(nErrs);
-    if (Object.keys(errs).length || Object.keys(nErrs).length) return;
-    setBusy(true);
-    for (const it of items) {
-      if (it.state === "done") continue;
-      setItem(it.key, { state: "saving", error: undefined });
-      const meta = {
+  const [summary, setSummary] = useState<string | null>(null);
+  const saveOne = async (it: Pending) => {
+    setItem(it.key, { state: it.file ? "converting" : "saving", error: undefined, progress: undefined });
+    const meta = {
         title: it.title.trim(),
         asset_type: it.asset_type,
         business,
@@ -498,14 +561,48 @@ export function AddAssetsDialog({ data, onClose, onDone, reload }: { data: Marke
         shot_date: cat.shot_date || null,
       };
       try {
-        if (it.file) await uploadAsset(it.file, meta);
-        else await createLinkAssetApi({ ...meta, url: it.url });
-        setItem(it.key, { state: "done" });
+        if (it.file) {
+          const r = await uploadAsset(it.file, meta, {
+            onStage: (stage) => setItem(it.key, { state: stage }),
+            onProgress: (f) => setItem(it.key, { progress: f }),
+          });
+          setItem(it.key, { state: "done", previewFailed: r.previewFailed });
+        } else {
+          await createLinkAssetApi({ ...meta, url: it.url });
+          setItem(it.key, { state: "done" });
+        }
+        return true;
       } catch (e) {
         setItem(it.key, { state: "error", error: (e as Error).message });
+        return false;
       }
+  };
+  /** Checks the shared fields and names, then saves: up to three uploads at a time (previews are made one at a time). */
+  const saveAll = async (only?: Pending) => {
+    const errs = clientErrors(cat);
+    const nErrs: Record<string, string> = {};
+    const todo = only ? [only] : open;
+    for (const it of todo) {
+      const e = assetNameError(it.title);
+      if (e) nErrs[it.key] = e;
     }
+    setErrors(errs);
+    setNameErrors(nErrs);
+    if (Object.keys(errs).length || Object.keys(nErrs).length) return;
+    setBusy(true);
+    setSummary(null);
+    const queue = [...todo];
+    const failed: string[] = [];
+    let saved = 0;
+    const worker = async () => {
+      for (let it = queue.shift(); it; it = queue.shift()) {
+        if (await saveOne(it)) saved++;
+        else failed.push(it.title.trim() || (it.file ? it.file.name : it.url));
+      }
+    };
+    await Promise.all([worker(), worker(), worker()]);
     setBusy(false);
+    if (todo.length > 1 || failed.length) setSummary(`Saved ${saved} of ${todo.length}.${failed.length ? ` Not saved: ${failed.join(", ")}.` : ""}`);
   };
   const done = items.length > 0 && items.every((i) => i.state === "done");
   return (
@@ -513,8 +610,8 @@ export function AddAssetsDialog({ data, onClose, onDone, reload }: { data: Marke
       <div className="space-y-4 text-black">
         <div className={`${card} space-y-2`}>
           <p className="text-xs font-semibold">1. Files and links</p>
-          <input type="file" multiple accept={ALLOWED.join(",")} aria-label="Files" onChange={(e) => { addFiles(e.target.files); e.target.value = ""; }} className="text-sm" />
-          <p className="text-[11px]">PNG, JPG, WebP or PDF, up to 25 MB each. Files are private and open with short-lived links.</p>
+          <input type="file" multiple accept={UPLOAD_ACCEPT} aria-label="Files" onChange={(e) => { const files = e.target.files; void addFiles(files).then(() => { e.target.value = ""; }); }} className="text-sm" />
+          <p className="text-[11px]">PNG, JPG, WebP, PDF or HEIC up to 25 MB, GIF up to 50 MB, MP4 up to 200 MB. Files are private and open with short-lived links.</p>
           <div className="flex flex-wrap items-end gap-2">
             <input aria-label="Paste a link" placeholder="https://" value={link} onChange={(e) => setLink(e.target.value)} className={`${input} w-72`} />
             <button type="button" className={btn} onClick={addLink}>Add link</button>
@@ -547,12 +644,13 @@ export function AddAssetsDialog({ data, onClose, onDone, reload }: { data: Marke
             <p className="text-xs">Nothing added yet.</p>
           ) : (
             <table className="min-w-full text-left text-xs" data-testid="add-assets-table">
-              <thead className="bg-zinc-50"><tr>{["", "Item", "Name", "Type", "Status", ""].map((h, i) => <th key={i} className="px-2 py-1 font-semibold">{h}</th>)}</tr></thead>
+              <thead className="bg-zinc-50"><tr>{["", "Item", "Kind", "Name", "Type", "Status", ""].map((h, i) => <th key={i} className="px-2 py-1 font-semibold">{h}</th>)}</tr></thead>
               <tbody>
                 {items.map((it) => (
                   <tr key={it.key} className="border-t border-zinc-100 align-top">
                     <td className="px-2 py-1">{it.state !== "done" && <input type="checkbox" aria-label="Include in name pattern" checked={it.checked} onChange={() => setItem(it.key, { checked: !it.checked })} />}</td>
                     <td className="max-w-40 truncate px-2 py-1">{it.file ? it.file.name : it.url}</td>
+                    <td className="whitespace-nowrap px-2 py-1" data-testid="add-kind">{it.file && it.kind ? `${KIND_BADGE[it.kind]} · ${sizeLabel(it.file.size)}` : "Link"}</td>
                     <td className="px-2 py-1">
                       <input
                         aria-label="Name"
@@ -573,10 +671,18 @@ export function AddAssetsDialog({ data, onClose, onDone, reload }: { data: Marke
                       </select>
                     </td>
                     <td className="px-2 py-1">
-                      {it.state === "waiting" && "Waiting"}
-                      {it.state === "saving" && "Saving…"}
-                      {it.state === "done" && <span className="text-emerald-800">Saved</span>}
-                      {it.state === "error" && <span className="text-red-700">{it.error}</span>}
+                      <span data-testid="add-status">
+                        {it.state === "waiting" && "Waiting"}
+                        {it.state === "converting" && (it.kind === "heic" || it.kind === "gif" || it.kind === "mp4" ? "Making preview…" : "Checking…")}
+                        {it.state === "uploading" && `Uploading${it.progress !== undefined ? ` ${Math.round(it.progress * 100)}%` : "…"}`}
+                        {it.state === "saving" && "Saving…"}
+                        {it.state === "done" && <span className="text-emerald-800">{it.previewFailed ? "Saved (no preview)" : "Saved"}</span>}
+                        {it.state === "error" && <span className="text-red-700">{it.error}</span>}
+                      </span>
+                      {it.state === "uploading" && it.progress !== undefined && (
+                        <span className="mt-1 block h-1.5 w-24 overflow-hidden rounded bg-zinc-200" aria-hidden="true"><span className="block h-full bg-emerald-600" style={{ width: `${Math.round(it.progress * 100)}%` }} /></span>
+                      )}
+                      {it.state === "error" && <button type="button" className={`${btn} mt-1`} onClick={() => void saveAll(it)} disabled={busy}>Retry</button>}
                     </td>
                     <td className="px-2 py-1">{it.state !== "done" && <button type="button" className={btn} onClick={() => setItems((s) => s.filter((x) => x.key !== it.key))} aria-label="Remove">✕</button>}</td>
                   </tr>
@@ -585,6 +691,7 @@ export function AddAssetsDialog({ data, onClose, onDone, reload }: { data: Marke
             </table>
           )}
           {busy && <p className="text-xs">Saving {items.filter((i) => i.state === "done").length} of {items.length}…</p>}
+          {summary && !busy && <p className="text-xs" data-testid="add-summary">{summary}</p>}
         </div>
         <div className="flex justify-end gap-2">
           {done ? (
@@ -592,7 +699,7 @@ export function AddAssetsDialog({ data, onClose, onDone, reload }: { data: Marke
           ) : (
             <>
               <button type="button" className={btn} onClick={items.some((i) => i.state === "done") ? onDone : onClose}>Close</button>
-              <button type="button" className={btnPrimary} onClick={saveAll} disabled={busy || items.length === 0}>{busy ? "Saving…" : `Save ${items.filter((i) => i.state !== "done").length}`}</button>
+              <button type="button" className={btnPrimary} onClick={() => void saveAll()} disabled={busy || items.length === 0}>{busy ? "Saving…" : `Save ${items.filter((i) => i.state !== "done").length}`}</button>
             </>
           )}
         </div>

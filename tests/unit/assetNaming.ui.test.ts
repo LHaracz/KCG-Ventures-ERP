@@ -13,6 +13,7 @@ const api = vi.hoisted(() => ({
   signedAssetUrlsApi: vi.fn(async () => ({ urls: {} })),
 }));
 vi.mock("@/lib/growth/client", () => ({ ...api, GrowthApiError: class extends Error {} }));
+vi.mock("@/lib/growth/assetUpload", async (importOriginal) => ({ ...(await importOriginal<object>()), uploadAsset: api.uploadAsset }));
 vi.mock("next/dynamic", () => ({ default: () => () => null }));
 vi.mock("@/components/growth/useUrlParams", () => ({ useUrlParams: () => ({ get: (_k: string, d = "") => d, set: vi.fn(), query: "" }) }));
 
@@ -68,9 +69,11 @@ const flush = () => act(async () => { await new Promise((r) => setTimeout(r, 0))
 
 async function addFile(name: string) {
   const input = byLabel("Files");
-  const file = new File(["x"], name, { type: "image/png" });
+  const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13]);
+  const file = new File([PNG], name, { type: "image/png" });
   Object.defineProperty(input, "files", { value: [file], configurable: true });
   await act(async () => { input.dispatchEvent(new Event("change", { bubbles: true })); });
+  await flush();
   return file;
 }
 async function chooseMarket() {

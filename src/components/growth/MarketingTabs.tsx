@@ -26,7 +26,7 @@ import type { Asset, Claim, Post, Template } from "@/lib/growth/marketingService
 import { useUrlParams } from "./useUrlParams";
 import { AddToCalendarDialog, AvoidListSection, LibraryBasis, PillarMixStrip, ScheduleHintLine, rhythmLabel } from "./LibraryCalendar";
 import { ClosingLinesSection } from "./LibraryTabs";
-import { ASSET_TYPES } from "./AssetLibrary";
+import { ASSET_TYPES, durationLabel, mediaKind } from "./AssetLibrary";
 import { Badge, Checkbox, Chip, ConfirmDialog, Dialog, ErrorSummary, Select, TextArea, TextField, btn, btnPrimary, card, errorBox, fmtDate, infoBox, input, warnBox } from "./GrowthUi";
 
 type TabProps = { data: MarketingData; reload: () => Promise<void> };
@@ -124,7 +124,7 @@ export function ProductsTab({ data, reload }: TabProps) {
   const key = primaryIds.join(",");
   useEffect(() => {
     if (!key) return;
-    void signedAssetUrlsApi(key.split(",")).then((r) => setThumbs(r.urls)).catch(() => undefined);
+    void signedAssetUrlsApi(key.split(","), false, "thumb").then((r) => setThumbs(r.urls)).catch(() => undefined);
   }, [key]);
   if (data.products.length === 0) return <p className="rounded-md border border-dashed border-zinc-300 p-6 text-center text-sm">No BotanIQals products in Formulation yet.</p>;
   return (
@@ -661,7 +661,7 @@ function PostEditor({ data, post, initial, onClose, onSaved, onDuplicate, reload
           </div>
         )}
         <Picker title="Claims used" items={productClaims.map((c) => ({ id: c.id, label: c.claim_text, extra: CLAIM_STATUS[c.status].label, bad: c.status !== "approved" }))} selected={claimIds} onChange={setClaimIds} />
-        <Picker title="Attached assets" items={assets.map((a) => ({ id: a.id, label: a.title, extra: label(ASSET_TYPES, a.asset_type) }))} selected={assetIds} onChange={setAssetIds} />
+        <Picker title="Attached assets" items={assets.map((a) => ({ id: a.id, label: a.title, extra: [label(ASSET_TYPES, a.asset_type), mediaKind(a)?.toUpperCase(), mediaKind(a) === "mp4" ? durationLabel(a.duration_seconds) : ""].filter(Boolean).join(" · ") }))} selected={assetIds} onChange={setAssetIds} />
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
           <TextField name="post-project" label="Editing project link" value={v.project_url} onChange={set("project_url")} placeholder="https://" error={errors.project_url} />
           <TextField name="post-posted-url" label="Posted URL" value={v.posted_url} onChange={set("posted_url")} placeholder="https://" error={errors.posted_url} />

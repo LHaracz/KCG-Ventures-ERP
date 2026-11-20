@@ -93,7 +93,7 @@ beforeEach(async () => {
     alter table products add column if not exists deleted_at timestamptz;
     alter table products add column if not exists is_microgreen boolean default false;
   `);
-  for (const f of ["formulation.sql", "procurement_suppliers.sql", "retail_invoices.sql", "marketing_sales.sql", "ad_library.sql"]) await pg.exec(migration(f));
+  for (const f of ["formulation.sql", "procurement_suppliers.sql", "retail_invoices.sql", "marketing_sales.sql", "ad_library.sql", "marketing_assets_media.sql"]) await pg.exec(migration(f));
   db = withJsonb(pgliteSupabase(pg) as unknown as Db);
   prodA = (await q<{ id: string }>(`insert into formulation_products (name) values ('Product A Gum') returning id`))[0].id;
   prodB = (await q<{ id: string }>(`insert into formulation_products (name) values ('Product B Toothpaste') returning id`))[0].id;

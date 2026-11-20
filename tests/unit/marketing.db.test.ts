@@ -4,7 +4,7 @@
 // marketingSales.db), uploads (file signature check, removal
 // of bad files), the post Ready gate, templates and the risky-word list.
 // Invented products ("Product A") and example.test links only.
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { PGlite } from "@electric-sql/pglite";
 import { asOwner, createAccessDb, migration } from "./helpers/accessDb";
 import { pgliteSupabase } from "./helpers/pgliteSupabase";
@@ -70,6 +70,12 @@ async function upload(bytes: Uint8Array, mime: string, title = "Photo A") {
 }
 
 beforeEach(async () => {
+  // Ranged reads of the stand-in storage (the server reads only the first bytes).
+  vi.stubGlobal("fetch", async (url: string) => {
+    const f = files.get(url.replace("https://storage.example.test/signed/", ""));
+    if (!f) return new Response("not found", { status: 400 });
+    return new Response(f.slice(0, 32), { status: 206, headers: { "content-range": `bytes 0-31/${f.length}` } });
+  });
   files.clear();
   removed.length = 0;
   ({ pg } = await createAccessDb());
@@ -80,7 +86,7 @@ beforeEach(async () => {
     alter table products add column if not exists deleted_at timestamptz;
     alter table products add column if not exists is_microgreen boolean default false;
   `);
-  for (const f of ["formulation.sql", "procurement_suppliers.sql", "retail_invoices.sql", "marketing_sales.sql", "ad_library.sql"]) await pg.exec(migration(f));
+  for (const f of ["formulation.sql", "procurement_suppliers.sql", "retail_invoices.sql", "marketing_sales.sql", "ad_library.sql", "marketing_assets_media.sql"]) await pg.exec(migration(f));
   db = withStorage(pgliteSupabase(pg) as unknown as Db);
   fp = (await pg.query<{ id: string }>(`insert into formulation_products (name) values ('Product A') returning id`)).rows[0].id;
   await pg.query(`insert into formulation_products (name, deleted_at) values ('Product Gone', now())`);
@@ -99,7 +105,7 @@ describe("file signatures", () => {
 
 describe("assets", () => {
   it("uploads are checked on the server; links are stored as links", async () => {
-    await rejects(() => createAssetUploadUrl(db, { mime_type: "video/mp4", size_bytes: 10 }), /Videos are stored as links/);
+    await rejects(() => createAssetUploadUrl(db, { mime_type: "video/quicktime", size_bytes: 10 }), /Paste a link for other videos/);
     await rejects(() => createAssetUploadUrl(db, { mime_type: "image/png", size_bytes: 26 * 1024 * 1024 }), /25 MB/);
     const a = await upload(PNG, "image/png");
     expect(a).toMatchObject({ source: "upload", mime_type: "image/png", size_bytes: PNG.length, status: "draft", created_by_name: "Test Person" });
@@ -107,6 +113,7 @@ describe("assets", () => {
     const { path } = await createAssetUploadUrl(db, { mime_type: "image/png", size_bytes: 6 });
     files.set(path, new TextEncoder().encode("<html>"));
     await rejects(() => finalizeUpload(db, { path, mime_type: "image/png", title: "Fake", category: "other", context_label: "Test" }, null), /isn't a real PNG/);
+
     expect(removed).toEqual([path]);
     await rejects(() => finalizeUpload(db, { path: "../../etc/passwd", mime_type: "image/png", title: "x" }, null), /Unknown upload/);
     const link = await createLinkAsset(db, { title: "Reel A", asset_type: "video", url: "https://video.example.test/a", category: "other", context_label: "Reel" }, null);
