@@ -55,6 +55,9 @@ const ascii = (b: Uint8Array, from: number, to: number) => (b.length >= to ? Str
 /** Atoms an older QuickTime file may start with (no ftyp box); trusted only with a .mov extension. */
 const QT_LEADING_ATOMS = ["moov", "mdat", "wide", "free", "skip", "pnot"];
 
+/** A video in the ISO/QuickTime family whose brand alone doesn't say MP4 or MOV; the extension decides. */
+const VIDEO_FAMILY = "video/*";
+
 /** What the bytes say, or null. */
 function sniff(b: Uint8Array, ext: string): { mime: string } | null {
   if (b.length >= 8 && b[0] === 0x89 && ascii(b, 1, 4) === "PNG" && b[4] === 0x0d && b[5] === 0x0a && b[6] === 0x1a && b[7] === 0x0a) return { mime: "image/png" };
@@ -68,6 +71,8 @@ function sniff(b: Uint8Array, ext: string): { mime: string } | null {
     if (HEIC_BRANDS.includes(brand)) return { mime: "image/heic" };
     if (MP4_BRANDS.includes(brand)) return { mime: "video/mp4" };
     if (brand === "qt  ") return { mime: "video/quicktime" };
+    // Another brand (phones and cameras use many): only a video extension makes it a video.
+    if (brand.length === 4 && (ext === "mov" || ext === "mp4")) return { mime: VIDEO_FAMILY };
   }
   if (ext === "mov" && QT_LEADING_ATOMS.includes(ascii(b, 4, 8))) return { mime: "video/quicktime" };
   return null;
@@ -106,6 +111,12 @@ export function detectFileKind(input: { name: string; declaredType?: string | nu
   let mime = found.mime;
   // A HEIC saved as .heif is stored as image/heif.
   if (mime === "image/heic" && extMime === "image/heif") mime = "image/heif";
+  // MP4 and MOV are the same container family, and phones often write one
+  // with the other's brand (for example an iPhone .mov with an "mp42" or
+  // "isom" brand). For a video, the extension decides between the two.
+  const isVideo = mime === "video/mp4" || mime === "video/quicktime" || mime === VIDEO_FAMILY;
+  if (isVideo && (extMime === "video/mp4" || extMime === "video/quicktime")) mime = extMime;
+  if (mime === VIDEO_FAMILY) return { ok: false, error: "Only PNG, JPG, WebP, PDF, HEIC, GIF, MP4 and MOV files can be uploaded." };
   if (extMime && extMime !== mime) {
     return { ok: false, error: `This file's contents don't match its .${ext} extension. Save it again with the right extension.` };
   }

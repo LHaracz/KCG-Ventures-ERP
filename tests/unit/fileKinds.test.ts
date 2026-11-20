@@ -61,9 +61,22 @@ describe("detectFileKind", () => {
     expect(detect("Clip A.mp4", bytes([0, 0, 0, 8], "mdat", [0, 0, 0, 0]))).toMatchObject({ ok: false });
   });
 
-  it("rejects a MOV named .mp4 (and an MP4 named .mov), and a .mov that is really text", () => {
-    expect(detect("Clip A.mp4", ftyp("qt  "))).toEqual({ ok: false, error: expect.stringMatching(/don't match its \.mp4 extension/) });
-    expect(detect("Clip A.mov", ftyp("mp42"))).toEqual({ ok: false, error: expect.stringMatching(/don't match its \.mov extension/) });
+  it("lets the extension decide between MP4 and MOV (phones often mix the brands)", () => {
+    // An iPhone .mov written with an MP4 brand.
+    for (const brand of ["mp42", "isom", "M4V ", "avc1"]) {
+      expect(detect("B8978F2D-0000-4000-8000-000000000001.mov", ftyp(brand), "")).toEqual({ ok: true, file: { kind: "mov", mime: "video/quicktime", extension: "mov" } });
+    }
+    expect(detect("Clip A.mp4", ftyp("qt  "))).toEqual({ ok: true, file: { kind: "mp4", mime: "video/mp4", extension: "mp4" } });
+    // Other camera brands count only with a video extension.
+    expect(detect("Clip A.mov", ftyp("XAVC"))).toMatchObject({ ok: true, file: { kind: "mov" } });
+    expect(detect("Clip A.mp4", ftyp("3gp5"))).toMatchObject({ ok: true, file: { kind: "mp4" } });
+    expect(detect("upload", ftyp("XAVC"))).toMatchObject({ ok: false });
+    expect(detect("Clip A.png", ftyp("XAVC"))).toMatchObject({ ok: false });
+  });
+
+  it("still rejects a HEIC named .mov, an MP4 named .heic, and a .mov that is really text", () => {
+    expect(detect("Clip A.mov", ftyp("heic"))).toEqual({ ok: false, error: expect.stringMatching(/don't match its \.mov extension/) });
+    expect(detect("Photo A.heic", ftyp("mp42"))).toMatchObject({ ok: false });
     expect(detect("Clip A.mov", bytes("just some text, not a video"))).toEqual({ ok: false, error: expect.stringMatching(/isn't a real MOV/) });
   });
 
