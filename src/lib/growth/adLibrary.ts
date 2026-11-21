@@ -88,13 +88,16 @@ export type PremadeForGate = PremadeText & {
   risky_ack_hash?: string | null;
 };
 
-export function premadeReadyCheck(args: {
-  premade: PremadeForGate;
-  selectedClaims: ReadonlyArray<{ claim_text: string; status: string }>;
-  hits: Hits;
-  currentTextHash: string;
-}): ReadyBlocker[] {
-  const { premade: p, selectedClaims, hits, currentTextHash } = args;
+/**
+ * The Ready gate. A reel needs a hook, at least one script beat and a CTA; a
+ * picture post needs a caption. Both need every asset need Ready, the
+ * customer's permission when required, and, when the final caption or script
+ * matches the avoid list or watch words, a "words reviewed" acknowledgement
+ * whose hash matches the current final caption and script. Pass hits and the
+ * hash computed on the FINAL caption (premadeGateText).
+ */
+export function premadeReadyCheck(args: { premade: PremadeForGate; hits: Hits; currentTextHash: string }): ReadyBlocker[] {
+  const { premade: p, hits, currentTextHash } = args;
   const out: ReadyBlocker[] = [];
   const has = (v: string | null | undefined) => !!(v ?? "").trim();
   if (p.category === "reel") {
@@ -102,8 +105,6 @@ export function premadeReadyCheck(args: {
     if (!(p.script_beats ?? []).some((b) => has(b.beat))) out.push({ key: "beats", message: "Add at least one script beat." });
     if (!has(p.cta_text)) out.push({ key: "cta", message: "Add the call to action (CTA)." });
   } else if (!has(p.caption)) out.push({ key: "caption", message: "Write the caption." });
-  const unapproved = selectedClaims.filter((c) => c.status !== "approved");
-  if (unapproved.length) out.push({ key: "claims", message: `These claims aren't approved: ${unapproved.map((c) => `"${c.claim_text}"`).join(", ")}.` });
   const open = (p.asset_needs ?? []).filter((n) => n.status !== "ready");
   if (open.length) out.push({ key: "needs", message: `${open.length} asset${open.length === 1 ? " is" : "s are"} still needed: ${open.map((n) => n.label).join(", ")}.` });
   if (p.needs_customer_permission && !p.permission_confirmed_at) out.push({ key: "permission", message: "Confirm the customer's permission first." });
@@ -113,6 +114,9 @@ export function premadeReadyCheck(args: {
   }
   return out;
 }
+
+/** The text the gate scans and hashes: the hook, the FINAL caption (with hashtags) and the script beats. */
+export const premadeGateText = (p: PremadeText, finalCaption: string): PremadeText => ({ hook: p.hook ?? null, caption: finalCaption, script_beats: p.script_beats ?? [] });
 
 // --- Needs ---------------------------------------------------------------------------------------------
 export type NeedItem = { id: string; asset_needs: readonly AssetNeed[] };
@@ -155,26 +159,50 @@ export function unlinkAssetFromNeed<T extends NeedItem>(items: readonly T[], key
 
 // --- Re-lettering --------------------------------------------------------------------------------------
 export type PillarLite = { id: string; code: string; name: string; archived_at?: string | null };
+export type ReletterItem = { id: string; pillar_id: string; title?: string | null; post_number?: number | null; subtopicCode?: string | null; archived_at?: string | null };
 export type ReletterPlan = {
   changes: Array<{ id: string; name: string; from: string; to: string }>;
   codes: Record<string, string>;
   affectedItems: Array<{ id: string; before: string; after: string }>;
+  /** Names that more than one non-archived post would share after the change (must be none). */
+  duplicates: string[];
 };
 const sortKey = (name: string) => name.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, "").replace(/\s+/g, " ").trim();
+const itemName = (it: ReletterItem, code: string) =>
+  it.post_number !== null && it.post_number !== undefined ? `${code}${it.subtopicCode ?? ""}-${it.post_number}` : `${code} - ${it.title ?? ""}`;
 
-/** Proposes A, B, C… by pillar name (case and punctuation ignored). Changes nothing. Archived pillars are skipped. */
-export function reletterAlphabetically(pillars: readonly PillarLite[], items: ReadonlyArray<{ id: string; pillar_id: string; title: string; archived_at?: string | null }> = []): ReletterPlan {
+/**
+ * Proposes A, B, C… by topic name (case and punctuation ignored), or applies
+ * the given `override` letters. Changes nothing. Archived topics are skipped.
+ * Lists the posts whose names change (old to new) and any duplicate names.
+ */
+export function reletterAlphabetically(pillars: readonly PillarLite[], items: readonly ReletterItem[] = [], override?: Record<string, string>): ReletterPlan {
   const active = pillars.filter((p) => !p.archived_at);
-  if (active.length > 26) throw new Error("There are more than 26 pillars; letters only go from A to Z.");
-  const sorted = [...active].sort((a, b) => sortKey(a.name).localeCompare(sortKey(b.name)) || a.name.localeCompare(b.name));
+  if (active.length > 26) throw new Error("There are more than 26 topics; letters only go from A to Z.");
   const codes: Record<string, string> = {};
-  sorted.forEach((p, i) => (codes[p.id] = String.fromCharCode(65 + i)));
-  const changes = sorted.filter((p) => p.code !== codes[p.id]).map((p) => ({ id: p.id, name: p.name, from: p.code, to: codes[p.id] }));
-  const byId = new Map(active.map((p) => [p.id, p]));
+  if (override) {
+    for (const p of active) codes[p.id] = override[p.id] ?? p.code;
+  } else {
+    const sorted = [...active].sort((a, b) => sortKey(a.name).localeCompare(sortKey(b.name)) || a.name.localeCompare(b.name));
+    sorted.forEach((p, i) => (codes[p.id] = String.fromCharCode(65 + i)));
+  }
+  const changes = active
+    .filter((p) => p.code !== codes[p.id])
+    .map((p) => ({ id: p.id, name: p.name, from: p.code, to: codes[p.id] }))
+    .sort((a, b) => a.to.localeCompare(b.to));
+  const byId = new Map(pillars.map((p) => [p.id, p]));
+  const newCode = (pillarId: string) => codes[pillarId] ?? byId.get(pillarId)?.code ?? "?";
   const affectedItems = items
-    .filter((it) => !it.archived_at && byId.has(it.pillar_id) && byId.get(it.pillar_id)!.code !== codes[it.pillar_id])
-    .map((it) => ({ id: it.id, before: displayName(byId.get(it.pillar_id)!.code, it.title), after: displayName(codes[it.pillar_id], it.title) }));
-  return { changes, codes, affectedItems };
+    .filter((it) => !it.archived_at && byId.has(it.pillar_id) && byId.get(it.pillar_id)!.code !== newCode(it.pillar_id))
+    .map((it) => ({ id: it.id, before: itemName(it, byId.get(it.pillar_id)!.code), after: itemName(it, newCode(it.pillar_id)) }));
+  const seen = new Map<string, number>();
+  for (const it of items) {
+    if (it.archived_at || it.post_number === null || it.post_number === undefined) continue;
+    const n = itemName(it, newCode(it.pillar_id));
+    seen.set(n, (seen.get(n) ?? 0) + 1);
+  }
+  const duplicates = [...seen.entries()].filter(([, c]) => c > 1).map(([n]) => n).sort();
+  return { changes, codes, affectedItems, duplicates };
 }
 
 /** The next free letter for a new pillar, or null when A to Z are all used. */

@@ -3,7 +3,7 @@ import { guardApi } from "@/lib/access/api";
 import { scheduleFromLibrary } from "@/lib/growth/libraryService";
 import { growthDb, growthError, readJson } from "@/lib/growth/routeHelpers";
 
-/** Add a library item to the calendar (one entry per platform). */
+/** Schedule a library post: { date, time?, platforms, schedule_anyway? } (one entry per platform, one schedule group). */
 export async function POST(request: Request, { params }: { params: Promise<{ premadeId: string }> }) {
   const denied = await guardApi(request);
   if (denied) return denied;

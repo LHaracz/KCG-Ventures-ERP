@@ -1,9 +1,10 @@
 "use client";
 
 /**
- * Needs on library items (graphics, photos and videos an item still needs):
- * the editor's Needs section, the asset picker with suggestions, "Upload and
- * attach", and the Needs panel that groups needs across the library.
+ * Needs on library posts (graphics, photos and videos a post still needs):
+ * the editor's Needs section (also for a post that isn't saved yet), the
+ * list asset picker used by the Needs panel, "Upload and attach", and the
+ * Needs panel that groups needs across the library.
  */
 import { assetNameError, hasDuplicateName } from "@/lib/growth/assetNames";
 import { useMemo, useState } from "react";
@@ -17,6 +18,7 @@ import type { PremadeRow } from "@/lib/growth/libraryService";
 import type { Asset } from "@/lib/growth/marketingService";
 import { Checkbox, Chip, Dialog, ErrorSummary, Select, TextField, btn, btnPrimary, card, errorBox, infoBox, input, warnBox } from "./GrowthUi";
 import { Drawer } from "./LibraryTabs";
+import { AssetCardPicker } from "./AssetCardPicker";
 
 const touch = "min-h-11";
 const KIND_LABEL: Record<string, string> = { graphic: "Graphic", photo: "Photo", video: "Video", other: "Other" };
@@ -41,16 +43,48 @@ export const productIdsForKeys = (data: MarketingData, keys: readonly string[]) 
     return !!k && keys.includes(k);
   }).map((p) => p.id);
 
-export function NeedsSection({ data, item, reload }: { data: MarketingData; item: PremadeRow | null; reload: () => Promise<void> }) {
-  const [picking, setPicking] = useState<AssetNeed | "general" | null>(null);
+/** A new need's key ("custom:extra_photo", unique in the list). */
+export function customNeedKey(label: string, needs: readonly AssetNeed[]): string {
+  const slug = label.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "").slice(0, 40) || "need";
+  let k = `custom:${slug}`;
+  for (let i = 2; needs.some((n) => n.key === k); i++) k = `custom:${slug}_${i}`;
+  return k;
+}
+
+/** Needs held in the form of a post that isn't saved yet (saved with the post). */
+export type DraftNeeds = { needs: AssetNeed[]; setNeeds: (n: AssetNeed[]) => void; addAsset: (id: string) => void };
+
+/**
+ * The editor's Needs section. For a saved post each change is saved at once
+ * (with "also apply" to other posts with the same need); for a new post the
+ * needs live in the form (`draft`) and are saved with it.
+ */
+export function NeedsSection({ data, item, reload, draft, business, productIds }: { data: MarketingData; item: PremadeRow | null; reload: () => Promise<void>; draft?: DraftNeeds; business: string; productIds: readonly string[] }) {
+  const [picking, setPicking] = useState<AssetNeed | null>(null);
   const [uploading, setUploading] = useState<AssetNeed | null>(null);
   const [adding, setAdding] = useState(false);
+  const [also, setAlso] = useState(false);
   const [notices, setNotices] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const needs = draft ? draft.needs : item?.asset_needs ?? [];
   const assetTitle = (id: string | null | undefined) => data.assets.find((a) => a.id === id)?.title ?? "an asset";
   const run = async (body: Record<string, unknown>) => {
-    if (!item) return;
     setError(null);
+    if (draft) {
+      const op = body.op as string;
+      const key = body.key as string;
+      if (op === "attach") {
+        draft.setNeeds(needs.map((n) => (n.key === key ? { ...n, status: "ready", asset_id: body.asset_id as string } : n)));
+        draft.addAsset(body.asset_id as string);
+      } else if (op === "unlink") draft.setNeeds(needs.map((n) => (n.key === key ? { ...n, status: "needed", asset_id: null } : n)));
+      else if (op === "remove") draft.setNeeds(needs.filter((n) => n.key !== key));
+      else if (op === "add") {
+        if (needs.length >= 20) return setError("At most 20 needs per post.");
+        draft.setNeeds([...needs, { key: customNeedKey(String(body.label), needs), label: String(body.label).trim(), kind: body.kind as AssetNeed["kind"], status: "needed", asset_id: null, note: String(body.note ?? "").trim() || null }]);
+      }
+      return;
+    }
+    if (!item) return;
     try {
       const r = await needsActionApi(item.id, body);
       setNotices(r.notices ?? []);
@@ -59,26 +93,19 @@ export function NeedsSection({ data, item, reload }: { data: MarketingData; item
       setError((e as Error).message);
     }
   };
-  if (!item) {
-    return (
-      <section className={card}>
-        <h3 className="text-sm font-semibold">Needs and attached assets</h3>
-        <p className="text-xs">Save the item first to list what it needs and attach assets.</p>
-      </section>
-    );
-  }
-  const others = (key: string) => data.premades.filter((p) => !p.archived_at && p.id !== item.id && p.asset_needs.some((n) => n.key === key && n.status !== "ready"));
+  const others = (key: string) => (item ? data.premades.filter((p) => !p.archived_at && p.id !== item.id && p.asset_needs.some((n) => n.key === key && n.status !== "ready")) : []);
   return (
     <section className={`${card} space-y-3`} data-testid="needs-section">
       <div className="flex items-center justify-between">
-        <h3 className="text-sm font-semibold">Needs ({item.asset_needs.filter((n) => n.status !== "ready").length} open)</h3>
+        <h3 className="text-sm font-semibold">Needs ({needs.filter((n) => n.status !== "ready").length} open)</h3>
         <button type="button" className={btn} onClick={() => setAdding(true)}>Add need</button>
       </div>
+      {draft && <p className="text-[11px]">Saved with the post.</p>}
       {error && <p className={errorBox} role="alert">{error}</p>}
       {notices.map((n) => <p key={n} className={warnBox}>{n}</p>)}
-      {item.asset_needs.length === 0 && <p className="text-xs">No needs listed.</p>}
+      {needs.length === 0 && <p className="text-xs">No needs listed.</p>}
       <ul className="space-y-2">
-        {item.asset_needs.map((n) => (
+        {needs.map((n) => (
           <li key={n.key} className="rounded-md border border-zinc-200 p-2 text-sm" data-testid="need-row">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div>
@@ -89,7 +116,7 @@ export function NeedsSection({ data, item, reload }: { data: MarketingData; item
               <div className="flex flex-wrap gap-1">
                 {n.status !== "ready" ? (
                   <>
-                    <button type="button" className={`${btn} ${touch}`} onClick={() => setPicking(n)}>Attach asset</button>
+                    <button type="button" className={`${btn} ${touch}`} onClick={() => { setAlso(n.key.startsWith("cover:")); setPicking(n); }}>Attach asset</button>
                     <button type="button" className={`${btn} ${touch}`} onClick={() => setUploading(n)}>Upload and attach</button>
                   </>
                 ) : (
@@ -101,47 +128,38 @@ export function NeedsSection({ data, item, reload }: { data: MarketingData; item
           </li>
         ))}
       </ul>
-      <div>
-        <div className="flex items-center justify-between">
-          <h4 className="text-xs font-semibold">Attached assets ({item.asset_ids.length})</h4>
-          <button type="button" className={btn} onClick={() => setPicking("general")}>Attach an asset</button>
-        </div>
-        <ul className="mt-1 space-y-1 text-xs" data-testid="attached-assets">
-          {item.asset_ids.map((id) => (
-            <li key={id} className="flex items-center justify-between gap-2">
-              <span>{assetTitle(id)}</span>
-              <button type="button" className={btn} onClick={() => run({ op: "detach_asset", asset_id: id })}>Remove</button>
-            </li>
-          ))}
-        </ul>
-      </div>
       {picking && (
-        <AssetPicker
+        <AssetCardPicker
           data={data}
-          need={picking === "general" ? null : picking}
-          products={item.products_mentioned}
-          alsoCount={picking === "general" ? 0 : others(picking.key).length}
-          defaultAlso={picking !== "general" && picking.key.startsWith("cover:")}
+          mode="single"
+          title={`Attach an asset: ${picking.label}`}
+          reload={reload}
           onClose={() => setPicking(null)}
-          onPick={async (assetId, also) => {
+          extra={
+            others(picking.key).length > 0 ? (
+              <Checkbox name="also-apply" label={`Also apply to the ${others(picking.key).length} other post${others(picking.key).length === 1 ? "" : "s"} with the same need`} checked={also} onChange={setAlso} />
+            ) : null
+          }
+          onSave={async ([assetId]) => {
             const need = picking;
             setPicking(null);
-            if (need === "general") await run({ op: "attach_asset", asset_id: assetId });
-            else await run({ op: "attach", key: need.key, asset_id: assetId, also_ids: also ? others(need.key).map((p) => p.id) : [] });
+            await run({ op: "attach", key: need.key, asset_id: assetId, also_ids: also ? others(need.key).map((p) => p.id) : [] });
           }}
         />
       )}
       {uploading && (
         <UploadAttachDialog
           data={data}
-          item={item}
+          business={business}
+          productIds={productIds}
           need={uploading}
           alsoCount={others(uploading.key).length}
           onClose={() => setUploading(null)}
-          onDone={async (assetId, also) => {
+          onDone={async (assetId, alsoApply) => {
             const need = uploading;
             setUploading(null);
-            await run({ op: "attach", key: need.key, asset_id: assetId, also_ids: also ? others(need.key).map((p) => p.id) : [] });
+            await reload();
+            await run({ op: "attach", key: need.key, asset_id: assetId, also_ids: alsoApply ? others(need.key).map((p) => p.id) : [] });
           }}
         />
       )}
@@ -235,8 +253,7 @@ export function AssetPicker({
 }
 
 /** Uploads a file (or saves a link) as a library asset, prefilled from the item, then attaches it. */
-function UploadAttachDialog({ data, item, need, alsoCount, onClose, onDone }: { data: MarketingData; item: PremadeRow; need: AssetNeed; alsoCount: number; onClose: () => void; onDone: (assetId: string, also: boolean) => void }) {
-  const productIds = productIdsForKeys(data, item.products_mentioned);
+function UploadAttachDialog({ data, business, productIds, need, alsoCount, onClose, onDone }: { data: MarketingData; business: string; productIds: readonly string[]; need: AssetNeed; alsoCount: number; onClose: () => void; onDone: (assetId: string, also: boolean) => void }) {
   const [mode, setMode] = useState<"upload" | "link">(need.kind === "video" ? "link" : "upload");
   const [file, setFile] = useState<File | null>(null);
   const [fileError, setFileError] = useState<string | null>(null);
@@ -252,9 +269,9 @@ function UploadAttachDialog({ data, item, need, alsoCount, onClose, onDone }: { 
   const [v, setV] = useState({
     title: need.label,
     category: categoryForProducts(productIds.length, data.assetCategories.map((c) => c.key)) ?? "",
-    product_ids: productIds,
+    product_ids: [...productIds],
     asset_type: KIND_TYPE[need.kind] ?? "other",
-    business: item.business,
+    business,
     url: "",
     context_label: "",
   });
@@ -401,7 +418,7 @@ function GroupApply({ data, group, op, onClose, onDone }: { data: MarketingData;
           {items.map((p) => (
             <li key={p.id}>
               <label className={`flex items-center gap-2 text-sm ${touch}`}>
-                <input type="checkbox" checked={ids.includes(p.id)} onChange={() => setIds(ids.includes(p.id) ? ids.filter((x) => x !== p.id) : [...ids, p.id])} /> {p.display_name}
+                <input type="checkbox" checked={ids.includes(p.id)} onChange={() => setIds(ids.includes(p.id) ? ids.filter((x) => x !== p.id) : [...ids, p.id])} /> {p.name}
               </label>
             </li>
           ))}

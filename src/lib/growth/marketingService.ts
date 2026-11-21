@@ -14,6 +14,7 @@ import { isIsoDate } from "./dates";
 import { claimsReadyCheck, isReadyStatus, scanText } from "./text";
 import { sortCategories, validateAssetCategory, type AssetCategoryRow } from "./assetCategories";
 import { listAssignableEmployees } from "./employees";
+import { fileKindOf, normalizeHashtagList, paginate } from "./naming";
 import type { Db } from "./routeHelpers";
 
 export const MARKETING_BUCKET = "marketing-assets";
@@ -104,6 +105,8 @@ export type Post = {
   created_by_name: string | null;
   premade_post_id: string | null;
   premade_synced_at: string | null;
+  /** Entries scheduled together (one per platform) share this. */
+  schedule_group_id: string | null;
   asset_ids: string[];
   claim_ids: string[];
 };
@@ -116,7 +119,7 @@ const ASSET_COLUMNS =
   "id, title, business, formulation_product_id, asset_type, source, file_path, url, mime_type, size_bytes, project_url, status, notes, created_by_name, created_at, category, context_label, shot_date, is_full_lineup, preview_path, poster_path, width, height, duration_seconds";
 const PROFILE_COLUMNS = "id, formulation_product_id, tagline, short_description, long_description, label_ingredients, key_points, hashtags, do_not_say, primary_asset_id, updated_by_name, updated_at";
 const POST_COLUMNS =
-  "id, title, business, formulation_product_id, platform, post_type, status, scheduled_date, scheduled_time, owner_account_id, caption, hashtags, project_url, posted_url, posted_at, notes, risky_words_checked, archived_at, created_by_name, premade_post_id, premade_synced_at";
+  "id, title, business, formulation_product_id, platform, post_type, status, scheduled_date, scheduled_time, owner_account_id, caption, hashtags, project_url, posted_url, posted_at, notes, risky_words_checked, archived_at, created_by_name, premade_post_id, premade_synced_at, schedule_group_id";
 
 const iso = (v: unknown): string | null => (v instanceof Date ? v.toISOString().slice(0, 10) : typeof v === "string" && v ? v.slice(0, 10) : null);
 const time = (v: unknown): string | null => (typeof v === "string" && v ? v.slice(0, 5) : null);
@@ -210,10 +213,11 @@ export async function saveProfile(db: Db, productId: unknown, input: Record<stri
     long_description: textField(input, "long_description", 2000, "Long description", errors),
     label_ingredients: textField(input, "label_ingredients", 2000, "Ingredients", errors),
     key_points: textField(input, "key_points", 1500, "Key points", errors),
-    hashtags: textField(input, "hashtags", 500, "Hashtags", errors),
+    hashtags: normalizeHashtagList(txt(input, "hashtags")),
     do_not_say: textField(input, "do_not_say", 1000, "Do not say", errors),
     primary_asset_id: null as string | null,
   };
+  if ((v.hashtags ?? "").length > 2000) errors.hashtags = "Keep the hashtags under 2000 characters.";
   const a = input.primary_asset_id;
   if (a) {
     if (!isUuid(a)) errors.primary_asset_id = "Choose a photo from the library.";
@@ -708,6 +712,12 @@ export async function checkPost(db: Db, p: { status: string; caption: string | n
 }
 
 export async function savePost(db: Db, id: unknown | null, input: Record<string, unknown>, actor: string | null) {
+  // Entries scheduled from the Ad Library read the library post live; they
+  // change only through Edit schedule, Mark posted and Remove from calendar.
+  if (id) {
+    const { data: cur } = await db.from("content_posts").select("premade_post_id").eq("id", idOrThrow(id, "post")).maybeSingle();
+    if (cur?.premade_post_id) throw new GrowthError("This entry comes from the Ad Library. Use Edit schedule, Mark posted or Remove from calendar.", 400);
+  }
   const errors: Errors = {};
   const title = txt(input, "title");
   if (!title) errors.title = "Enter a title.";
@@ -838,4 +848,38 @@ export async function saveRiskyWord(db: Db, id: unknown | null, input: Record<st
     if (r.error.code === "23505" || /unique/i.test(r.error.message ?? "")) throw new GrowthError("That word is already on the list (it may be archived).", 409, { phrase: "Already on the list." });
     fail(r.error, "Could not save the word.");
   }
+}
+
+// --- Asset card picker ------------------------------------------------------------------------------
+/**
+ * One page (20) of non-archived assets for the card picker, newest first.
+ * Filters: category (a key, "uncategorized" or ""), kind (image, gif,
+ * video, pdf, link or ""), a name search and a product.
+ */
+export async function listAssetPage(db: Db, input: Record<string, unknown>) {
+  const [{ data, error }, { data: links }] = await Promise.all([
+    db.from("marketing_assets").select(ASSET_COLUMNS),
+    db.from("asset_product_links").select("asset_id, formulation_product_id"),
+  ]);
+  if (error) fail(error, "Could not load assets.");
+  const productIds = new Map<string, string[]>();
+  for (const l of (links ?? []) as Array<{ asset_id: string; formulation_product_id: string }>) productIds.set(l.asset_id, [...(productIds.get(l.asset_id) ?? []), l.formulation_product_id]);
+  const category = txt(input, "category");
+  const kind = txt(input, "kind");
+  const q = txt(input, "q").toLowerCase();
+  const product = txt(input, "product");
+  const rows = ((data ?? []) as Asset[])
+    .filter((a) => a.status !== "archived")
+    .filter((a) => !category || (category === "uncategorized" ? !a.category : a.category === category))
+    .filter((a) => !kind || fileKindOf(a) === kind)
+    .filter((a) => !q || a.title.toLowerCase().includes(q))
+    .filter((a) => !product || (productIds.get(a.id) ?? []).includes(product))
+    .sort((a, b) => (a.created_at < b.created_at ? 1 : a.created_at > b.created_at ? -1 : a.id.localeCompare(b.id)));
+  const pg = paginate(rows.length, Number(input.page) || 1, 20);
+  return {
+    rows: rows.slice(pg.from, pg.to).map((a) => ({ ...a, shot_date: iso(a.shot_date), product_ids: productIds.get(a.id) ?? [] })),
+    total: rows.length,
+    page: pg.page,
+    pages: pg.pages,
+  };
 }

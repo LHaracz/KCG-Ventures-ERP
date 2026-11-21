@@ -2,3 +2,5 @@
 # flag (for example a PDF the repo intentionally tracks). Lines starting with # are ignored.
 # SQL script that creates backup tables inside Supabase; contains no data.
 supabase-opening-batches/00-backup.sql
+# SQL script that creates backup tables inside Supabase for the naming conversion; contains no data.
+supabase/conversions/2026-11-naming/00-backup.sql

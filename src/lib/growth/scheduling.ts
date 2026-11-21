@@ -4,7 +4,7 @@
  * mix. Dates are date-only strings (YYYY-MM-DD); times are Eastern Time
  * "HH:MM" as entered.
  */
-import { displayName, type PictureFormat, type PremadeCategory, type PremadeIntent, type PremadeStatus, type ReadyBlocker } from "./adLibrary";
+import type { PictureFormat, PremadeCategory, PremadeIntent, PremadeStatus } from "./adLibrary";
 
 const DAY = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 export const DAY_SHORT = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -13,34 +13,34 @@ export const weekdayOf = (date: string) => new Date(`${date}T00:00:00Z`).getUTCD
 export const dayName = (d: number) => DAY[d];
 
 // --- Calendar entries from a library item ---------------------------------------------------------------
+export const CALENDAR_PLATFORMS = ["instagram", "facebook", "tiktok", "youtube", "other"] as const;
+export const PLATFORM_SHORT: Record<string, string> = { instagram: "IG", facebook: "FB", tiktok: "TT", youtube: "YT", other: "Other" };
+
 export type PremadeForCalendar = {
   id: string;
-  title: string;
-  pillar_code: string;
+  name: string;
   category: PremadeCategory;
   picture_format: PictureFormat | null;
   intent: PremadeIntent;
   status: PremadeStatus;
   business: string;
-  caption: string | null;
-  hashtags: string | null;
-  products_mentioned?: readonly string[] | null;
 };
 export type CalendarRow = {
   title: string;
   business: string;
   platform: string;
   post_type: "reel" | "story" | "post" | "ad";
-  status: "idea" | "scripting" | "editing" | "ready";
+  status: "scheduled";
   scheduled_date: string;
   scheduled_time: string | null;
-  owner_account_id: string | null;
-  caption: string | null;
-  hashtags: string | null;
-  notes: string | null;
-  risky_words_checked: boolean;
+  owner_account_id: null;
+  caption: null;
+  hashtags: null;
+  notes: null;
+  risky_words_checked: false;
   premade_post_id: string;
-  premade_synced_at: string;
+  premade_synced_at: null;
+  schedule_group_id: string;
 };
 
 export function postTypeFor(p: Pick<PremadeForCalendar, "category" | "intent" | "picture_format">): CalendarRow["post_type"] {
@@ -50,53 +50,45 @@ export function postTypeFor(p: Pick<PremadeForCalendar, "category" | "intent" | 
 }
 
 /**
- * One content_posts row per platform. Paused items are refused. A Ready item
- * whose gates no longer pass goes in as Editing, with the blockers returned
- * as warnings.
+ * One content_posts row per platform from the scheduling form, all sharing a
+ * schedule_group_id, status Scheduled. Entries copy no content: the calendar
+ * reads the library post's name, final caption and assets live, and the
+ * caption is frozen into the entry only at Mark posted. The stored title is
+ * the short name (a fallback). Paused posts are refused.
  */
 export function calendarEntriesFromPremade(args: {
   premade: PremadeForCalendar;
-  series?: { default_hashtags: string | null } | null;
   date: string;
   time?: string | null;
   platforms: readonly string[];
-  owner?: string | null;
-  gateResult: { blockers: readonly ReadyBlocker[] };
-  now?: string;
-}): { ok: true; rows: CalendarRow[]; warnings: string[] } | { ok: false; error: string } {
-  const { premade: p, date, platforms } = args;
-  if (p.status === "paused") return { ok: false, error: "This item is paused. Reactivate it first." };
+  groupId: string;
+}): { ok: true; rows: CalendarRow[] } | { ok: false; error: string } {
+  const { premade: p, date } = args;
+  if (p.status === "paused") return { ok: false, error: "This post is paused. Reactivate it first." };
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return { ok: false, error: "Choose a date." };
-  const plats = [...new Set(platforms)];
+  const plats = [...new Set(args.platforms)];
   if (!plats.length) return { ok: false, error: "Choose at least one platform." };
-  const warnings: string[] = [];
-  let status: CalendarRow["status"];
-  if (p.status === "idea") status = "idea";
-  else if (p.status === "drafting") status = p.category === "reel" ? "scripting" : "editing";
-  else if (args.gateResult.blockers.length === 0) status = "ready";
-  else {
-    status = "editing";
-    warnings.push(...args.gateResult.blockers.map((b) => b.message));
-  }
-  const products = (p.products_mentioned ?? []).filter(Boolean);
-  const now = args.now ?? new Date().toISOString();
+  if (plats.some((x) => !(CALENDAR_PLATFORMS as readonly string[]).includes(x))) return { ok: false, error: "Choose platforms from the list." };
+  const time = (args.time ?? "").trim();
+  if (time && !/^([01]\d|2[0-3]):[0-5]\d$/.test(time)) return { ok: false, error: "Enter a time like 09:30." };
   const rows = plats.map((platform) => ({
-    title: displayName(p.pillar_code, p.title).slice(0, 200),
+    title: p.name.slice(0, 200),
     business: p.business,
     platform,
     post_type: postTypeFor(p),
-    status,
+    status: "scheduled" as const,
     scheduled_date: date,
-    scheduled_time: args.time || null,
-    owner_account_id: args.owner || null,
-    caption: p.caption,
-    hashtags: (p.hashtags ?? "").trim() ? p.hashtags : args.series?.default_hashtags ?? null,
-    notes: products.length ? `Products: ${products.join(", ")}` : null,
-    risky_words_checked: status === "ready",
+    scheduled_time: time || null,
+    owner_account_id: null,
+    caption: null,
+    hashtags: null,
+    notes: null,
+    risky_words_checked: false as const,
     premade_post_id: p.id,
-    premade_synced_at: now,
+    premade_synced_at: null,
+    schedule_group_id: args.groupId,
   }));
-  return { ok: true, rows, warnings };
+  return { ok: true, rows };
 }
 
 // --- Best-time hints ------------------------------------------------------------------------------------

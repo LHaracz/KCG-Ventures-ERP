@@ -60,6 +60,7 @@ describe("migration", () => {
 describe("adding and deleting categories", () => {
   beforeEach(async () => {
     await pg.exec(migration("asset_categories.sql"));
+    await pg.exec(migration("marketing_naming.sql")); // loadMarketing reads the calendar's schedule groups
   });
 
   it("adds a category before Other, with unique names, and assets can use it with no extra rules", async () => {

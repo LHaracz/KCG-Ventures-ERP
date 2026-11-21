@@ -152,22 +152,20 @@ describe("hash, names and auto titles", () => {
 describe("premadeReadyCheck", () => {
   const reel: PremadeForGate = { category: "reel", hook: "H", script_beats: [{ time: "0:00", beat: "B" }], cta_text: "Shop", asset_needs: [] };
   const none: Hits = { risky: [], avoid: [] };
-  const keys = (p: PremadeForGate, claims: Array<{ claim_text: string; status: string }> = [], hits = none, hash = "h") =>
-    premadeReadyCheck({ premade: p, selectedClaims: claims, hits, currentTextHash: hash }).map((b) => b.key);
+  const keys = (p: PremadeForGate, hits = none, hash = "h") => premadeReadyCheck({ premade: p, hits, currentTextHash: hash }).map((b) => b.key);
   it("no blockers", () => expect(keys(reel)).toEqual([]));
   it("each blocker", () => {
     expect(keys({ ...reel, hook: " " })).toEqual(["hook"]);
     expect(keys({ ...reel, script_beats: [] })).toEqual(["beats"]);
     expect(keys({ ...reel, cta_text: null })).toEqual(["cta"]);
     expect(keys({ category: "picture_post", caption: "" })).toEqual(["caption"]);
-    expect(keys(reel, [{ claim_text: "Claim A", status: "draft" }])).toEqual(["claims"]);
     expect(keys({ ...reel, asset_needs: [{ key: "k", label: "L", kind: "photo", status: "needed" }] })).toEqual(["needs"]);
     expect(keys({ ...reel, needs_customer_permission: true })).toEqual(["permission"]);
     expect(keys({ ...reel, needs_customer_permission: true, permission_confirmed_at: "2026-01-01" })).toEqual([]);
     const hits = { risky: [{ phrase: "miracle", index: 0 }], avoid: [] };
-    expect(keys({ ...reel, risky_ack_hash: null }, [], hits, "h1")).toEqual(["words"]);
-    expect(keys({ ...reel, risky_ack_hash: "h0" }, [], hits, "h1")).toEqual(["words"]); // the text changed since
-    expect(keys({ ...reel, risky_ack_hash: "h1" }, [], hits, "h1")).toEqual([]);
+    expect(keys({ ...reel, risky_ack_hash: null }, hits, "h1")).toEqual(["words"]);
+    expect(keys({ ...reel, risky_ack_hash: "h0" }, hits, "h1")).toEqual(["words"]); // the text changed since
+    expect(keys({ ...reel, risky_ack_hash: "h1" }, hits, "h1")).toEqual([]);
   });
 });
 
@@ -201,9 +199,9 @@ describe("reletterAlphabetically", () => {
     { id: "3", code: "C", name: "mango" },
     { id: "4", code: "D", name: "Archived One", archived_at: "2026-01-01" },
   ];
-  it("orders by name ignoring case and punctuation, skips archived, lists affected items", () => {
+  it("orders by name ignoring case and punctuation, skips archived, lists affected posts by short name", () => {
     const r = reletterAlphabetically(pillars, [
-      { id: "i1", pillar_id: "1", title: "Item one" },
+      { id: "i1", pillar_id: "1", post_number: 1, subtopicCode: "A" },
       { id: "i2", pillar_id: "3", title: "Item two" },
     ]);
     expect(r.codes).toEqual({ "2": "A", "3": "B", "1": "C" });
@@ -213,9 +211,17 @@ describe("reletterAlphabetically", () => {
       ["Zebra Facts", "A", "C"],
     ]);
     expect(r.affectedItems).toEqual([
-      { id: "i1", before: "A - Item one", after: "C - Item one" },
+      { id: "i1", before: "AA-1", after: "CA-1" },
       { id: "i2", before: "C - Item two", after: "B - Item two" },
     ]);
+    expect(r.duplicates).toEqual([]);
+  });
+  it("override letters and duplicate names", () => {
+    const r = reletterAlphabetically(pillars, [
+      { id: "i1", pillar_id: "1", post_number: 1 },
+      { id: "i2", pillar_id: "2", post_number: 1 },
+    ], { "1": "B", "2": "B" });
+    expect(r.duplicates).toEqual(["B-1"]);
   });
   it("more than 26 pillars is refused", () => {
     expect(() => reletterAlphabetically(Array.from({ length: 27 }, (_, i) => ({ id: `${i}`, code: "A", name: `P${i}` })))).toThrow(/more than 26/);
@@ -223,33 +229,21 @@ describe("reletterAlphabetically", () => {
 });
 
 describe("calendarEntriesFromPremade", () => {
-  const base: PremadeForCalendar = {
-    id: "p1", title: "Widget facts", pillar_code: "A", category: "reel", picture_format: null, intent: "organic",
-    status: "drafting", business: "botaniqals", caption: "Cap", hashtags: "", products_mentioned: ["gum"],
-  };
-  const run = (over: Partial<PremadeForCalendar>, blockers: Array<{ key: string; message: string }> = [], platforms = ["instagram"]) =>
-    calendarEntriesFromPremade({ premade: { ...base, ...over }, series: { default_hashtags: "#serieswide" }, date: "2026-12-01", time: "09:30", platforms, owner: "o1", gateResult: { blockers }, now: "2026-11-17T12:00:00.000Z" });
-  it("status and type mappings", () => {
-    const ok = (r: ReturnType<typeof run>) => (r.ok ? r : (() => { throw new Error(r.error); })());
-    expect(ok(run({ status: "idea" })).rows[0]).toMatchObject({ status: "idea", post_type: "reel" });
-    expect(ok(run({})).rows[0].status).toBe("scripting");
-    expect(ok(run({ category: "picture_post", picture_format: "single_image" })).rows[0]).toMatchObject({ status: "editing", post_type: "post" });
+  const base: PremadeForCalendar = { id: "p1", name: "AA-1", category: "reel", picture_format: null, intent: "organic", status: "drafting", business: "botaniqals" };
+  const run = (over: Partial<PremadeForCalendar>, platforms: string[] = ["instagram"]) =>
+    calendarEntriesFromPremade({ premade: { ...base, ...over }, date: "2026-12-01", time: "09:30", platforms, groupId: "g1" });
+  const ok = (r: ReturnType<typeof run>) => (r.ok ? r : (() => { throw new Error(r.error); })());
+  it("one Scheduled entry per platform, the short name, no caption, one group", () => {
+    const r = ok(run({}, ["instagram", "tiktok", "instagram"]));
+    expect(r.rows.map((x) => x.platform)).toEqual(["instagram", "tiktok"]);
+    expect(r.rows[0]).toMatchObject({ title: "AA-1", status: "scheduled", caption: null, hashtags: null, premade_post_id: "p1", schedule_group_id: "g1", scheduled_time: "09:30", post_type: "reel" });
     expect(ok(run({ category: "picture_post", picture_format: "story" })).rows[0].post_type).toBe("story");
     expect(ok(run({ intent: "paid" })).rows[0].post_type).toBe("ad");
-    expect(ok(run({ status: "ready" })).rows[0]).toMatchObject({ status: "ready", risky_words_checked: true });
-    const blocked = ok(run({ status: "ready" }, [{ key: "needs", message: "1 asset is still needed" }]));
-    expect(blocked.rows[0].status).toBe("editing");
-    expect(blocked.warnings).toEqual(["1 asset is still needed"]);
   });
-  it("one entry per platform, display name, hashtags fallback, sync fields", () => {
-    const r = run({}, [], ["instagram", "tiktok", "instagram"]);
-    if (!r.ok) throw new Error(r.error);
-    expect(r.rows.map((x) => x.platform)).toEqual(["instagram", "tiktok"]);
-    expect(r.rows[0]).toMatchObject({ title: "A - Widget facts", hashtags: "#serieswide", premade_post_id: "p1", premade_synced_at: "2026-11-17T12:00:00.000Z", scheduled_time: "09:30", owner_account_id: "o1", notes: "Products: gum" });
-  });
-  it("paused items and missing platforms are refused", () => {
+  it("paused posts, missing or unknown platforms are refused", () => {
     expect(run({ status: "paused" })).toEqual({ ok: false, error: expect.stringMatching(/paused/) });
-    expect(run({}, [], [])).toEqual({ ok: false, error: expect.stringMatching(/platform/) });
+    expect(run({}, [])).toEqual({ ok: false, error: expect.stringMatching(/platform/) });
+    expect(run({}, ["myspace"])).toEqual({ ok: false, error: expect.stringMatching(/platform/) });
     expect(postTypeFor({ category: "picture_post", intent: "both", picture_format: "carousel" })).toBe("post");
   });
 });

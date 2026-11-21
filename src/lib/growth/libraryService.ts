@@ -1,19 +1,23 @@
 /**
  * Ad Library server code (service role, after the route's growth.marketing
- * check): pillars, series, library items (reels and picture posts) with
- * their flags, claims, assets and needs, closing lines, and the data the
- * Ad Library, Pillars, Calendar and Best Times tabs show.
+ * check): topics (pillars), subtopics (the content_series table), library
+ * posts (reels and picture posts) with their flags, products, assets and
+ * needs, caption edits and history, closing lines, scheduling on the
+ * calendar, and the data the Ad Library, Pillars, Calendar and Best Times
+ * tabs show.
  *
- * Display names ("{letter} - {title}") are computed, never stored.
+ * Names are short and computed, never stored on the post: topic letter +
+ * subtopic letter + "-" + number ("AA-1"), or topic letter + "-" + number
+ * ("B-1"). Numbers come from the database functions create_premade_post and
+ * move_premade_posts and are never reused.
  */
 import { GrowthError, idOrThrow, isUuid } from "./errors";
 import {
   FLAG_KEYS,
-  LIBRARY_PLATFORMS,
   PREMADE_INTENTS,
   PREMADE_STATUSES,
-  displayName,
   hashPremadeText,
+  premadeGateText,
   premadeReadyCheck,
   premadeScanText,
   reletterAlphabetically,
@@ -27,28 +31,46 @@ import { parseDuration } from "./playbookParse";
 import { categoryDeleteBlocker, categoryNameError, validateAssetCategory } from "./assetCategories";
 import { assetTagsFrom, categoryKeys, setAssetTags } from "./marketingService";
 import { todayNy } from "./dates";
-import { calendarEntriesFromPremade } from "./scheduling";
+import { calendarEntriesFromPremade, CALENDAR_PLATFORMS } from "./scheduling";
+import { composeFinalCaption, currentPostName, normalizeHashtagList, postHashtags, scheduleGroupDiff } from "./naming";
 import type { Db } from "./routeHelpers";
 
-export type Pillar = { id: string; code: string; name: string; description: string | null; recurring: boolean; sort_order: number; archived_at: string | null };
-export type Series = { id: string; pillar_id: string; name: string; cover_text: string | null; default_hashtags: string | null; notes: string | null; sort_order: number; archived_at: string | null };
+export type Pillar = { id: string; code: string; name: string; description: string | null; recurring: boolean; sort_order: number; archived_at: string | null; last_unsorted_post_number: number };
+/** A subtopic (stored in content_series). */
+export type Series = {
+  id: string;
+  pillar_id: string;
+  name: string;
+  code: string | null;
+  last_post_number: number;
+  cover_text: string | null;
+  default_hashtags: string | null;
+  notes: string | null;
+  sort_order: number;
+  archived_at: string | null;
+};
 export type Flag = { id: string; premade_post_id: string; flag_key: FlagKey; detail: Record<string, unknown>; dismissed_by_name: string | null; dismissed_at: string | null; created_at: string };
 export type Premade = {
   id: string;
-  title: string;
+  /** The imported title (optional; new posts have none). */
+  title: string | null;
   category: "reel" | "picture_post";
   picture_format: "carousel" | "single_image" | "story" | "unknown" | null;
   business: "botaniqals" | "minileaf" | "brand";
   pillar_id: string;
   series_id: string | null;
   series_position: number | null;
+  post_number: number | null;
+  name_history: Array<{ name: string; changed_at: string }>;
   status: "idea" | "drafting" | "ready" | "paused";
   intent: "organic" | "paid" | "both";
   is_recurring: boolean;
   platforms: string[];
+  /** Imported product tags (read-only; products are linked in premade_post_products). */
   products_mentioned: string[];
   hook: string | null;
   caption: string | null;
+  /** Legacy extra hashtags typed on the post before this build (merged last). */
   hashtags: string | null;
   cta_text: string | null;
   style_tag: string | null;
@@ -76,10 +98,15 @@ export type Premade = {
   updated_at: string;
 };
 export type PremadeRow = Premade & {
+  /** The short name ("AA-1"), or the old "{letter} - {title}" until the conversion numbers it. */
+  name: string;
+  /** Same as name (kept for screens that still read display_name). */
   display_name: string;
   flags: Flag[];
   claim_ids: string[];
   asset_ids: string[];
+  /** Linked BotanIQals products (formulation product ids). */
+  product_ids: string[];
   next_scheduled: string | null;
   last_posted: string | null;
 };
@@ -98,10 +125,13 @@ export type WindowRowDb = {
 };
 export type RhythmDb = { id: string; days: number[]; label: string; pillar_ids: string[]; active: boolean; note: string | null; archived_at: string | null };
 export type IngredientTag = { id: string; name: string; archived_at: string | null };
+export type CaptionVersion = { id: string; caption: string; changed_by_name: string | null; changed_at: string; source: string };
 
 const PREMADE_COLUMNS =
-  "id, title, category, picture_format, business, pillar_id, series_id, series_position, status, intent, is_recurring, platforms, products_mentioned, hook, caption, hashtags, cta_text, style_tag, duration_text, duration_min_seconds, duration_max_seconds, script_beats, visual_direction, why_it_converts, visual_notes, best_window_text, best_window_why, asset_needs, needs_customer_permission, permission_confirmed_by_name, permission_confirmed_at, risky_ack_hash, risky_ack_by_name, risky_ack_at, notes, sort_order, created_by_name, archived_at, created_at, updated_at";
-const PILLAR_COLUMNS = "id, code, name, description, recurring, sort_order, archived_at";
+  "id, title, category, picture_format, business, pillar_id, series_id, series_position, post_number, name_history, status, intent, is_recurring, platforms, products_mentioned, hook, caption, hashtags, cta_text, style_tag, duration_text, duration_min_seconds, duration_max_seconds, script_beats, visual_direction, why_it_converts, visual_notes, best_window_text, best_window_why, asset_needs, needs_customer_permission, permission_confirmed_by_name, permission_confirmed_at, risky_ack_hash, risky_ack_by_name, risky_ack_at, notes, sort_order, created_by_name, archived_at, created_at, updated_at";
+const PILLAR_COLUMNS = "id, code, name, description, recurring, sort_order, archived_at, last_unsorted_post_number";
+const SERIES_COLUMNS = "id, pillar_id, name, code, last_post_number, cover_text, default_hashtags, notes, sort_order, archived_at";
+export const CAPTION_MAX = 100000;
 
 type Errors = Record<string, string>;
 const txt = (raw: Record<string, unknown>, k: string) => (raw[k] === null || raw[k] === undefined ? "" : String(raw[k]).trim());
@@ -115,10 +145,11 @@ function check(errors: Errors) {
 }
 function fail(error: { message?: string; code?: string } | null, message: string): never {
   const m = error?.message ?? "";
-  if (/premade_posts_title_unique/.test(m)) throw new GrowthError("A library item with this title already exists in this pillar.", 409, { title: "Already used in this pillar." });
-  if (/content_pillars_code_unique/.test(m)) throw new GrowthError("Another pillar already uses that letter.", 409, { code: "Letter already used." });
-  if (/content_pillars_name_unique/.test(m)) throw new GrowthError("Another pillar already has that name.", 409, { name: "Name already used." });
-  if (/content_series_name_unique/.test(m)) throw new GrowthError("A series with that name already exists.", 409, { name: "Name already used." });
+  if (/content_pillars_code_unique/.test(m)) throw new GrowthError("Another topic already uses that letter.", 409, { code: "Letter already used." });
+  if (/content_pillars_name_unique/.test(m)) throw new GrowthError("Another topic already has that name.", 409, { name: "Name already used." });
+  if (/content_series_pillar_name_unique|content_series_name_unique/.test(m)) throw new GrowthError("This topic already has a subtopic with that name.", 409, { name: "Name already used in this topic." });
+  if (/premade_posts_group_number_unique/.test(m)) throw new GrowthError("That number was just taken. Try again.", 409);
+  if (/26 subtopics|subtopic of this topic|no letter yet|topic is archived|Choose a topic|Enter a subtopic name|Unknown library post|Select the posts/.test(m)) throw new GrowthError(m.replace(/^.*?ERROR:\s*/, ""), 400);
   if (/closing_lines_text_unique/.test(m)) throw new GrowthError("That closing line is already on the list.", 409, { text: "Already on the list." });
   if (/avoid_phrases_phrase_unique/.test(m)) throw new GrowthError("That phrase is already on the list (it may be archived).", 409, { phrase: "Already on the list." });
   if (/asset_ingredient_tags_name_unique/.test(m)) throw new GrowthError("A tag with that name already exists.", 409, { name: "Already exists." });
@@ -128,9 +159,9 @@ function fail(error: { message?: string; code?: string } | null, message: string
 
 // --- Loading ---------------------------------------------------------------------------------------
 export async function loadLibraryData(db: Db) {
-  const [pl, se, pp, fl, pc, pa, cl, ap, tw, dn, rh, rn, tags, apl, ail, posts] = await Promise.all([
+  const [pl, se, pp, fl, pc, pa, cl, ap, tw, dn, rh, rn, tags, apl, ail, posts, ppp] = await Promise.all([
     db.from("content_pillars").select(PILLAR_COLUMNS),
-    db.from("content_series").select("id, pillar_id, name, cover_text, default_hashtags, notes, sort_order, archived_at"),
+    db.from("content_series").select(SERIES_COLUMNS),
     db.from("premade_posts").select(PREMADE_COLUMNS),
     db.from("premade_post_flags").select("id, premade_post_id, flag_key, detail, dismissed_by_name, dismissed_at, created_at"),
     db.from("premade_post_claims").select("premade_post_id, claim_id"),
@@ -145,10 +176,14 @@ export async function loadLibraryData(db: Db) {
     db.from("asset_product_links").select("asset_id, formulation_product_id"),
     db.from("asset_ingredient_links").select("asset_id, ingredient_tag_id"),
     db.from("content_posts").select("id, premade_post_id, status, scheduled_date, posted_at, archived_at"),
+    db.from("premade_post_products").select("premade_post_id, formulation_product_id"),
   ]);
-  for (const r of [pl, se, pp, fl, pc, pa, cl, ap, tw, dn, rh, rn, tags, apl, ail, posts]) if (r.error) fail(r.error, "Could not load the Ad Library.");
+  for (const r of [pl, se, pp, fl, pc, pa, cl, ap, tw, dn, rh, rn, tags, apl, ail, posts, ppp]) if (r.error) fail(r.error, "Could not load the Ad Library.");
+  const dupes = await db.rpc("find_duplicate_post_names", {});
   const pillars = ((pl.data ?? []) as Pillar[]).sort((a, b) => a.code.localeCompare(b.code) || (a.archived_at ? 1 : -1));
+  const series = ((se.data ?? []) as Series[]).sort((a, b) => (a.code ?? "~").localeCompare(b.code ?? "~") || a.sort_order - b.sort_order || a.name.localeCompare(b.name));
   const code = new Map(pillars.map((p) => [p.id, p.code]));
+  const subCode = new Map(series.map((s) => [s.id, s.code]));
   const today = todayNy();
   const usage = new Map<string, { next: string | null; last: string | null }>();
   for (const p of (posts.data ?? []) as Array<{ premade_post_id: string | null; status: string; scheduled_date: string | null; posted_at: string | null; archived_at: string | null }>) {
@@ -162,21 +197,29 @@ export async function loadLibraryData(db: Db) {
     usage.set(p.premade_post_id, u);
   }
   const by = <T extends { premade_post_id: string }>(rows: T[] | null, id: string) => (rows ?? []).filter((r) => r.premade_post_id === id);
-  const premades: PremadeRow[] = ((pp.data ?? []) as Premade[]).map((p) => ({
-    ...p,
-    script_beats: Array.isArray(p.script_beats) ? p.script_beats : [],
-    asset_needs: Array.isArray(p.asset_needs) ? p.asset_needs : [],
-    display_name: displayName(code.get(p.pillar_id) ?? "?", p.title),
-    flags: by(fl.data as Flag[], p.id),
-    claim_ids: by(pc.data as Array<{ premade_post_id: string; claim_id: string }>, p.id).map((r) => r.claim_id),
-    asset_ids: by(pa.data as Array<{ premade_post_id: string; asset_id: string }>, p.id).map((r) => r.asset_id),
-    next_scheduled: usage.get(p.id)?.next ?? null,
-    last_posted: usage.get(p.id)?.last ?? null,
-  }));
+  const premades: PremadeRow[] = ((pp.data ?? []) as Premade[]).map((p) => {
+    const name = currentPostName(p, code.get(p.pillar_id) ?? "?", p.series_id ? subCode.get(p.series_id) ?? null : null);
+    return {
+      ...p,
+      script_beats: Array.isArray(p.script_beats) ? p.script_beats : [],
+      asset_needs: Array.isArray(p.asset_needs) ? p.asset_needs : [],
+      name_history: Array.isArray(p.name_history) ? p.name_history : [],
+      name,
+      display_name: name,
+      flags: by(fl.data as Flag[], p.id),
+      claim_ids: by(pc.data as Array<{ premade_post_id: string; claim_id: string }>, p.id).map((r) => r.claim_id),
+      asset_ids: by(pa.data as Array<{ premade_post_id: string; asset_id: string }>, p.id).map((r) => r.asset_id),
+      product_ids: by(ppp.data as Array<{ premade_post_id: string; formulation_product_id: string }>, p.id).map((r) => r.formulation_product_id),
+      next_scheduled: usage.get(p.id)?.next ?? null,
+      last_posted: usage.get(p.id)?.last ?? null,
+    };
+  });
   return {
     pillars,
-    series: ((se.data ?? []) as Series[]).sort((a, b) => a.sort_order - b.sort_order || a.name.localeCompare(b.name)),
+    series,
     premades,
+    /** From find_duplicate_post_names(): names shared by more than one non-archived post. */
+    duplicateNames: (dupes.error ? [] : ((dupes.data ?? []) as Array<{ name: string; post_ids: string[] }>)) as Array<{ name: string; post_ids: string[] }>,
     closingLines: ((cl.data ?? []) as ClosingLine[]).sort((a, b) => a.text.localeCompare(b.text)),
     avoidPhrases: ((ap.data ?? []) as AvoidPhrase[]).sort((a, b) => a.phrase.localeCompare(b.phrase)),
     windows: (tw.data ?? []) as WindowRowDb[],
@@ -188,6 +231,8 @@ export async function loadLibraryData(db: Db) {
     assetIngredientLinks: (ail.data ?? []) as Array<{ asset_id: string; ingredient_tag_id: string }>,
   };
 }
+/** A timestamp as text (database clients may hand back a Date). */
+const stamp = (v: unknown): string => (v instanceof Date ? v.toISOString() : v === null || v === undefined ? "" : String(v).trim());
 const iso = (v: unknown): string | null => (v instanceof Date ? v.toISOString().slice(0, 10) : typeof v === "string" && v ? v.slice(0, 10) : null);
 
 async function activeWords(db: Db) {
@@ -196,10 +241,10 @@ async function activeWords(db: Db) {
   return { risky: live(rw), avoid: live(ap) };
 }
 
-// --- Pillars ---------------------------------------------------------------------------------------
+// --- Topics (pillars) --------------------------------------------------------------------------------
 async function getPillar(db: Db, id: unknown): Promise<Pillar> {
-  const { data } = await db.from("content_pillars").select(PILLAR_COLUMNS).eq("id", idOrThrow(id, "pillar")).maybeSingle();
-  if (!data) throw new GrowthError("Unknown pillar.", 404);
+  const { data } = await db.from("content_pillars").select(PILLAR_COLUMNS).eq("id", idOrThrow(id, "topic")).maybeSingle();
+  if (!data) throw new GrowthError("Unknown topic.", 404);
   return data;
 }
 
@@ -218,97 +263,138 @@ function pillarFields(raw: Record<string, unknown>) {
 export async function createPillar(db: Db, input: Record<string, unknown>) {
   const v = pillarFields(input);
   const { data, error } = await db.from("content_pillars").insert(v).select(PILLAR_COLUMNS).single();
-  if (error) fail(error, "Could not save the pillar.");
+  if (error) fail(error, "Could not save the topic.");
   return data as Pillar;
 }
 
-/** Edit a pillar, or { archive }, { restore }, or { move_items_to } (bulk reassign of its live items). */
+/** After a topic letter changes: calendar entries that aren't Posted get the posts' new names as their stored titles. */
+async function syncCalendarTitles(db: Db, postIds: string[] | null) {
+  const { error } = await db.rpc("sync_calendar_titles", { p_post_ids: postIds });
+  if (error) fail(error, "Could not update the calendar titles.");
+}
+
+/** Edit a topic, or { archive }, { restore }. Archive is blocked while the topic has active posts or active subtopics. */
 export async function updatePillar(db: Db, id: unknown, input: Record<string, unknown>) {
   const p = await getPillar(db, id);
-  if (input.move_items_to !== undefined) {
-    const to = await getPillar(db, input.move_items_to);
-    if (to.archived_at) throw new GrowthError("Choose an active pillar.", 400);
-    const { data: items } = await db.from("premade_posts").select("id, title, archived_at").eq("pillar_id", p.id);
-    const live = ((items ?? []) as Array<{ id: string; title: string; archived_at: string | null }>).filter((i) => !i.archived_at);
-    await assertNoCollisions(db, live, to.id);
-    for (const i of live) {
-      const { error } = await db.from("premade_posts").update({ pillar_id: to.id }).eq("id", i.id);
-      if (error) fail(error, "Could not move the items.");
-    }
-    return { moved: live.length };
-  }
   if (input.archive === true) {
-    const { data: items } = await db.from("premade_posts").select("id, archived_at").eq("pillar_id", p.id);
+    const [{ data: items }, { data: subs }] = await Promise.all([
+      db.from("premade_posts").select("id, archived_at").eq("pillar_id", p.id),
+      db.from("content_series").select("id, archived_at").eq("pillar_id", p.id),
+    ]);
     const live = ((items ?? []) as Array<{ archived_at: string | null }>).filter((i) => !i.archived_at).length;
-    if (live) throw new GrowthError(`${live} library item${live === 1 ? " uses" : "s use"} this pillar. Move them to another pillar first.`, 409);
+    const liveSubs = ((subs ?? []) as Array<{ archived_at: string | null }>).filter((i) => !i.archived_at).length;
+    if (live || liveSubs) {
+      const parts = [live ? `${live} post${live === 1 ? "" : "s"}` : "", liveSubs ? `${liveSubs} subtopic${liveSubs === 1 ? "" : "s"}` : ""].filter(Boolean).join(" and ");
+      throw new GrowthError(`This topic still has ${parts}. Move or archive them first.`, 409);
+    }
     const { error } = await db.from("content_pillars").update({ archived_at: new Date().toISOString() }).eq("id", p.id);
-    if (error) fail(error, "Could not archive the pillar.");
+    if (error) fail(error, "Could not archive the topic.");
     return { ok: true };
   }
   if (input.restore === true) {
     const { error } = await db.from("content_pillars").update({ archived_at: null }).eq("id", p.id);
-    if (error) fail(error, "Could not restore the pillar (its letter or name may be in use).");
+    if (error) fail(error, "Could not restore the topic (its letter or name may be in use).");
     return { ok: true };
   }
   const v = pillarFields(input);
+  if (v.code !== p.code) {
+    const plan = await reletterPlan(db, { [p.id]: v.code });
+    if (plan.duplicates.length) throw new GrowthError(`That letter would give duplicate names: ${plan.duplicates.join(", ")}.`, 409, { code: "Would create duplicate names." });
+  }
   const { data, error } = await db.from("content_pillars").update(v).eq("id", p.id).select(PILLAR_COLUMNS).single();
-  if (error) fail(error, "Could not save the pillar.");
+  if (error) fail(error, "Could not save the topic.");
+  if (v.code !== p.code) await syncCalendarTitles(db, null);
   return data as Pillar;
 }
 
-async function assertNoCollisions(db: Db, items: Array<{ id: string; title: string }>, pillarId: string) {
-  const { data } = await db.from("premade_posts").select("id, title, archived_at").eq("pillar_id", pillarId);
-  const taken = new Set(((data ?? []) as Array<{ id: string; title: string; archived_at: string | null }>).filter((r) => !r.archived_at).map((r) => r.title.trim().toLowerCase()));
-  const clash = items.filter((i) => taken.has(i.title.trim().toLowerCase()));
-  const seen = new Set<string>();
-  for (const i of items) {
-    const k = i.title.trim().toLowerCase();
-    if (seen.has(k)) clash.push(i);
-    seen.add(k);
-  }
-  if (clash.length) throw new GrowthError(`These titles already exist in that pillar: ${clash.map((c) => `"${c.title}"`).join(", ")}. Rename them first.`, 409);
+async function reletterInputs(db: Db) {
+  const [{ data: pillars }, { data: items }, { data: subs }] = await Promise.all([
+    db.from("content_pillars").select(PILLAR_COLUMNS),
+    db.from("premade_posts").select("id, pillar_id, series_id, post_number, title, archived_at"),
+    db.from("content_series").select("id, code"),
+  ]);
+  const code = new Map(((subs ?? []) as Array<{ id: string; code: string | null }>).map((s) => [s.id, s.code]));
+  const posts = ((items ?? []) as Array<{ id: string; pillar_id: string; series_id: string | null; post_number: number | null; title: string | null; archived_at: string | null }>).map((i) => ({
+    ...i,
+    subtopicCode: i.series_id ? code.get(i.series_id) ?? null : null,
+  }));
+  return { pillars: (pillars ?? []) as Pillar[], posts };
 }
 
-/** Preview (apply: false) or apply the alphabetical re-lettering in one transaction. */
+/** The effect of new letters on post names: affected posts (old to new) and any duplicates they would create. */
+async function reletterPlan(db: Db, codes: Record<string, string>) {
+  const { pillars, posts } = await reletterInputs(db);
+  return reletterAlphabetically(pillars, posts, codes);
+}
+
+/** Preview (apply: false) or apply the alphabetical re-lettering in one transaction. Blocked if it would create duplicate names. */
 export async function reletterPillars(db: Db, apply: boolean) {
-  const [{ data: pillars }, { data: items }] = await Promise.all([db.from("content_pillars").select(PILLAR_COLUMNS), db.from("premade_posts").select("id, pillar_id, title, archived_at")]);
+  const { pillars, posts } = await reletterInputs(db);
   let plan;
   try {
-    plan = reletterAlphabetically((pillars ?? []) as Pillar[], items ?? []);
+    plan = reletterAlphabetically(pillars, posts);
   } catch (e) {
     throw new GrowthError((e as Error).message, 400);
   }
   if (apply && plan.changes.length) {
+    if (plan.duplicates.length) throw new GrowthError(`Re-lettering would create duplicate names: ${plan.duplicates.join(", ")}. Nothing changed.`, 409);
     const { error } = await db.rpc("reletter_pillars", { p_codes: plan.codes });
-    if (error) fail(error, "Could not re-letter the pillars.");
+    if (error) fail(error, "Could not re-letter the topics.");
+    await syncCalendarTitles(db, null);
   }
   return plan;
 }
 
-// --- Series ------------------------------------------------------------------------------------------
+// --- Subtopics (content_series) ---------------------------------------------------------------------------
+/**
+ * New subtopic: { pillar_id, name } (the letter is assigned in the database).
+ * Edit: name, hashtags (normalized to "#tag #tag"), notes, cover text.
+ * { archive } is blocked while active posts use it; { restore }.
+ */
 export async function saveSeries(db: Db, id: unknown | null, input: Record<string, unknown>) {
-  if (id && (input.archive === true || input.restore === true)) {
-    const { error } = await db.from("content_series").update({ archived_at: input.archive === true ? new Date().toISOString() : null }).eq("id", idOrThrow(id, "series"));
-    if (error) fail(error, "Could not update the series.");
-    return;
+  if (!id) {
+    const pillar = await getPillar(db, input.pillar_id);
+    const name = txt(input, "name");
+    if (!name || name.length > 200) throw new GrowthError("Enter a subtopic name (up to 200 characters).", 400, { name: "Enter a name." });
+    const { data, error } = await db.rpc("create_subtopic", { p_pillar_id: pillar.id, p_name: name });
+    if (error) fail(error, "Could not add the subtopic.");
+    return data as { id: string; code: string };
+  }
+  const sid = idOrThrow(id, "subtopic");
+  const { data: cur } = await db.from("content_series").select(SERIES_COLUMNS).eq("id", sid).maybeSingle();
+  if (!cur) throw new GrowthError("Unknown subtopic.", 404);
+  if (input.archive === true) {
+    const { data: items } = await db.from("premade_posts").select("id, archived_at").eq("series_id", sid);
+    const live = ((items ?? []) as Array<{ archived_at: string | null }>).filter((i) => !i.archived_at).length;
+    if (live) throw new GrowthError(`${live} post${live === 1 ? " uses" : "s use"} this subtopic. Move them to another subtopic first.`, 409);
+    const { error } = await db.from("content_series").update({ archived_at: new Date().toISOString() }).eq("id", sid);
+    if (error) fail(error, "Could not archive the subtopic.");
+    return { id: sid, code: cur.code };
+  }
+  if (input.restore === true) {
+    const { error } = await db.from("content_series").update({ archived_at: null }).eq("id", sid);
+    if (error) fail(error, "Could not restore the subtopic (its name may be in use).");
+    return { id: sid, code: cur.code };
   }
   const errors: Errors = {};
   const name = txt(input, "name");
   if (!name) errors.name = "Enter a name.";
   else if (name.length > 200) errors.name = "Keep the name under 200 characters.";
+  const hashtags = normalizeHashtagList(input.default_hashtags === undefined ? cur.default_hashtags : String(input.default_hashtags ?? ""));
+  if ((hashtags ?? "").length > 2000) errors.default_hashtags = "Keep the hashtags under 2000 characters.";
   const row = {
     name,
-    pillar_id: (await getPillar(db, input.pillar_id)).id,
+    default_hashtags: hashtags,
     cover_text: textField(input, "cover_text", 300, "Cover text", errors),
-    default_hashtags: textField(input, "default_hashtags", 1500, "Default hashtags", errors),
     notes: textField(input, "notes", 1000, "Notes", errors),
   };
   check(errors);
-  const r = id ? await db.from("content_series").update(row).eq("id", idOrThrow(id, "series")) : await db.from("content_series").insert(row);
-  if (r.error) fail(r.error, "Could not save the series.");
+  const { error } = await db.from("content_series").update(row).eq("id", sid);
+  if (error) fail(error, "Could not save the subtopic.");
+  return { id: sid, code: cur.code };
 }
 
-// --- Library items -------------------------------------------------------------------------------------
+// --- Library posts -------------------------------------------------------------------------------------
 async function getPremade(db: Db, id: unknown): Promise<Premade> {
   const { data, error } = await db.from("premade_posts").select(PREMADE_COLUMNS).eq("id", idOrThrow(id, "library item")).maybeSingle();
   if (error) fail(error, "Could not load the library item.");
@@ -358,45 +444,59 @@ export function needsFrom(raw: unknown, errors: Errors): AssetNeed[] {
   return out;
 }
 
-/** Validated item fields from the editor (title, pillar, text, settings). Category is fixed after creation. */
-async function premadeFields(db: Db, raw: Record<string, unknown>, category: "reel" | "picture_post") {
+/** Linked product ids from the request, checked against Formulation (active products only). */
+async function productIdsFrom(db: Db, raw: unknown): Promise<string[] | undefined> {
+  if (raw === undefined) return undefined;
+  const ids = Array.isArray(raw) ? [...new Set((raw as unknown[]).map(String))] : [];
+  if (ids.some((x) => !isUuid(x))) throw new GrowthError("Choose products from the list.", 400, { product_ids: "Choose products from the list." });
+  if (ids.length) {
+    const { data } = await db.from("formulation_products").select("id, deleted_at").in("id", ids);
+    if (((data ?? []) as Array<{ deleted_at: string | null }>).filter((p) => !p.deleted_at).length !== ids.length) throw new GrowthError("Choose products from the list.", 400, { product_ids: "Choose products from the list." });
+  }
+  return ids;
+}
+
+async function assetIdsFrom(db: Db, raw: unknown): Promise<string[] | undefined> {
+  if (raw === undefined) return undefined;
+  const ids = Array.isArray(raw) ? [...new Set((raw as unknown[]).map(String))] : [];
+  if (ids.some((x) => !isUuid(x))) throw new GrowthError("Unknown asset.", 400);
+  if (ids.length) {
+    const { data } = await db.from("marketing_assets").select("id").in("id", ids);
+    if ((data ?? []).length !== ids.length) throw new GrowthError("Unknown asset.", 404);
+  }
+  return ids;
+}
+
+/**
+ * Validated post fields from the form. Topic (pillar) and subtopic are
+ * handled by the numbering functions, not here. Picture posts have no hook in
+ * the form (an existing hook is kept as it is).
+ */
+function premadeFields(raw: Record<string, unknown>, category: "reel" | "picture_post", cur?: Premade) {
   const errors: Errors = {};
-  const title = txt(raw, "title");
-  if (!title) errors.title = "Enter a title.";
-  else if (title.length > 150) errors.title = "Keep the title under 150 characters.";
-  const pillarId = raw.pillar_id;
-  if (!isUuid(pillarId)) errors.pillar_id = "Choose a pillar.";
+  if (!isUuid(raw.pillar_id)) errors.pillar_id = "Choose a topic.";
+  if (raw.series_id && !isUuid(raw.series_id)) errors.series_id = "Choose a subtopic from the list.";
+  const newSub = txt(raw, "new_subtopic_name");
+  if (newSub.length > 200) errors.new_subtopic_name = "Keep the subtopic name under 200 characters.";
   const business = txt(raw, "business") || "botaniqals";
   if (!["botaniqals", "minileaf", "brand"].includes(business)) errors.business = "Choose a business.";
   const status = txt(raw, "status") || "drafting";
   if (!(PREMADE_STATUSES as string[]).includes(status)) errors.status = "Choose a status.";
   const intent = txt(raw, "intent") || "organic";
   if (!(PREMADE_INTENTS as string[]).includes(intent)) errors.intent = "Choose an intent.";
-  const platforms = Array.isArray(raw.platforms) ? [...new Set((raw.platforms as unknown[]).map(String))] : [];
-  if (platforms.some((p) => !(LIBRARY_PLATFORMS as readonly string[]).includes(p))) errors.platforms = "Choose platforms from the list.";
-  const products = Array.isArray(raw.products_mentioned) ? [...new Set((raw.products_mentioned as unknown[]).map((p) => String(p).trim()).filter(Boolean))] : [];
-  if (products.length > 20 || products.some((p) => p.length > 60)) errors.products_mentioned = "Too many products.";
   const picture_format = category === "picture_post" ? txt(raw, "picture_format") || "unknown" : null;
   if (picture_format && !["carousel", "single_image", "story", "unknown"].includes(picture_format)) errors.picture_format = "Choose a format.";
-  const series_position = raw.series_position === "" || raw.series_position === null || raw.series_position === undefined ? null : Number(raw.series_position);
-  if (series_position !== null && (!Number.isInteger(series_position) || series_position < 1 || series_position > 1000)) errors.series_position = "Enter a whole number.";
+  const caption = raw.caption === undefined || raw.caption === null ? null : String(raw.caption).replace(/\s+$/u, "") || null;
+  if ((caption ?? "").length > CAPTION_MAX) errors.caption = `Keep the caption under ${CAPTION_MAX} characters.`;
   const duration_text = textField(raw, "duration_text", 30, "Duration", errors);
   const parsed = parseDuration(duration_text);
   const v = {
-    title,
-    pillar_id: String(pillarId ?? ""),
-    series_id: raw.series_id && isUuid(raw.series_id) ? String(raw.series_id) : null,
-    series_position,
     business,
     status,
     intent,
-    is_recurring: raw.is_recurring === true,
-    platforms,
-    products_mentioned: products,
     picture_format,
-    hook: textField(raw, "hook", 300, "Hook", errors),
-    caption: textField(raw, "caption", 4000, "Caption", errors),
-    hashtags: textField(raw, "hashtags", 1500, "Hashtags", errors),
+    hook: category === "reel" ? textField(raw, "hook", 300, "Hook", errors) : cur?.hook ?? null,
+    caption,
     cta_text: textField(raw, "cta_text", 200, "CTA", errors),
     style_tag: textField(raw, "style_tag", 60, "Style", errors),
     duration_text,
@@ -412,80 +512,140 @@ async function premadeFields(db: Db, raw: Record<string, unknown>, category: "re
     notes: textField(raw, "notes", 2000, "Notes", errors),
   };
   check(errors);
-  const pillar = await getPillar(db, v.pillar_id);
-  if (pillar.archived_at) throw new GrowthError("That pillar is archived. Choose an active pillar.", 400, { pillar_id: "Choose an active pillar." });
-  if (v.series_id) {
-    const { data } = await db.from("content_series").select("id").eq("id", v.series_id).maybeSingle();
-    if (!data) throw new GrowthError("Choose a series from the list.", 400, { series_id: "Choose a series from the list." });
-  }
-  return { v, pillar };
+  return { v, pillarId: String(raw.pillar_id), seriesId: raw.series_id ? String(raw.series_id) : null, newSub: newSub || null };
 }
 
-async function setLinks(db: Db, table: "premade_post_claims" | "premade_post_assets", key: "claim_id" | "asset_id", premadeId: string, ids: unknown) {
-  if (ids === undefined) return;
-  const list = Array.isArray(ids) ? [...new Set((ids as unknown[]).map(String))] : [];
-  if (list.some((x) => !isUuid(x))) throw new GrowthError("Unknown claim or asset.", 400);
-  if (list.length) {
-    const { data } = await db.from(key === "claim_id" ? "claims" : "marketing_assets").select("id").in("id", list);
-    if ((data ?? []).length !== list.length) throw new GrowthError("Unknown claim or asset.", 404);
+/** The hashtags posting adds for a post: subtopic, then linked products (by name order, like the form), then legacy extras. */
+export async function hashtagsFor(db: Db, p: Pick<Premade, "id" | "series_id" | "hashtags">): Promise<string[]> {
+  const [{ data: s }, { data: links }] = await Promise.all([
+    p.series_id ? db.from("content_series").select("default_hashtags").eq("id", p.series_id).maybeSingle() : Promise.resolve({ data: null }),
+    db.from("premade_post_products").select("formulation_product_id").eq("premade_post_id", p.id),
+  ]);
+  const ids = ((links ?? []) as Array<{ formulation_product_id: string }>).map((l) => l.formulation_product_id);
+  let productTags: Array<string | null> = [];
+  if (ids.length) {
+    const [{ data: prods }, { data: profiles }] = await Promise.all([
+      db.from("formulation_products").select("id, name").in("id", ids),
+      db.from("marketing_product_profiles").select("formulation_product_id, hashtags").in("formulation_product_id", ids),
+    ]);
+    const tags = new Map(((profiles ?? []) as Array<{ formulation_product_id: string; hashtags: string | null }>).map((r) => [r.formulation_product_id, r.hashtags]));
+    productTags = ((prods ?? []) as Array<{ id: string; name: string }>).sort((a, b) => a.name.localeCompare(b.name)).map((x) => tags.get(x.id) ?? null);
   }
-  const { data: cur } = await db.from(table).select(`premade_post_id, ${key}`).eq("premade_post_id", premadeId);
-  const have = new Set(((cur ?? []) as Array<Record<string, string>>).map((r) => r[key]));
-  for (const x of have) if (!list.includes(x)) await db.from(table).delete().eq("premade_post_id", premadeId).eq(key, x);
-  for (const x of list) if (!have.has(x)) await db.from(table).insert({ premade_post_id: premadeId, [key]: x });
+  return postHashtags((s as { default_hashtags: string | null } | null)?.default_hashtags ?? null, productTags, p.hashtags);
 }
 
-/** The server-side Ready gate for an item as it is in the database now. */
+/** The caption as it will be posted: the body, two blank lines, then the hashtags. */
+export async function finalCaptionFor(db: Db, p: Premade): Promise<string> {
+  return composeFinalCaption(p.caption, await hashtagsFor(db, p));
+}
+
+/** The server-side Ready gate for a post as it is in the database now (words are checked in the FINAL caption). */
 export async function gateFor(db: Db, p: Premade): Promise<{ blockers: ReadyBlocker[]; hash: string; hits: ReturnType<typeof scanBoth> }> {
-  const { data: links } = await db.from("premade_post_claims").select("claim_id").eq("premade_post_id", p.id);
-  const ids = ((links ?? []) as Array<{ claim_id: string }>).map((l) => l.claim_id);
-  const { data: claims } = ids.length ? await db.from("claims").select("id, claim_text, status").in("id", ids) : { data: [] };
   const words = await activeWords(db);
-  const hits = scanBoth(premadeScanText(p), words.risky, words.avoid);
-  const hash = hashPremadeText(p);
-  return { blockers: premadeReadyCheck({ premade: p, selectedClaims: claims ?? [], hits, currentTextHash: hash }), hash, hits };
+  const text = premadeGateText(p, await finalCaptionFor(db, p));
+  const hits = scanBoth(premadeScanText(text), words.risky, words.avoid);
+  const hash = hashPremadeText(text);
+  return { blockers: premadeReadyCheck({ premade: p, hits, currentTextHash: hash }), hash, hits };
 }
 
-export async function createPremade(db: Db, input: Record<string, unknown>, actor: string | null) {
-  const category = txt(input, "category");
-  if (category !== "reel" && category !== "picture_post") throw new GrowthError("Choose Reel or Picture post.", 400, { category: "Choose a category." });
-  const { v } = await premadeFields(db, input, category);
-  if (v.status === "ready") v.status = "drafting"; // Ready is set from the editor after the gate passes.
-  const errors: Errors = {};
-  const asset_needs = needsFrom(input.asset_needs, errors);
-  check(errors);
-  const { data, error } = await db.from("premade_posts").insert({ ...v, category, asset_needs, created_by_name: actor }).select("id").single();
-  if (error) fail(error, "Could not save the library item.");
-  await setLinks(db, "premade_post_claims", "claim_id", data.id, input.claim_ids);
-  await setLinks(db, "premade_post_assets", "asset_id", data.id, input.asset_ids);
-  return { id: data.id as string, notice: null as string | null };
+/** The post's current name (computed; "AA-1"). */
+export async function nameFor(db: Db, p: Pick<Premade, "pillar_id" | "series_id" | "post_number" | "title">): Promise<string> {
+  const pillar = await getPillar(db, p.pillar_id);
+  const sub = p.series_id ? (await db.from("content_series").select("code").eq("id", p.series_id).maybeSingle()).data : null;
+  return currentPostName(p, pillar.code, (sub as { code: string | null } | null)?.code ?? null);
+}
+
+async function setProductLinks(db: Db, premadeId: string, ids: string[]) {
+  const { data: cur } = await db.from("premade_post_products").select("formulation_product_id").eq("premade_post_id", premadeId);
+  const have = new Set(((cur ?? []) as Array<{ formulation_product_id: string }>).map((r) => r.formulation_product_id));
+  for (const x of have) if (!ids.includes(x)) await db.from("premade_post_products").delete().eq("premade_post_id", premadeId).eq("formulation_product_id", x);
+  for (const x of ids) if (!have.has(x)) await db.from("premade_post_products").insert({ premade_post_id: premadeId, formulation_product_id: x });
+}
+
+async function setAssetLinks(db: Db, premadeId: string, ids: string[]) {
+  const { data: cur } = await db.from("premade_post_assets").select("asset_id").eq("premade_post_id", premadeId);
+  const have = new Set(((cur ?? []) as Array<{ asset_id: string }>).map((r) => r.asset_id));
+  for (const x of have) if (!ids.includes(x)) await db.from("premade_post_assets").delete().eq("premade_post_id", premadeId).eq("asset_id", x);
+  for (const x of ids) if (!have.has(x)) await db.from("premade_post_assets").insert({ premade_post_id: premadeId, asset_id: x });
 }
 
 /**
- * Saves the editor. Setting Ready runs the gate (400 with the blockers).
- * Saving a Ready item whose gate no longer passes moves it back to Drafting
- * and says why. Editing the title dismisses an open auto-name flag.
+ * New post. Assets, needs and products chosen before the first save are
+ * saved with it in one transaction (create_premade_post), which also
+ * creates a new subtopic when one is named and assigns the number.
+ */
+export async function createPremade(db: Db, input: Record<string, unknown>, actor: string | null) {
+  const category = txt(input, "category");
+  if (category !== "reel" && category !== "picture_post") throw new GrowthError("Choose Reel or Picture post.", 400, { category: "Choose a category." });
+  const { v, pillarId, seriesId, newSub } = premadeFields(input, category);
+  if (v.status === "ready") v.status = "drafting"; // Ready is set after the gate passes.
+  const errors: Errors = {};
+  const asset_needs = needsFrom(input.asset_needs, errors);
+  check(errors);
+  const productIds = (await productIdsFrom(db, input.product_ids)) ?? [];
+  const assetIds = [...new Set([...((await assetIdsFrom(db, input.asset_ids)) ?? []), ...asset_needs.filter((n) => n.status === "ready" && n.asset_id).map((n) => n.asset_id!)])];
+  const pillar = await getPillar(db, pillarId);
+  if (pillar.archived_at) throw new GrowthError("That topic is archived. Choose an active topic.", 400, { pillar_id: "Choose an active topic." });
+  const { data, error } = await db.rpc("create_premade_post", {
+    payload: {
+      pillar_id: pillarId,
+      series_id: newSub ? null : seriesId,
+      new_subtopic_name: newSub,
+      actor_name: actor,
+      post: { ...v, category, asset_needs, hashtags: null, title: null },
+      asset_ids: assetIds,
+      product_ids: productIds,
+    },
+  });
+  if (error) fail(error, "Could not save the post.");
+  const r = data as { id: string; name: string };
+  return { id: r.id, name: r.name, notice: null as string | null };
+}
+
+/**
+ * Saves the form. A caption change goes through update_premade_caption
+ * (recorded in the caption history with the editor's name). Changing the
+ * topic or subtopic renumbers the post (move_premade_posts). Setting Ready
+ * runs the gate; a Ready post whose gate no longer passes goes back to
+ * Drafting and says why.
  */
 export async function updatePremade(db: Db, id: unknown, input: Record<string, unknown>, actor: string | null) {
   const cur = await getPremade(db, id);
-  const { v } = await premadeFields(db, input, cur.category);
+  const { v, pillarId, seriesId, newSub } = premadeFields(input, cur.category, cur);
   const errors: Errors = {};
   const asset_needs = input.asset_needs === undefined ? cur.asset_needs : needsFrom(input.asset_needs, errors);
   check(errors);
-  const wantReady = v.status === "ready";
-  const { error } = await db.from("premade_posts").update({ ...v, asset_needs, status: wantReady && cur.status !== "ready" ? cur.status : v.status }).eq("id", cur.id);
-  if (error) fail(error, "Could not save the library item.");
-  await setLinks(db, "premade_post_claims", "claim_id", cur.id, input.claim_ids);
-  await setLinks(db, "premade_post_assets", "asset_id", cur.id, input.asset_ids);
-  if (v.title !== cur.title) await dismissFlag(db, cur.id, "auto_name", actor, null, true);
+  const productIds = await productIdsFrom(db, input.product_ids);
+  const assetIds = await assetIdsFrom(db, input.asset_ids);
+  const notices: string[] = [];
+  const { caption, ...rest } = v;
+  if ((caption ?? null) !== (cur.caption ?? null)) {
+    const { data, error } = await db.rpc("update_premade_caption", { p_post_id: cur.id, p_expected_updated_at: stamp(input.expected_updated_at) || stamp(cur.updated_at), p_caption: caption ?? "", p_actor_name: actor ?? "Unknown", p_source: "form" });
+    if (error) fail(error, "Could not save the caption.");
+    if ((data as { conflict?: boolean }).conflict) throw new GrowthError("This post was changed by someone else. Reload it and try again.", 409);
+  }
+  const wantReady = rest.status === "ready";
+  const patch: Record<string, unknown> = { ...rest, asset_needs, status: wantReady && cur.status !== "ready" ? cur.status : rest.status };
+  if (!(caption ?? "")) patch.caption = null;
+  else delete patch.caption;
+  if (input.clear_title === true) patch.title = null;
+  if (input.clear_imported_tags === true) patch.products_mentioned = [];
+  if (input.clear_extra_hashtags === true) patch.hashtags = null;
+  const { error } = await db.from("premade_posts").update(patch).eq("id", cur.id);
+  if (error) fail(error, "Could not save the post.");
+  if (productIds) await setProductLinks(db, cur.id, productIds);
+  if (assetIds) await setAssetLinks(db, cur.id, assetIds);
+  if (pillarId !== cur.pillar_id || (seriesId ?? null) !== (cur.series_id ?? null) || newSub) {
+    const moved = await movePosts(db, [cur.id], pillarId, newSub ? null : seriesId, newSub, actor);
+    if (moved[0]) notices.push(`Renamed ${moved[0].old_name} to ${moved[0].new_name}.`);
+  }
   const saved = await getPremade(db, cur.id);
-  let notice: string | null = null;
   if (wantReady) {
     const gate = await gateFor(db, saved);
     if (gate.blockers.length) {
       if (cur.status === "ready") {
         await db.from("premade_posts").update({ status: "drafting" }).eq("id", cur.id);
-        notice = `Moved back to Drafting: ${gate.blockers.map((b) => b.message).join(" ")}`;
+        notices.push(`Moved back to Drafting: ${gate.blockers.map((b) => b.message).join(" ")}`);
       } else {
         throw new GrowthError(`Not ready yet. ${gate.blockers.map((b) => b.message).join(" ")}`, 400, { status: "Not ready yet." });
       }
@@ -493,7 +653,46 @@ export async function updatePremade(db: Db, id: unknown, input: Record<string, u
       await db.from("premade_posts").update({ status: "ready" }).eq("id", cur.id);
     }
   }
-  return { id: cur.id, notice };
+  return { id: cur.id, name: await nameFor(db, saved), notice: notices.join(" ") || null };
+}
+
+/** Moves posts to a topic and subtopic (or none, or a new one); each gets the next number of its new group. */
+export async function movePosts(db: Db, ids: string[], pillarId: string, subtopicId: string | null, newSubtopicName: string | null, actor: string | null) {
+  const pillar = await getPillar(db, pillarId);
+  if (pillar.archived_at) throw new GrowthError("That topic is archived. Choose an active topic.", 400);
+  const { data, error } = await db.rpc("move_premade_posts", { p_post_ids: ids, p_pillar_id: pillarId, p_subtopic_id: subtopicId, p_new_subtopic_name: newSubtopicName, p_actor_name: actor });
+  if (error) fail(error, "Could not move the posts.");
+  return (data ?? []) as Array<{ id: string; old_name: string; new_name: string }>;
+}
+
+/**
+ * Edit caption (from the table): changes ONLY the caption, and only if the
+ * post hasn't changed since the editor opened it. On a conflict, returns the
+ * current caption so the editor can choose. A Ready post whose gate no longer
+ * passes goes back to Drafting, with the reason.
+ */
+export async function updateCaption(db: Db, id: unknown, input: Record<string, unknown>, actor: string | null) {
+  const pid = idOrThrow(id, "library post");
+  const caption = input.caption === undefined || input.caption === null ? "" : String(input.caption);
+  if (caption.length > CAPTION_MAX) throw new GrowthError(`Keep the caption under ${CAPTION_MAX} characters.`, 400, { caption: "Too long." });
+  const expected = stamp(input.expected_updated_at);
+  if (!expected) throw new GrowthError("Reload the post and try again.", 400);
+  const source = ["table_edit", "restore"].includes(txt(input, "source")) ? txt(input, "source") : "table_edit";
+  const { data, error } = await db.rpc("update_premade_caption", { p_post_id: pid, p_expected_updated_at: expected, p_caption: caption, p_actor_name: actor ?? "Unknown", p_source: source });
+  if (error) fail(error, "Could not save the caption.");
+  const r = data as { ok?: boolean; updated_at?: string; conflict?: boolean; current_caption?: string | null; current_updated_at?: string };
+  if (r.conflict) return { conflict: true as const, current_caption: r.current_caption ?? "", current_updated_at: r.current_updated_at ?? "" };
+  const notice = await recheckReady(db, pid);
+  const after = await getPremade(db, pid);
+  return { ok: true as const, updated_at: stamp(after.updated_at), notice };
+}
+
+/** The last 10 earlier captions of a post (newest first). */
+export async function captionHistory(db: Db, id: unknown): Promise<CaptionVersion[]> {
+  const pid = idOrThrow(id, "library post");
+  const { data, error } = await db.from("premade_post_caption_history").select("id, caption, changed_by_name, changed_at, source").eq("premade_post_id", pid).order("changed_at", { ascending: false }).limit(10);
+  if (error) fail(error, "Could not load the earlier captions.");
+  return (data ?? []) as CaptionVersion[];
 }
 
 async function dismissFlag(db: Db, premadeId: string, key: FlagKey, actor: string | null, note: string | null, quiet = false) {
@@ -507,51 +706,65 @@ async function dismissFlag(db: Db, premadeId: string, key: FlagKey, actor: strin
   if (error) fail(error, "Could not dismiss the flag.");
 }
 
-/** Item actions: duplicate, pause, reactivate, archive, restore, confirm_permission, clear_permission, ack_words, dismiss_flag. */
+/** Post actions: duplicate, pause, reactivate, archive, restore, confirm_permission, clear_permission, ack_words, dismiss_flag. */
 export async function premadeAction(db: Db, id: unknown, input: Record<string, unknown>, actor: string | null) {
   const p = await getPremade(db, id);
   const action = txt(input, "action");
   const now = new Date().toISOString();
   const set = async (patch: Record<string, unknown>) => {
     const { error } = await db.from("premade_posts").update(patch).eq("id", p.id);
-    if (error) fail(error, "Could not update the library item.");
+    if (error) fail(error, "Could not update the post.");
   };
   switch (action) {
     case "duplicate": {
-      const { id: _i, created_at: _c, updated_at: _u, archived_at: _a, created_by_name: _b, ...rest } = p;
-      void _i; void _c; void _u; void _a; void _b;
-      let title = `${p.title} (copy)`.slice(0, 150);
-      const { data: taken } = await db.from("premade_posts").select("title, archived_at").eq("pillar_id", p.pillar_id);
-      const names = new Set(((taken ?? []) as Array<{ title: string; archived_at: string | null }>).filter((t) => !t.archived_at).map((t) => t.title.toLowerCase()));
-      for (let n = 2; names.has(title.toLowerCase()) && n < 100; n++) title = `${p.title} (copy ${n})`.slice(0, 150);
-      const { data, error } = await db
-        .from("premade_posts")
-        .insert({
-          ...rest,
-          title,
-          status: "drafting",
-          permission_confirmed_by_name: null,
-          permission_confirmed_at: null,
-          risky_ack_hash: null,
-          risky_ack_by_name: null,
-          risky_ack_at: null,
-          source_ref: null,
-          created_by_name: actor,
-        })
-        .select("id")
-        .single();
-      if (error) fail(error, "Could not duplicate the item.");
-      const { data: claims } = await db.from("premade_post_claims").select("claim_id").eq("premade_post_id", p.id);
-      for (const c of (claims ?? []) as Array<{ claim_id: string }>) await db.from("premade_post_claims").insert({ premade_post_id: data.id, claim_id: c.claim_id });
-      const { data: assets } = await db.from("premade_post_assets").select("asset_id").eq("premade_post_id", p.id);
-      for (const a of (assets ?? []) as Array<{ asset_id: string }>) await db.from("premade_post_assets").insert({ premade_post_id: data.id, asset_id: a.asset_id });
-      return { id: data.id as string };
+      // A copy as the next number of the same group.
+      const [{ data: assets }, { data: prods }] = await Promise.all([
+        db.from("premade_post_assets").select("asset_id").eq("premade_post_id", p.id),
+        db.from("premade_post_products").select("formulation_product_id").eq("premade_post_id", p.id),
+      ]);
+      const post = {
+        category: p.category,
+        picture_format: p.picture_format,
+        business: p.business,
+        status: "drafting",
+        intent: p.intent,
+        products_mentioned: p.products_mentioned,
+        hook: p.hook,
+        caption: p.caption,
+        hashtags: p.hashtags,
+        cta_text: p.cta_text,
+        style_tag: p.style_tag,
+        duration_text: p.duration_text,
+        duration_min_seconds: p.duration_min_seconds,
+        duration_max_seconds: p.duration_max_seconds,
+        script_beats: p.script_beats,
+        visual_direction: p.visual_direction,
+        why_it_converts: p.why_it_converts,
+        visual_notes: p.visual_notes,
+        best_window_text: p.best_window_text,
+        best_window_why: p.best_window_why,
+        asset_needs: p.asset_needs,
+        needs_customer_permission: p.needs_customer_permission,
+        notes: p.notes,
+      };
+      const { data, error } = await db.rpc("create_premade_post", {
+        payload: {
+          pillar_id: p.pillar_id,
+          series_id: p.series_id,
+          actor_name: actor,
+          post,
+          asset_ids: ((assets ?? []) as Array<{ asset_id: string }>).map((a) => a.asset_id),
+          product_ids: ((prods ?? []) as Array<{ formulation_product_id: string }>).map((a) => a.formulation_product_id),
+        },
+      });
+      if (error) fail(error, "Could not duplicate the post.");
+      return { id: (data as { id: string }).id, name: (data as { name: string }).name };
     }
     case "pause":
       await set({ status: "paused" });
       break;
     case "reactivate":
-      if (p.status !== "paused") throw new GrowthError("This item is not paused.", 400);
+      if (p.status !== "paused") throw new GrowthError("This post is not paused.", 400);
       await set({ status: "drafting" });
       break;
     case "archive":
@@ -567,7 +780,7 @@ export async function premadeAction(db: Db, id: unknown, input: Record<string, u
       await set({ permission_confirmed_by_name: null, permission_confirmed_at: null, ...(p.status === "ready" && p.needs_customer_permission ? { status: "drafting" } : {}) });
       break;
     case "ack_words": {
-      const hash = hashPremadeText(p);
+      const { hash } = await gateFor(db, p);
       if (input.hash && input.hash !== hash) throw new GrowthError("The text changed after you reviewed it. Save first, then tick Words reviewed again.", 409);
       await set({ risky_ack_hash: hash, risky_ack_by_name: actor ?? "Unknown", risky_ack_at: now });
       break;
@@ -584,13 +797,13 @@ export async function premadeAction(db: Db, id: unknown, input: Record<string, u
   return { id: p.id };
 }
 
-/** Bulk: pause, reactivate, archive, set_pillar, set_series, dismiss_flag (with a note). */
+/** Bulk: set_topic (renumbers; can create a subtopic), set_products, pause, reactivate, archive, dismiss_flag (with a note). */
 export async function premadeBulk(db: Db, input: Record<string, unknown>, actor: string | null) {
   const ids = Array.isArray(input.ids) ? [...new Set((input.ids as unknown[]).map(String))] : [];
-  if (!ids.length || ids.length > 500 || ids.some((x) => !isUuid(x))) throw new GrowthError("Select the items first.", 400);
-  const { data } = await db.from("premade_posts").select("id, title, status, pillar_id, archived_at").in("id", ids);
-  const items = (data ?? []) as Array<{ id: string; title: string; status: string; pillar_id: string; archived_at: string | null }>;
-  if (items.length !== ids.length) throw new GrowthError("Unknown library item.", 404);
+  if (!ids.length || ids.length > 500 || ids.some((x) => !isUuid(x))) throw new GrowthError("Select the posts first.", 400);
+  const { data } = await db.from("premade_posts").select("id, status, pillar_id, archived_at").in("id", ids);
+  const items = (data ?? []) as Array<{ id: string; status: string; pillar_id: string; archived_at: string | null }>;
+  if (items.length !== ids.length) throw new GrowthError("Unknown library post.", 404);
   const action = txt(input, "action");
   const now = new Date().toISOString();
   const each = async (patch: (i: (typeof items)[number]) => Record<string, unknown> | null) => {
@@ -598,7 +811,7 @@ export async function premadeBulk(db: Db, input: Record<string, unknown>, actor:
       const p = patch(i);
       if (!p) continue;
       const { error } = await db.from("premade_posts").update(p).eq("id", i.id);
-      if (error) fail(error, "Could not update the items.");
+      if (error) fail(error, "Could not update the posts.");
     }
   };
   switch (action) {
@@ -611,20 +824,16 @@ export async function premadeBulk(db: Db, input: Record<string, unknown>, actor:
     case "archive":
       await each(() => ({ archived_at: now }));
       break;
-    case "set_pillar": {
-      const to = await getPillar(db, input.pillar_id);
-      if (to.archived_at) throw new GrowthError("Choose an active pillar.", 400);
-      await assertNoCollisions(db, items.filter((i) => i.pillar_id !== to.id && !i.archived_at), to.id);
-      await each((i) => (i.pillar_id === to.id ? null : { pillar_id: to.id }));
-      break;
+    case "set_topic": {
+      if (!isUuid(input.pillar_id)) throw new GrowthError("Choose a topic.", 400);
+      const sub = input.subtopic_id ? idOrThrow(input.subtopic_id, "subtopic") : null;
+      const newName = txt(input, "new_subtopic_name") || null;
+      const moved = await movePosts(db, ids, String(input.pillar_id), newName ? null : sub, newName, actor);
+      return { count: items.length, moved };
     }
-    case "set_series": {
-      const sid = input.series_id ? idOrThrow(input.series_id, "series") : null;
-      if (sid) {
-        const { data: s } = await db.from("content_series").select("id").eq("id", sid).maybeSingle();
-        if (!s) throw new GrowthError("Unknown series.", 404);
-      }
-      await each(() => ({ series_id: sid }));
+    case "set_products": {
+      const productIds = (await productIdsFrom(db, input.product_ids)) ?? [];
+      for (const i of items) await setProductLinks(db, i.id, productIds);
       break;
     }
     case "dismiss_flag": {
@@ -895,97 +1104,167 @@ export async function tagsFromRawMaterials(db: Db, input: Record<string, unknown
   return { added };
 }
 
-// --- Calendar: add from the library, and update from the library -----------------------------------------
-/**
- * Creates one calendar entry per platform from a library item, copying its
- * claims and attached assets. A non-recurring item already on the calendar
- * needs { confirm_duplicate: true }.
- */
-export async function scheduleFromLibrary(db: Db, id: unknown, input: Record<string, unknown>) {
-  const p = await getPremade(db, id);
-  if (p.archived_at) throw new GrowthError("This item is archived.", 400);
-  const pillar = await getPillar(db, p.pillar_id);
+// --- Calendar: schedule from the library, edit a schedule group, mark posted, remove ---------------------------
+const HHMM_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
+type PostRow = {
+  id: string;
+  title: string;
+  business: string;
+  platform: string;
+  post_type: string;
+  status: string;
+  scheduled_date: string | null;
+  scheduled_time: string | null;
+  caption: string | null;
+  premade_post_id: string | null;
+  schedule_group_id: string | null;
+  archived_at: string | null;
+};
+const POST_ROW_COLUMNS = "id, title, business, platform, post_type, status, scheduled_date, scheduled_time, caption, premade_post_id, schedule_group_id, archived_at";
+
+function dateTimeFrom(input: Record<string, unknown>) {
   const date = txt(input, "date");
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new GrowthError("Choose a date.", 400, { date: "Choose a date." });
   const time = txt(input, "time");
-  if (time && !/^([01]\d|2[0-3]):[0-5]\d$/.test(time)) throw new GrowthError("Enter a time like 09:30.", 400, { time: "Enter a time like 09:30." });
-  const platforms = Array.isArray(input.platforms) ? (input.platforms as unknown[]).map(String) : p.platforms;
-  if (platforms.some((x) => !(LIBRARY_PLATFORMS as readonly string[]).includes(x))) throw new GrowthError("Choose platforms from the list.", 400);
-  let owner: string | null = null;
-  if (input.owner_account_id) {
-    owner = idOrThrow(input.owner_account_id, "employee");
-    const { data } = await db.from("employee_accounts").select("id, status").eq("id", owner).maybeSingle();
-    if (!data || data.status !== "active") throw new GrowthError("Choose an active employee.", 400, { owner_account_id: "Choose an active employee." });
-  }
-  const { data: existing } = await db.from("content_posts").select("id, status, scheduled_date, archived_at").eq("premade_post_id", p.id);
-  const live = ((existing ?? []) as Array<{ status: string; scheduled_date: unknown; archived_at: string | null }>).filter((e) => !e.archived_at);
-  if (!p.is_recurring && live.length && input.confirm_duplicate !== true) {
-    const dates = live.map((e) => iso(e.scheduled_date)).filter(Boolean).sort();
-    throw new GrowthError(`Already on the calendar for ${dates[0] ?? "an earlier date"}. Confirm to add it again.`, 409, { confirm_duplicate: "Confirm to add it again." });
-  }
-  const series = p.series_id ? (await db.from("content_series").select("default_hashtags").eq("id", p.series_id).maybeSingle()).data : null;
+  if (time && !HHMM_RE.test(time)) throw new GrowthError("Enter a time like 09:30.", 400, { time: "Enter a time like 09:30." });
+  return { date, time: time || null };
+}
+function platformsFrom(input: Record<string, unknown>): string[] {
+  const list = Array.isArray(input.platforms) ? [...new Set((input.platforms as unknown[]).map(String))] : [];
+  if (!list.length) throw new GrowthError("Choose at least one platform.", 400, { platforms: "Choose at least one platform." });
+  if (list.some((x) => !(CALENDAR_PLATFORMS as readonly string[]).includes(x))) throw new GrowthError("Choose platforms from the list.", 400, { platforms: "Choose platforms from the list." });
+  return list;
+}
+
+/**
+ * Schedules a library post: one calendar entry per platform, same date and
+ * time, a shared schedule_group_id, status Scheduled. Entries copy no
+ * content. A post that isn't Ready needs { schedule_anyway: true }.
+ */
+export async function scheduleFromLibrary(db: Db, id: unknown, input: Record<string, unknown>) {
+  const p = await getPremade(db, id);
+  if (p.archived_at) throw new GrowthError("This post is archived.", 400);
+  if (p.status === "paused") throw new GrowthError("Paused: reactivate it first.", 400);
+  const { date, time } = dateTimeFrom(input);
+  const platforms = platformsFrom(input);
   const gate = await gateFor(db, p);
-  const r = calendarEntriesFromPremade({ premade: { ...p, pillar_code: pillar.code }, series, date, time, platforms, owner, gateResult: gate });
+  const notReady = p.status !== "ready" || gate.blockers.length > 0;
+  if (notReady && input.schedule_anyway !== true) {
+    const why = gate.blockers.length ? gate.blockers.map((b) => b.message).join(" ") : "The post isn't marked Ready.";
+    throw new GrowthError(`Not ready yet. ${why} Tick "Schedule anyway" to schedule it.`, 400, { schedule_anyway: "Tick to schedule it anyway." });
+  }
+  const groupId = crypto.randomUUID();
+  const r = calendarEntriesFromPremade({ premade: { ...p, name: await nameFor(db, p) }, date, time, platforms, groupId });
   if (!r.ok) throw new GrowthError(r.error, 400);
-  const warnings = [...r.warnings];
-  const rows = r.rows.map((row) => {
-    if (row.status === "ready" && !(row.caption ?? "").trim()) {
-      warnings.push("Write a caption on the calendar entry before it can be Ready.");
-      return { ...row, status: "editing" as const, risky_words_checked: false };
-    }
-    return row;
-  });
-  const [{ data: claims }, { data: assets }] = await Promise.all([
-    db.from("premade_post_claims").select("claim_id").eq("premade_post_id", p.id),
-    db.from("premade_post_assets").select("asset_id").eq("premade_post_id", p.id),
-  ]);
   const ids: string[] = [];
-  for (const row of rows) {
+  for (const row of r.rows) {
     const { data, error } = await db.from("content_posts").insert({ ...row, created_by_name: null }).select("id").single();
     if (error) fail(error, "Could not add the calendar entry.");
     ids.push(data.id);
-    for (const c of (claims ?? []) as Array<{ claim_id: string }>) await db.from("content_post_claims").insert({ post_id: data.id, claim_id: c.claim_id });
-    for (const a of (assets ?? []) as Array<{ asset_id: string }>) await db.from("content_post_assets").insert({ post_id: data.id, asset_id: a.asset_id });
   }
-  const openNeeds = p.asset_needs.filter((n) => n.status !== "ready").length;
-  return { ids, warnings: [...new Set(warnings)], open_needs: openNeeds };
+  return { ids, group_id: groupId };
 }
 
-/** "Update from library": copies caption, hashtags, assets and claims onto a calendar entry that isn't Posted. */
-export async function syncFromLibrary(db: Db, postId: unknown) {
-  const pid = idOrThrow(postId, "post");
-  const { data: post } = await db.from("content_posts").select("id, status, premade_post_id").eq("id", pid).maybeSingle();
-  if (!post) throw new GrowthError("Unknown post.", 404);
-  if (!post.premade_post_id) throw new GrowthError("This entry wasn't made from the library.", 400);
-  if (post.status === "posted") throw new GrowthError("Posted entries can't be updated from the library.", 400);
+async function getPostRow(db: Db, id: unknown): Promise<PostRow> {
+  const { data } = await db.from("content_posts").select(POST_ROW_COLUMNS).eq("id", idOrThrow(id, "calendar entry")).maybeSingle();
+  if (!data) throw new GrowthError("Unknown calendar entry.", 404);
+  return { ...data, scheduled_date: iso(data.scheduled_date) };
+}
+
+/** The entry's schedule group (live rows), or just the entry when it has none. */
+async function groupRows(db: Db, post: PostRow): Promise<PostRow[]> {
+  if (!post.schedule_group_id) return [post];
+  const { data } = await db.from("content_posts").select(POST_ROW_COLUMNS).eq("schedule_group_id", post.schedule_group_id);
+  return ((data ?? []) as PostRow[]).filter((r) => !r.archived_at);
+}
+
+/**
+ * Edit schedule for a whole group: platforms can be added or removed
+ * (removed ones are archived; Posted ones are locked) and the date and time
+ * apply to every row not yet Posted. An entry without a library post keeps a
+ * single platform: { date, time, platform }.
+ */
+export async function editSchedule(db: Db, postId: unknown, input: Record<string, unknown>) {
+  const post = await getPostRow(db, postId);
+  if (post.archived_at) throw new GrowthError("This entry was removed from the calendar.", 400);
+  const { date, time } = dateTimeFrom(input);
+  if (!post.premade_post_id) {
+    if (post.status === "posted") throw new GrowthError("Posted entries can't be rescheduled.", 400);
+    const platform = txt(input, "platform") || post.platform;
+    if (!(CALENDAR_PLATFORMS as readonly string[]).includes(platform)) throw new GrowthError("Choose a platform from the list.", 400);
+    const { error } = await db.from("content_posts").update({ scheduled_date: date, scheduled_time: time, platform }).eq("id", post.id);
+    if (error) fail(error, "Could not save the schedule.");
+    return { added: 0, archived: 0, updated: 1 };
+  }
+  const platforms = platformsFrom(input);
+  const rows = await groupRows(db, post);
+  const groupId = post.schedule_group_id ?? crypto.randomUUID();
+  if (!post.schedule_group_id) await db.from("content_posts").update({ schedule_group_id: groupId }).eq("id", post.id);
+  const diff = scheduleGroupDiff(rows, platforms);
+  const now = new Date().toISOString();
+  for (const r of diff.archive) await db.from("content_posts").update({ archived_at: now }).eq("id", r.id);
+  for (const r of diff.keep) {
+    const { error } = await db.from("content_posts").update({ scheduled_date: date, scheduled_time: time }).eq("id", r.id);
+    if (error) fail(error, "Could not save the schedule.");
+  }
+  const template = rows[0];
   const p = await getPremade(db, post.premade_post_id);
-  const series = p.series_id ? (await db.from("content_series").select("default_hashtags").eq("id", p.series_id).maybeSingle()).data : null;
-  const caption = p.caption;
-  const hashtags = (p.hashtags ?? "").trim() ? p.hashtags : series?.default_hashtags ?? null;
-  const patch: Record<string, unknown> = { caption, hashtags, premade_synced_at: new Date().toISOString() };
-  const notices: string[] = [];
-  if (["ready", "scheduled"].includes(post.status) && !(caption ?? "").trim()) {
-    patch.status = "editing";
-    notices.push("The library item has no caption, so the entry went back to Editing.");
+  const name = await nameFor(db, p);
+  for (const platform of diff.add) {
+    const { error } = await db.from("content_posts").insert({
+      title: name.slice(0, 200),
+      business: template.business,
+      platform,
+      post_type: template.post_type,
+      status: "scheduled",
+      scheduled_date: date,
+      scheduled_time: time,
+      premade_post_id: post.premade_post_id,
+      schedule_group_id: groupId,
+      risky_words_checked: false,
+    });
+    if (error) fail(error, "Could not add the platform.");
   }
-  if (["ready", "scheduled"].includes(post.status)) {
-    patch.risky_words_checked = false;
-    if (!patch.status) {
-      patch.status = "editing";
-      notices.push("The text changed, so the entry went back to Editing. Check it and set it Ready again.");
-    }
+  return { added: diff.add.length, archived: diff.archive.length, updated: diff.keep.length };
+}
+
+/**
+ * Mark posted (one entry): sets the posted date (New York) and the optional
+ * posted link, and freezes the FINAL caption (with hashtags) and the name
+ * into the entry, in one update. From then on the entry shows its frozen
+ * values and never changes when the library post does.
+ */
+export async function markPosted(db: Db, postId: unknown, input: Record<string, unknown>) {
+  const post = await getPostRow(db, postId);
+  if (post.archived_at) throw new GrowthError("This entry was removed from the calendar.", 400);
+  if (post.status === "posted") throw new GrowthError("This entry is already marked posted.", 400);
+  const url = txt(input, "posted_url");
+  if (url && !(/^https?:\/\/\S+$/i.test(url) && url.length <= 2000)) throw new GrowthError("Enter a full link starting with http:// or https://.", 400, { posted_url: "Enter a full link." });
+  const patch: Record<string, unknown> = { status: "posted", posted_at: todayNy(), posted_url: url || null };
+  if (post.premade_post_id) {
+    const p = await getPremade(db, post.premade_post_id);
+    patch.caption = (await finalCaptionFor(db, p)) || null;
+    patch.hashtags = null;
+    patch.title = (await nameFor(db, p)).slice(0, 200);
+  } else if (!(post.caption ?? "").trim()) {
+    throw new GrowthError("This entry has no caption, so it can't be marked posted.", 400);
   }
-  const { error } = await db.from("content_posts").update(patch).eq("id", pid);
-  if (error) fail(error, "Could not update the entry.");
-  for (const [from, to, key] of [["premade_post_claims", "content_post_claims", "claim_id"], ["premade_post_assets", "content_post_assets", "asset_id"]] as const) {
-    const { data: want } = await db.from(from).select(key).eq("premade_post_id", p.id);
-    const wanted = ((want ?? []) as Array<Record<string, string>>).map((r) => r[key]);
-    const { data: have } = await db.from(to).select(`post_id, ${key}`).eq("post_id", pid);
-    const current = ((have ?? []) as Array<Record<string, string>>).map((r) => r[key]);
-    for (const x of current) if (!wanted.includes(x)) await db.from(to).delete().eq("post_id", pid).eq(key, x);
-    for (const x of wanted) if (!current.includes(x)) await db.from(to).insert({ post_id: pid, [key]: x });
+  const { error } = await db.from("content_posts").update(patch).eq("id", post.id);
+  if (error) fail(error, "Could not mark the entry posted.");
+  return { ok: true };
+}
+
+/** Remove from calendar: archives every entry of the group that isn't Posted (entries are never deleted). */
+export async function removeFromCalendar(db: Db, postId: unknown) {
+  const post = await getPostRow(db, postId);
+  const rows = (await groupRows(db, post)).filter((r) => r.status !== "posted");
+  const now = new Date().toISOString();
+  const targets = rows.length ? rows : [post];
+  for (const r of targets) {
+    const { error } = await db.from("content_posts").update({ archived_at: now }).eq("id", r.id);
+    if (error) fail(error, "Could not remove the entry.");
   }
-  return { notices };
+  return { removed: targets.length };
 }
 
 // --- Best Times: windows, rhythm; Settings: avoid list ------------------------------------------------------

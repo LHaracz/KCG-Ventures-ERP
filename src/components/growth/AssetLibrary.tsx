@@ -63,11 +63,11 @@ export const mediaKind = (a: { source: string; mime_type: string | null }): "hei
 export const isVideoKind = (k: FileKind | null | undefined) => k === "mp4" || k === "mov";
 /** Assets per page on the Assets tab. */
 export const PAGE_SIZE = 20;
-const THUMB_STALE_MS = 50 * 60 * 1000;
+export const THUMB_STALE_MS = 50 * 60 * 1000;
 /** Cache key for a grid image: changes when the asset gets a new thumbnail. */
-const thumbKey = (a: { id: string; poster_path: string | null; preview_path: string | null; file_path: string | null }) => `${a.id}|${a.poster_path ?? a.preview_path ?? a.file_path ?? ""}`;
+export const thumbKey = (a: { id: string; poster_path: string | null; preview_path: string | null; file_path: string | null }) => `${a.id}|${a.poster_path ?? a.preview_path ?? a.file_path ?? ""}`;
 /** True when the grid can show a picture: a poster or preview JPG, or a browser image. */
-const hasThumb = (a: { source: string; mime_type: string | null; preview_path: string | null; poster_path: string | null }) =>
+export const hasThumb = (a: { source: string; mime_type: string | null; preview_path: string | null; poster_path: string | null }) =>
   a.source === "upload" && (!!a.poster_path || !!a.preview_path || ["image/png", "image/jpeg", "image/webp", "image/gif"].includes(a.mime_type ?? ""));
 /** "0:07", "1:05:09". */
 export const durationLabel = (sec: number | null | undefined) => {

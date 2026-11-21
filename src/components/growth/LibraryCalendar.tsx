@@ -2,20 +2,22 @@
 
 /**
  * Marketing Hub pieces that join the Ad Library to the calendar and the
- * reference data: the "Add to calendar" dialog (also "Start from the
- * library"), best-time hints, rhythm hints, the pillar mix strip, the
- * "Based on" notice with "Update from library", the Best Times tab and the
- * Admin-only avoid list (Settings tab).
+ * reference data: the schedule modal (New post, Add to calendar, Edit
+ * schedule), the entry popover (final caption, Mark posted, Remove),
+ * best-time hints, rhythm hints, the pillar mix strip, the Best Times tab
+ * and the Admin-only avoid list (Settings tab).
  */
 import { useMemo, useState } from "react";
 import Link from "next/link";
-import { saveAvoidPhraseApi, saveRhythmApi, scheduleFromLibraryApi, syncFromLibraryApi, updateWindowApi, type GrowthApiError, type MarketingData } from "@/lib/growth/client";
-import { hashPremadeText, premadeReadyCheck, premadeScanText, scanBoth } from "@/lib/growth/adLibrary";
-import { DAY_SHORT, PLATFORM_LABEL, dayName, pillarMix, rhythmFor, scheduleHint, weekdayOf, type WindowRow } from "@/lib/growth/scheduling";
+import { editScheduleApi, markPostedApi, removeFromCalendarApi, saveAvoidPhraseApi, saveRhythmApi, scheduleFromLibraryApi, updateWindowApi, type GrowthApiError, type MarketingData } from "@/lib/growth/client";
+import { CALENDAR_PLATFORMS, DAY_SHORT, PLATFORM_LABEL, PLATFORM_SHORT, dayName, pillarMix, rhythmFor, scheduleHint, weekdayOf, type WindowRow } from "@/lib/growth/scheduling";
 import { addDays, todayNy } from "@/lib/growth/dates";
+import { matchesPostSearch, stripTrailingHashtagBlock } from "@/lib/growth/naming";
+import { entryView, gateView } from "@/lib/growth/libraryView";
 import type { PremadeRow, WindowRowDb } from "@/lib/growth/libraryService";
 import type { Post } from "@/lib/growth/marketingService";
-import { Badge, Checkbox, Chip, ConfirmDialog, Dialog, ErrorSummary, Select, TextField, btn, btnPrimary, card, errorBox, fmtDate, infoBox, input, warnBox } from "./GrowthUi";
+import { Badge, Checkbox, Chip, Dialog, ErrorSummary, Select, TextField, btn, btnPrimary, card, errorBox, fmtDate, infoBox, input, warnBox } from "./GrowthUi";
+import { AssetCards } from "./AssetCardPicker";
 
 const touch = "min-h-11";
 const PLATFORMS = ["instagram", "tiktok", "facebook", "youtube"] as const;
@@ -32,14 +34,6 @@ const HINT_CLASS: Record<string, string> = { in_window: "text-emerald-800", outs
 const windowsOf = (data: MarketingData): WindowRow[] => data.windows.map((w) => ({ ...w, ranges: Array.isArray(w.ranges) ? w.ranges : [] }));
 const dayNote = (data: MarketingData, date: string) => data.dayNotes.find((n) => n.day_of_week === weekdayOf(date))?.note ?? null;
 const pillarById = (data: MarketingData, id: string | null | undefined) => data.pillars.find((p) => p.id === id) ?? null;
-
-/** The blockers a library item would show at Ready (computed in the browser for warnings only; the server decides). */
-export function itemBlockers(data: MarketingData, p: PremadeRow) {
-  const risky = data.riskyWords.filter((w) => !w.archived_at).map((w) => w.phrase);
-  const avoid = data.avoidPhrases.filter((w) => !w.archived_at).map((w) => w.phrase);
-  const hits = scanBoth(premadeScanText(p), risky, avoid);
-  return premadeReadyCheck({ premade: p, selectedClaims: data.claims.filter((c) => p.claim_ids.includes(c.id)), hits, currentTextHash: hashPremadeText(p) });
-}
 
 // --- Hints ------------------------------------------------------------------------------------------
 /** "Tuesday on TikTok: 2 to 6pm (peak)", plus the day's note. Never blocks anything. */
@@ -88,186 +82,183 @@ export function PillarMixStrip({ data }: { data: MarketingData }) {
   );
 }
 
-// --- "Based on" notice on a calendar entry -----------------------------------------------------------
-export function LibraryBasis({ data, post, onSynced }: { data: MarketingData; post: Post; onSynced: () => void }) {
-  const [confirm, setConfirm] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [notices, setNotices] = useState<string[]>([]);
-  if (!post.premade_post_id) return null;
-  const p = data.premades.find((x) => x.id === post.premade_post_id);
-  if (!p) return null;
-  const changed = !!post.premade_synced_at && new Date(p.updated_at).getTime() > new Date(post.premade_synced_at).getTime();
-  const posted = post.status === "posted";
-  const open = p.asset_needs.filter((n) => n.status !== "ready").length;
+// --- Calendar entries: name, chips, the schedule modal and the entry popover ------------------------------
+/** A calendar entry's name: the library post's live name until it is Posted, then the frozen title. */
+export const entryName = (data: MarketingData, post: Post) => entryView(data, post, data.premades).name;
+/** "AA-2 · IG" */
+export const entryChip = (data: MarketingData, post: Post) => `${entryName(data, post)} · ${PLATFORM_SHORT[post.platform] ?? post.platform}`;
+/** The live rows of an entry's schedule group (or just the entry). */
+export const groupOf = (data: MarketingData, post: Post) =>
+  post.schedule_group_id ? data.posts.filter((p) => p.schedule_group_id === post.schedule_group_id && !p.archived_at) : [post];
+
+/** One library post in the search list. */
+function PostOption({ data, p }: { data: MarketingData; p: PremadeRow }) {
+  const body = stripTrailingHashtagBlock(p.caption).body.replace(/\s+/g, " ").trim();
   return (
-    <div className={`${infoBox} space-y-1`} data-testid="library-basis">
-      <p>
-        Based on: <Link className="font-medium underline" href={`/growth/marketing?tab=library&item=${p.id}`}>{p.display_name}</Link>
-      </p>
-      {open > 0 && <p className="text-amber-800">The library item still needs {open} asset{open === 1 ? "" : "s"}.</p>}
-      {changed && (
-        <div className="flex flex-wrap items-center gap-2">
-          <span>The library version changed on {fmtDate(p.updated_at.slice(0, 10))}.</span>
-          <button type="button" className={btn} disabled={posted} title={posted ? "Posted entries can't be updated." : undefined} onClick={() => setConfirm(true)}>
-            Update from library
-          </button>
-        </div>
-      )}
-      {notices.map((n) => <p key={n}>{n}</p>)}
-      {confirm && (
-        <ConfirmDialog
-          title="Update from the library?"
-          confirmLabel="Update"
-          busy={busy}
-          error={error}
-          onClose={() => setConfirm(false)}
-          onConfirm={async () => {
-            setBusy(true);
-            try {
-              const r = await syncFromLibraryApi(post.id);
-              setNotices(r.notices);
-              setConfirm(false);
-              onSynced();
-            } catch (e) {
-              setError((e as Error).message);
-            } finally {
-              setBusy(false);
-            }
-          }}
-        >
-          <p>This replaces the entry&apos;s caption, hashtags, attached assets and claims with the library version.</p>
-        </ConfirmDialog>
-      )}
-    </div>
+    <span className="block">
+      <span className="font-bold">{p.name}</span> <span className="text-[11px]">{p.category === "reel" ? "Reel" : "Picture post"} · {p.status[0].toUpperCase() + p.status.slice(1)}</span>
+      {body && <span className="block text-[11px]">{body.slice(0, 60)}{body.length > 60 ? "…" : ""}</span>}
+      {p.status === "paused" && <span className="block text-[11px]">Paused: reactivate it first</span>}
+      {data.duplicateNames.some((d) => d.post_ids.includes(p.id)) && <span className="block text-[11px]">Duplicate name</span>}
+    </span>
   );
 }
 
-// --- Add to calendar ------------------------------------------------------------------------------------
-export function AddToCalendarDialog({
+/**
+ * New Post / Add to calendar / Edit schedule. Saving creates one entry per
+ * platform (one schedule group) or, when editing, updates the whole group.
+ */
+export function ScheduleDialog({
   data,
-  premade,
-  initialDate,
+  premadeId = null,
+  entry = null,
+  initialDate = null,
   onClose,
   onDone,
 }: {
   data: MarketingData;
-  premade: PremadeRow | null;
+  premadeId?: string | null;
+  entry?: Post | null;
   initialDate?: string | null;
   onClose: () => void;
-  onDone: (ids: string[]) => void;
+  onDone: (message: string) => void;
 }) {
-  const [pickedId, setPickedId] = useState<string | null>(premade?.id ?? null);
+  const group = entry ? groupOf(data, entry) : [];
+  const locked = group.filter((r) => r.status === "posted");
+  const legacy = !!entry && !entry.premade_post_id;
+  const [pickedId, setPickedId] = useState<string | null>(entry?.premade_post_id ?? premadeId);
   const item = data.premades.find((p) => p.id === pickedId) ?? null;
-  const [date, setDate] = useState(initialDate ?? "");
-  const [time, setTime] = useState("");
-  const [platforms, setPlatforms] = useState<string[]>(premade?.platforms?.length ? [...premade.platforms] : ["instagram"]);
-  const [owner, setOwner] = useState("");
-  const [confirmDup, setConfirmDup] = useState(false);
+  const [q, setQ] = useState("");
+  const [date, setDate] = useState(entry?.scheduled_date ?? initialDate ?? "");
+  const [time, setTime] = useState(entry?.scheduled_time ?? "");
+  const [platforms, setPlatforms] = useState<string[]>(entry ? [...new Set(group.map((r) => r.platform))] : ["instagram"]);
+  const [anyway, setAnyway] = useState(false);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [errors, setErrors] = useState<Record<string, string>>({});
-  const [done, setDone] = useState<{ ids: string[]; warnings: string[]; open_needs: number } | null>(null);
-
-  const choose = (p: PremadeRow) => {
-    setPickedId(p.id);
-    setPlatforms(p.platforms.length ? [...p.platforms] : ["instagram"]);
-    setConfirmDup(false);
-  };
-  const blockers = item && item.status === "ready" ? itemBlockers(data, item) : [];
-  const already = item && !item.is_recurring ? item.next_scheduled ?? item.last_posted : null;
+  const list = data.premades
+    .filter((p) => !p.archived_at)
+    .filter((p) => matchesPostSearch({ name: p.name, name_history: p.name_history, title: p.title, subtopicName: data.series.find((s) => s.id === p.series_id)?.name ?? null, caption: p.caption }, q))
+    .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+  const gate = item ? gateView(data, item) : null;
+  const notReady = !!item && !entry && (item.status !== "ready" || (gate?.blockers.length ?? 0) > 0);
+  const others = item ? data.posts.filter((p) => p.premade_post_id === item.id && !p.archived_at && (!entry?.schedule_group_id || p.schedule_group_id !== entry.schedule_group_id) && p.id !== entry?.id && p.scheduled_date) : [];
+  const otherDates = [...new Set(others.map((p) => p.scheduled_date!))].sort();
   const rhythm = date ? rhythmLabel(data, date) : null;
-
+  const addable = CALENDAR_PLATFORMS.filter((x) => !platforms.includes(x));
   const save = async () => {
-    if (!item) return;
     setBusy(true);
     setMessage(null);
     setErrors({});
     try {
-      const r = await scheduleFromLibraryApi(item.id, { date, time: time || null, platforms, owner_account_id: owner || null, confirm_duplicate: confirmDup });
-      setDone(r);
+      if (entry) {
+        const r = await editScheduleApi(entry.id, legacy ? { date, time: time || null, platform: platforms[0] } : { date, time: time || null, platforms });
+        onDone(`Schedule saved${r.added ? `, added ${r.added}` : ""}${r.archived ? `, removed ${r.archived}` : ""}.`);
+      } else if (item) {
+        const r = await scheduleFromLibraryApi(item.id, { date, time: time || null, platforms, schedule_anyway: anyway });
+        onDone(`Scheduled ${item.name} on ${fmtDate(date)} (${r.ids.length} platform${r.ids.length === 1 ? "" : "s"})`);
+      }
     } catch (e) {
       setMessage((e as Error).message);
       setErrors((e as GrowthApiError).fields ?? {});
-    } finally {
       setBusy(false);
     }
   };
-
-  if (done) {
-    return (
-      <Dialog title="Added to the calendar" onClose={() => onDone(done.ids)}>
-        <div className="space-y-2 text-black" data-testid="schedule-done">
-          <p>{done.ids.length} calendar entr{done.ids.length === 1 ? "y" : "ies"} added.</p>
-          <ul className="list-disc pl-5 text-sm">
-            {done.ids.map((id, i) => (
-              <li key={id}>
-                <Link className="underline" href={`/growth/marketing?tab=calendar&post=${id}`}>Open entry {i + 1}</Link>
-              </li>
-            ))}
-          </ul>
-          {done.open_needs > 0 && <p className={warnBox}>The library item still needs {done.open_needs} asset{done.open_needs === 1 ? "" : "s"}.</p>}
-          {done.warnings.length > 0 && <div className={warnBox}><ul className="list-disc pl-4">{done.warnings.map((w) => <li key={w}>{w}</li>)}</ul></div>}
-          <div className="flex justify-end"><button type="button" className={btnPrimary} onClick={() => onDone(done.ids)}>Done</button></div>
-        </div>
-      </Dialog>
-    );
-  }
-
+  const title = entry ? `Edit schedule: ${entryName(data, entry)}` : item && premadeId ? `Add to calendar: ${item.name}` : "New post";
   return (
-    <Dialog title={item ? `Add to calendar: ${item.display_name}` : "Start from the library"} onClose={onClose} wide>
-      <div className="space-y-3 text-black">
+    <Dialog title={title} onClose={onClose} wide>
+      <div className="space-y-3 text-black" data-testid="schedule-dialog">
         <ErrorSummary message={message} errors={errors} />
-        {!premade && <LibraryPicker data={data} date={date} selectedId={pickedId} onPick={choose} />}
-        {item && (
+        {!entry && !premadeId && (
+          <div className="space-y-1">
+            <label htmlFor="f-sch-search" className="text-xs font-medium">Library post</label>
+            <input id="f-sch-search" placeholder="Search by name or caption" value={q} onChange={(e) => setQ(e.target.value)} className={input} autoFocus />
+            <ul className="max-h-56 space-y-0.5 overflow-y-auto rounded-md border border-zinc-200 p-1" role="listbox" aria-label="Library posts" data-testid="schedule-post-list">
+              {list.length === 0 && <li className="p-2 text-xs">Nothing matches.</li>}
+              {list.map((p) => (
+                <li key={p.id} role="option" aria-selected={pickedId === p.id} aria-disabled={p.status === "paused"}>
+                  <button
+                    type="button"
+                    disabled={p.status === "paused"}
+                    onClick={() => { setPickedId(p.id); setAnyway(false); }}
+                    className={`w-full rounded px-2 py-1.5 text-left text-sm ${touch} ${pickedId === p.id ? "bg-emerald-50 ring-1 ring-emerald-400" : "hover:bg-zinc-50"} disabled:cursor-not-allowed disabled:opacity-60`}
+                  >
+                    <PostOption data={data} p={p} />
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+        {(item || legacy) && (
           <>
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+            <fieldset>
+              <legend className="mb-1 text-xs font-medium">Platforms{legacy ? "" : " (one calendar entry each)"}</legend>
+              <div className="flex flex-wrap items-center gap-2" data-testid="platform-chips">
+                {platforms.map((pl) => {
+                  const isLocked = locked.some((r) => r.platform === pl);
+                  return (
+                    <span key={pl} className="inline-flex items-center gap-1 rounded-full border border-zinc-300 bg-white px-3 py-1 text-sm">
+                      {PLATFORM_LABEL[pl] ?? pl}
+                      {isLocked ? (
+                        <span className="text-[11px]">(Posted)</span>
+                      ) : (
+                        !legacy && (
+                          <button type="button" aria-label={`Remove ${PLATFORM_LABEL[pl] ?? pl}`} className="px-1" onClick={() => setPlatforms((s) => s.filter((x) => x !== pl))}>✕</button>
+                        )
+                      )}
+                    </span>
+                  );
+                })}
+                {legacy ? (
+                  <select aria-label="Platform" value={platforms[0]} onChange={(e) => setPlatforms([e.target.value])} className={`${input} w-44`}>
+                    {CALENDAR_PLATFORMS.map((x) => <option key={x} value={x}>{PLATFORM_LABEL[x]}</option>)}
+                  </select>
+                ) : (
+                  addable.length > 0 && (
+                    <select aria-label="Add platform" value="" onChange={(e) => e.target.value && setPlatforms((s) => [...s, e.target.value])} className={`${input} w-44`}>
+                      <option value="">Add platform</option>
+                      {addable.map((x) => <option key={x} value={x}>{PLATFORM_LABEL[x]}</option>)}
+                    </select>
+                  )
+                )}
+              </div>
+              {errors.platforms && <p className={errorBox}>{errors.platforms}</p>}
+            </fieldset>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <TextField name="sch-date" label="Date" type="date" value={date} onChange={setDate} required error={errors.date} />
               <TextField name="sch-time" label="Time (optional)" type="time" value={time} onChange={setTime} error={errors.time} />
-              <Select name="sch-owner" label="Owner" value={owner} onChange={setOwner} options={[{ value: "", label: "Nobody" }, ...data.employees.map((e) => ({ value: e.id, label: e.name }))]} error={errors.owner_account_id} />
             </div>
-            <fieldset>
-              <legend className="mb-1 text-xs font-medium">Platforms (one calendar entry each)</legend>
-              <div className="flex flex-wrap gap-3">
-                {PLATFORMS.map((pl) => (
-                  <label key={pl} className={`flex items-center gap-2 text-sm ${touch}`}>
-                    <input type="checkbox" checked={platforms.includes(pl)} onChange={() => setPlatforms((s) => (s.includes(pl) ? s.filter((x) => x !== pl) : [...s, pl]))} />
-                    {PLATFORM_LABEL[pl]}
-                  </label>
-                ))}
-              </div>
-            </fieldset>
-            {item.category === "reel" && item.best_window_text && (
-              <p className={infoBox}>Best window for this reel: {item.best_window_text}{item.best_window_why ? ` (${item.best_window_why})` : ""}</p>
-            )}
+            {locked.length > 0 && <p className="text-xs">Posted entries keep their date and platform.</p>}
+            {item?.category === "reel" && item.best_window_text && <p className={infoBox}>Best window for this reel: {item.best_window_text}{item.best_window_why ? ` (${item.best_window_why})` : ""}</p>}
             {rhythm && <p className="text-xs">Rhythm for {dayName(weekdayOf(date))}: {rhythm}</p>}
             {date && (
               <div className="space-y-1">
-                {item.intent === "paid" ? (
-                  <ScheduleHintLine data={data} date={date} platform="instagram" intent="paid" />
-                ) : (
-                  platforms.map((pl) => <ScheduleHintLine key={pl} data={data} date={date} time={time} platform={pl} />)
-                )}
+                {item?.intent === "paid" ? <ScheduleHintLine data={data} date={date} platform="instagram" intent="paid" /> : platforms.map((pl) => <ScheduleHintLine key={pl} data={data} date={date} time={time} platform={pl} />)}
               </div>
             )}
-            {blockers.length > 0 && (
+            {otherDates.length > 0 && (
+              <p className={infoBox} data-testid="also-scheduled">
+                Also scheduled on {otherDates.slice(0, 3).map((d) => `${fmtDate(d)} for ${[...new Set(others.filter((o) => o.scheduled_date === d).map((o) => PLATFORM_LABEL[o.platform] ?? o.platform))].join(", ")}`).join("; ")}
+                {otherDates.length > 3 ? ` and ${otherDates.length - 3} more` : ""}
+              </p>
+            )}
+            {notReady && gate && (
               <div className={warnBox} data-testid="schedule-blockers">
-                <p className="font-medium">Not ready yet, so the entries will be Editing:</p>
-                <ul className="list-disc pl-4">{blockers.map((b) => <li key={b.key}>{b.message}</li>)}</ul>
-              </div>
-            )}
-            {already && (
-              <div className={warnBox} data-testid="already-scheduled">
-                <p>Already on the calendar for {fmtDate(already)}.</p>
-                <Checkbox name="sch-dup" label="Add it again anyway" checked={confirmDup} onChange={setConfirmDup} />
+                <p className="font-medium">This post isn&apos;t Ready yet:</p>
+                <ul className="list-disc pl-4">
+                  {item!.status !== "ready" && <li>Its status is {item!.status[0].toUpperCase() + item!.status.slice(1)}.</li>}
+                  {gate.blockers.map((b) => <li key={b.key}>{b.message}</li>)}
+                </ul>
+                <Checkbox name="sch-anyway" label="Schedule anyway" checked={anyway} onChange={setAnyway} />
               </div>
             )}
           </>
         )}
         <div className="flex justify-end gap-2">
           <button type="button" className={btn} onClick={onClose}>Cancel</button>
-          <button type="button" className={btnPrimary} disabled={!item || busy || !date || platforms.length === 0 || (!!already && !confirmDup)} onClick={save}>
-            {busy ? "Adding…" : `Add ${platforms.length > 1 ? `${platforms.length} entries` : "to calendar"}`}
+          <button type="button" className={btnPrimary} disabled={busy || (!item && !legacy) || !date || platforms.length === 0 || (notReady && !anyway) || item?.status === "paused"} onClick={save}>
+            {busy ? "Saving…" : entry ? "Save schedule" : `Schedule${platforms.length > 1 ? ` ${platforms.length} entries` : ""}`}
           </button>
         </div>
       </div>
@@ -275,55 +266,82 @@ export function AddToCalendarDialog({
   );
 }
 
-function LibraryPicker({ data, date, selectedId, onPick }: { data: MarketingData; date: string; selectedId: string | null; onPick: (p: PremadeRow) => void }) {
-  const [cat, setCat] = useState<"reel" | "picture_post">("reel");
-  const [q, setQ] = useState("");
-  const [matchRhythm, setMatchRhythm] = useState(false);
-  const r = date ? rhythmFor(date, data.rhythm) : null;
-  const list = data.premades
-    .filter((p) => !p.archived_at && p.category === cat)
-    .filter((p) => !q.trim() || p.display_name.toLowerCase().includes(q.trim().toLowerCase()) || p.title.toLowerCase().includes(q.trim().toLowerCase()))
-    .filter((p) => !matchRhythm || !r || r.pillar_ids.includes(p.pillar_id))
-    .sort((a, b) => a.display_name.localeCompare(b.display_name));
-  const count = (c: string) => data.premades.filter((p) => !p.archived_at && p.category === c).length;
+/**
+ * A calendar entry: its group's platforms, date and time, status, the FINAL
+ * caption (live until Posted, then frozen), assets, and Edit schedule, Mark
+ * posted, Remove from calendar, Open in Ad Library.
+ */
+export function EntryPopover({ data, post, onClose, onEdit, onChanged }: { data: MarketingData; post: Post; onClose: () => void; onEdit: () => void; onChanged: (message: string) => void }) {
+  const group = groupOf(data, post);
+  const view = entryView(data, post, data.premades);
+  const premade = post.premade_post_id ? data.premades.find((p) => p.id === post.premade_post_id) ?? null : null;
+  const assetIds = premade && post.status !== "posted" ? premade.asset_ids : post.asset_ids.length ? post.asset_ids : premade?.asset_ids ?? [];
+  const [marking, setMarking] = useState(false);
+  const [link, setLink] = useState("");
+  const [removing, setRemoving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const run = async (fn: () => Promise<unknown>, message: string) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await fn();
+      onChanged(message);
+    } catch (e) {
+      setError((e as Error).message);
+      setBusy(false);
+    }
+  };
   return (
-    <div className="space-y-2" data-testid="library-picker">
-      <div className="flex gap-1 border-b border-zinc-200" role="tablist">
-        {(["reel", "picture_post"] as const).map((c) => (
-          <button key={c} type="button" role="tab" aria-selected={cat === c} onClick={() => setCat(c)} className={`border-b-2 px-3 py-2 text-sm font-medium ${cat === c ? "border-emerald-600" : "border-transparent"}`}>
-            {c === "reel" ? "Reels" : "Picture posts"} ({count(c)})
-          </button>
-        ))}
+    <Dialog title={view.name} onClose={onClose} wide>
+      <div className="space-y-3 text-black" data-testid="entry-popover">
+        {error && <p className={errorBox} role="alert">{error}</p>}
+        <div className="flex flex-wrap items-center gap-2 text-sm">
+          {group.map((r) => (
+            <span key={r.id} className="rounded-full border border-zinc-300 px-2 py-0.5 text-xs">
+              {PLATFORM_SHORT[r.platform] ?? r.platform}{r.status === "posted" ? " (Posted)" : ""}
+            </span>
+          ))}
+          <span>{fmtDate(post.scheduled_date)}{post.scheduled_time ? ` at ${post.scheduled_time}` : ""}</span>
+          <Chip tone={post.status === "posted" ? "green" : "blue"}>{post.status[0].toUpperCase() + post.status.slice(1)}</Chip>
+        </div>
+        {!post.premade_post_id && <p className="text-xs">This entry was made before the library and shows what was stored.</p>}
+        <details className="rounded-md border border-zinc-200 p-2" open>
+          <summary className="cursor-pointer text-xs font-medium">{post.status === "posted" ? "Caption as posted" : "Final caption (what will be posted)"}</summary>
+          <p className="mt-2 max-h-72 overflow-y-auto whitespace-pre-wrap text-xs" data-testid="entry-caption">{view.caption || "(no caption)"}</p>
+        </details>
+        <div>
+          <p className="mb-1 text-xs font-semibold">Assets</p>
+          <AssetCards data={data} ids={assetIds} emptyText="No assets attached." />
+        </div>
+        {post.posted_url && <p className="text-xs">Posted link: <a className="underline" href={post.posted_url} target="_blank" rel="noopener noreferrer">{post.posted_url}</a></p>}
+        {marking && (
+          <div className={`${card} space-y-2`}>
+            <TextField name="posted-url" label="Posted link (optional)" value={link} onChange={setLink} placeholder="https://" />
+            <p className="text-[11px]">Marking posted saves today&apos;s date and keeps this caption with the entry, even if the library post changes later.</p>
+            <div className="flex justify-end gap-2">
+              <button type="button" className={btn} onClick={() => setMarking(false)}>Cancel</button>
+              <button type="button" className={btnPrimary} disabled={busy} onClick={() => run(() => markPostedApi(post.id, { posted_url: link.trim() || null }), `Marked ${view.name} posted`)}>Mark posted</button>
+            </div>
+          </div>
+        )}
+        {removing && (
+          <div className={`${warnBox} flex flex-wrap items-center justify-between gap-2`}>
+            <span>Remove {group.filter((r) => r.status !== "posted").length > 1 ? "these entries" : "this entry"} from the calendar? Posted entries stay.</span>
+            <span className="flex gap-2">
+              <button type="button" className={btn} onClick={() => setRemoving(false)}>Cancel</button>
+              <button type="button" className={btnPrimary} disabled={busy} onClick={() => run(() => removeFromCalendarApi(post.id), "Removed from the calendar")}>Remove</button>
+            </span>
+          </div>
+        )}
+        <div className="flex flex-wrap justify-end gap-2">
+          {post.premade_post_id && <Link className={btn} href={`/growth/marketing?tab=library&item=${post.premade_post_id}`}>Open in Ad Library</Link>}
+          {post.status !== "posted" && <button type="button" className={btn} onClick={onEdit}>Edit schedule</button>}
+          {post.status !== "posted" && !marking && <button type="button" className={btn} onClick={() => setMarking(true)}>Mark posted</button>}
+          {!removing && group.some((r) => r.status !== "posted") && <button type="button" className={btn} onClick={() => setRemoving(true)}>Remove from calendar</button>}
+        </div>
       </div>
-      <div className="flex flex-wrap items-center gap-2">
-        <input aria-label="Search by name" placeholder="Search by name" value={q} onChange={(e) => setQ(e.target.value)} className={`${input} w-64`} />
-        <Checkbox name="pick-rhythm" label={r ? `Match this day's rhythm (${r.label})` : "Match this day's rhythm"} checked={matchRhythm} onChange={setMatchRhythm} />
-      </div>
-      <ul className="max-h-64 space-y-0.5 overflow-y-auto rounded-md border border-zinc-200 p-1">
-        {list.length === 0 && <li className="p-2 text-xs">Nothing matches.</li>}
-        {list.map((p) => {
-          const paused = p.status === "paused";
-          const openFlags = p.flags.filter((f) => !f.dismissed_at).length;
-          const needs = p.asset_needs.filter((n) => n.status !== "ready").length;
-          return (
-            <li key={p.id}>
-              <button
-                type="button"
-                disabled={paused}
-                onClick={() => onPick(p)}
-                className={`flex w-full flex-wrap items-center gap-2 rounded px-2 py-2 text-left text-sm ${touch} ${selectedId === p.id ? "bg-emerald-50 ring-1 ring-emerald-400" : "hover:bg-zinc-50"} ${paused ? "cursor-not-allowed opacity-60" : ""}`}
-              >
-                <span className="font-medium">{p.display_name}</span>
-                <Chip tone={p.status === "ready" ? "green" : paused ? "amber" : "zinc"}>{p.status[0].toUpperCase() + p.status.slice(1)}</Chip>
-                {needs > 0 && <Badge tone="amber">{needs} asset{needs === 1 ? "" : "s"} needed</Badge>}
-                {openFlags > 0 && <Badge>{openFlags} flag{openFlags === 1 ? "" : "s"}</Badge>}
-                {paused && <span className="text-xs">Paused: reactivate it first</span>}
-              </button>
-            </li>
-          );
-        })}
-      </ul>
-    </div>
+    </Dialog>
   );
 }
 

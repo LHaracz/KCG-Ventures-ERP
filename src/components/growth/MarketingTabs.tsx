@@ -1,17 +1,16 @@
 "use client";
 
 /**
- * Marketing Hub tabs: Calendar (list and month views, post editor with the
- * Ready gate), Assets (uploads and links, signed previews), Claims (review
- * is Admin only), Products (profiles), Templates and Settings (Admin only).
+ * Marketing Hub tabs: Calendar (list and month views; entries are scheduled
+ * from the Ad Library and open in a popover), Claims (review is Admin
+ * only), Products (profiles and hashtags), Templates and Settings (Admin
+ * only).
  */
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import {
-  archivePostApi,
   createClaimApi,
   reviewClaimApi,
   saveProfileApi,
-  savePostApi,
   saveRiskyWordApi,
   saveTemplateApi,
   signedAssetUrlsApi,
@@ -20,13 +19,13 @@ import {
   type GrowthApiError,
   type MarketingData,
 } from "@/lib/growth/client";
-import { TEMPLATE_PLACEHOLDERS, applyTemplate, claimsReadyCheck, isReadyStatus, scanText } from "@/lib/growth/text";
+import { TEMPLATE_PLACEHOLDERS, applyTemplate, scanText } from "@/lib/growth/text";
 import { addDays, todayNy } from "@/lib/growth/dates";
 import type { Asset, Claim, Post, Template } from "@/lib/growth/marketingService";
 import { useUrlParams } from "./useUrlParams";
-import { AddToCalendarDialog, AvoidListSection, LibraryBasis, PillarMixStrip, ScheduleHintLine, rhythmLabel } from "./LibraryCalendar";
+import { AvoidListSection, EntryPopover, PillarMixStrip, ScheduleDialog, entryChip, rhythmLabel } from "./LibraryCalendar";
+import { HashtagField, useToast } from "./LibraryCaptions";
 import { ClosingLinesSection } from "./LibraryTabs";
-import { ASSET_TYPES, durationLabel, isVideoKind, mediaKind } from "./AssetLibrary";
 import { Badge, Checkbox, Chip, ConfirmDialog, Dialog, ErrorSummary, Select, TextArea, TextField, btn, btnPrimary, card, errorBox, fmtDate, infoBox, input, warnBox } from "./GrowthUi";
 
 type TabProps = { data: MarketingData; reload: () => Promise<void> };
@@ -36,13 +35,6 @@ export const PLATFORMS = [
   { value: "tiktok", label: "TikTok" },
   { value: "facebook", label: "Facebook" },
   { value: "youtube", label: "YouTube" },
-  { value: "other", label: "Other" },
-];
-const POST_TYPES = [
-  { value: "reel", label: "Reel" },
-  { value: "story", label: "Story" },
-  { value: "post", label: "Post" },
-  { value: "ad", label: "Ad" },
   { value: "other", label: "Other" },
 ];
 const POST_STATUSES = [
@@ -225,7 +217,7 @@ function ProfileDialog({
         <TextArea name="p-long" label="Long description" value={v.long_description} onChange={set("long_description")} rows={4} error={errors.long_description} />
         <TextArea name="p-ingredients" label="Ingredients as they appear on the label" value={v.label_ingredients} onChange={set("label_ingredients")} rows={3} error={errors.label_ingredients} hint="Typed by hand from the label. Never read from the formula." />
         <TextArea name="p-points" label="Key points" value={v.key_points} onChange={set("key_points")} rows={3} error={errors.key_points} />
-        <TextField name="p-hashtags" label="Hashtags" value={v.hashtags} onChange={set("hashtags")} error={errors.hashtags} />
+        <HashtagField name="p-hashtags" value={v.hashtags} onChange={set("hashtags")} error={errors.hashtags} />
         <TextArea name="p-dont" label="Do not say" value={v.do_not_say} onChange={set("do_not_say")} rows={2} error={errors.do_not_say} />
         <Select
           name="p-photo"
@@ -426,9 +418,9 @@ export function CalendarTab({ data, reload }: TabProps) {
   const [view, setView] = useState<"list" | "month">("list");
   const [month, setMonth] = useState(today.slice(0, 7));
   const [f, setF] = useState({ platform: "", status: "", owner: "", product: "", business: "", mine: false });
-  const [editing, setEditing] = useState<Post | "new" | null>(null);
-  const [draftFrom, setDraftFrom] = useState<Partial<Post> | null>(null);
-  const [fromLibrary, setFromLibrary] = useState(false);
+  const [opened, setOpened] = useState<Post | null>(null);
+  const [scheduling, setScheduling] = useState<{ entry: Post | null } | null>(null);
+  const [toastNode, toast] = useToast();
   const url = useUrlParams();
   const showRhythm = url.get("cal_rhythm") !== "0";
   const deepLink = url.get("post");
@@ -436,10 +428,10 @@ export function CalendarTab({ data, reload }: TabProps) {
     if (!deepLink) return;
     const p = data.posts.find((x) => x.id === deepLink);
     // eslint-disable-next-line react-hooks/set-state-in-effect -- open the entry named in the URL once the data is loaded
-    if (p) setEditing(p);
+    if (p) setOpened(p);
   }, [deepLink, data.posts]);
-  const closeEditor = () => {
-    setEditing(null);
+  const close = () => {
+    setOpened(null);
     if (deepLink) url.set({ post: null });
   };
   const me = data.me;
@@ -455,9 +447,11 @@ export function CalendarTab({ data, reload }: TabProps) {
   );
   const sorted = [...rows].sort((a, b) => (a.scheduled_date ?? "9999").localeCompare(b.scheduled_date ?? "9999") || (a.scheduled_time ?? "").localeCompare(b.scheduled_time ?? ""));
   const owner = (id: string | null) => data.employees.find((e) => e.id === id)?.name ?? "—";
-  const duplicate = (p: Post) => {
-    setDraftFrom({ ...p, id: undefined, title: `${p.title} (copy)`, status: "idea", posted_url: null, posted_at: null, risky_words_checked: false });
-    setEditing("new");
+  const changed = async (message: string) => {
+    close();
+    setScheduling(null);
+    toast(message);
+    await reload();
   };
   return (
     <section className="space-y-3">
@@ -473,9 +467,8 @@ export function CalendarTab({ data, reload }: TabProps) {
         <select aria-label="Business" value={f.business} onChange={(e) => setF({ ...f, business: e.target.value })} className={`${input} w-32`}><option value="">All businesses</option>{BUSINESSES.map((x) => <option key={x.value} value={x.value}>{x.label}</option>)}</select>
         <Checkbox name="mine" label="Mine" checked={f.mine} onChange={(v) => setF({ ...f, mine: v })} />
         <Checkbox name="cal-rhythm" label="Show rhythm hints" checked={showRhythm} onChange={(v) => url.set({ cal_rhythm: v ? null : "0" })} />
-        <div className="ml-auto flex gap-2">
-          <button type="button" className={btn} onClick={() => setFromLibrary(true)}>Start from the library</button>
-          <button type="button" className={btnPrimary} onClick={() => { setDraftFrom(null); setEditing("new"); }}>New post</button>
+        <div className="ml-auto">
+          <button type="button" className={btnPrimary} onClick={() => setScheduling({ entry: null })}>New post</button>
         </div>
       </div>
       <PillarMixStrip data={data} />
@@ -486,16 +479,15 @@ export function CalendarTab({ data, reload }: TabProps) {
         ) : (
           <div className="overflow-x-auto rounded-md border border-zinc-200 bg-white">
             <table className="min-w-full text-left text-xs" data-testid="posts-table">
-              <thead className="bg-zinc-50"><tr>{["Date", "Post", "Platform", "Status", "Owner", ""].map((h) => <th key={h || "a"} className="px-3 py-2 font-semibold">{h || <span className="sr-only">Actions</span>}</th>)}</tr></thead>
+              <thead className="bg-zinc-50"><tr>{["Date", "Post", "Platform", "Status", "Owner"].map((h) => <th key={h} className="px-3 py-2 font-semibold">{h}</th>)}</tr></thead>
               <tbody>
                 {sorted.map((p) => (
                   <tr key={p.id} className="border-t border-zinc-100 align-top">
                     <td className="px-3 py-2">{fmtDate(p.scheduled_date)}{p.scheduled_time ? ` ${p.scheduled_time}` : ""}</td>
-                    <td className="px-3 py-2"><button type="button" className="font-medium underline" onClick={() => setEditing(p)}>{p.title}</button><div>{label(POST_TYPES, p.post_type)} · {label(BUSINESSES, p.business)}</div></td>
+                    <td className="px-3 py-2"><button type="button" className="font-medium underline" onClick={() => setOpened(p)} data-testid="entry-chip">{entryChip(data, p)}</button></td>
                     <td className="px-3 py-2">{label(PLATFORMS, p.platform)}</td>
                     <td className="px-3 py-2">{statusChip(p.status)}</td>
                     <td className="px-3 py-2">{owner(p.owner_account_id)}</td>
-                    <td className="whitespace-nowrap px-3 py-2"><button type="button" className={btn} onClick={() => duplicate(p)}>Duplicate</button></td>
                   </tr>
                 ))}
               </tbody>
@@ -503,20 +495,11 @@ export function CalendarTab({ data, reload }: TabProps) {
           </div>
         )
       ) : (
-        <MonthGrid month={month} setMonth={setMonth} posts={rows} today={today} onOpen={(p) => setEditing(p)} rhythmFor={showRhythm ? (d) => rhythmLabel(data, d) : undefined} />
+        <MonthGrid month={month} setMonth={setMonth} posts={rows} today={today} onOpen={setOpened} chip={(p) => entryChip(data, p)} rhythmFor={showRhythm ? (d) => rhythmLabel(data, d) : undefined} />
       )}
-      {editing && (
-        <PostEditor
-          data={data}
-          post={editing === "new" ? null : editing}
-          initial={editing === "new" ? draftFrom : null}
-          onClose={closeEditor}
-          onSaved={() => { closeEditor(); void reload(); }}
-          onDuplicate={editing !== "new" ? () => duplicate(editing) : undefined}
-          reload={reload}
-        />
-      )}
-      {fromLibrary && <AddToCalendarDialog data={data} premade={null} onClose={() => setFromLibrary(false)} onDone={() => { setFromLibrary(false); void reload(); }} />}
+      {opened && <EntryPopover data={data} post={opened} onClose={close} onEdit={() => { const e = opened; close(); setScheduling({ entry: e }); }} onChanged={changed} />}
+      {scheduling && <ScheduleDialog data={data} entry={scheduling.entry} onClose={() => setScheduling(null)} onDone={changed} />}
+      {toastNode}
     </section>
   );
 }
@@ -536,7 +519,7 @@ function UpcomingRhythm({ data, posts, today }: { data: MarketingData; posts: Po
   );
 }
 
-function MonthGrid({ month, setMonth, posts, today, onOpen, rhythmFor }: { month: string; setMonth: (m: string) => void; posts: Post[]; today: string; onOpen: (p: Post) => void; rhythmFor?: (date: string) => string | null }) {
+function MonthGrid({ month, setMonth, posts, today, onOpen, chip, rhythmFor }: { month: string; setMonth: (m: string) => void; posts: Post[]; today: string; onOpen: (p: Post) => void; chip: (p: Post) => string; rhythmFor?: (date: string) => string | null }) {
   const [y, m] = month.split("-").map(Number);
   const first = `${month}-01`;
   const startDow = new Date(Date.UTC(y, m - 1, 1)).getUTCDay();
@@ -564,169 +547,14 @@ function MonthGrid({ month, setMonth, posts, today, onOpen, rhythmFor }: { month
             {d && rhythmFor && !posts.some((p) => p.scheduled_date === d) && rhythmFor(d) && <p className="text-[10px] leading-tight" data-testid="rhythm-hint">{rhythmFor(d)}</p>}
             {d && posts.filter((p) => p.scheduled_date === d).map((p) => (
               <button key={p.id} type="button" onClick={() => onOpen(p)} className="mb-0.5 block w-full truncate rounded border border-zinc-200 px-1 text-left">
-                {statusChip(p.status)} {p.title}
+                {statusChip(p.status)} {chip(p)}
               </button>
             ))}
           </div>
         ))}
       </div>
-      {unscheduled.length > 0 && <p className="text-xs">No date yet: {unscheduled.map((p, i) => <span key={p.id}>{i > 0 && ", "}<button type="button" className="underline" onClick={() => onOpen(p)}>{p.title}</button></span>)}</p>}
+      {unscheduled.length > 0 && <p className="text-xs">No date yet: {unscheduled.map((p, i) => <span key={p.id}>{i > 0 && ", "}<button type="button" className="underline" onClick={() => onOpen(p)}>{chip(p)}</button></span>)}</p>}
     </div>
-  );
-}
-
-function PostEditor({ data, post, initial, onClose, onSaved, onDuplicate, reload }: { data: MarketingData; post: Post | null; initial: Partial<Post> | null; onClose: () => void; onSaved: () => void; onDuplicate?: () => void; reload: () => Promise<void> }) {
-  const src = post ?? initial;
-  const [v, setV] = useState({
-    title: src?.title ?? "",
-    business: (src?.business ?? "botaniqals") as string,
-    formulation_product_id: src?.formulation_product_id ?? "",
-    platform: src?.platform ?? "instagram",
-    post_type: src?.post_type ?? "reel",
-    status: src?.status ?? "idea",
-    scheduled_date: src?.scheduled_date ?? "",
-    scheduled_time: src?.scheduled_time ?? "",
-    owner_account_id: src?.owner_account_id ?? "",
-    caption: src?.caption ?? "",
-    hashtags: src?.hashtags ?? "",
-    project_url: src?.project_url ?? "",
-    posted_url: src?.posted_url ?? "",
-    posted_at: src?.posted_at ?? "",
-    notes: src?.notes ?? "",
-  });
-  const [assetIds, setAssetIds] = useState<string[]>(src?.asset_ids ?? []);
-  const [claimIds, setClaimIds] = useState<string[]>(src?.claim_ids ?? []);
-  const [checked, setChecked] = useState(post?.risky_words_checked ?? false);
-  const [errors, setErrors] = useState<Record<string, string>>({});
-  const [message, setMessage] = useState<string | null>(null);
-  const [templateOpen, setTemplateOpen] = useState(false);
-  const [templateNote, setTemplateNote] = useState<string | null>(null);
-  const [confirmArchive, setConfirmArchive] = useState(false);
-  const set = (k: keyof typeof v) => (x: string) => setV((s) => ({ ...s, [k]: x }));
-  const words = activeWords(data);
-  const risky = [...new Set(scanText(`${v.caption}\n${v.hashtags}`, words).map((m) => m.phrase))];
-  const selectedClaims = data.claims.filter((c) => claimIds.includes(c.id));
-  const unapproved = claimsReadyCheck(selectedClaims);
-  const ready = isReadyStatus(v.status);
-  const blockers: string[] = [];
-  if (ready && !v.caption.trim()) blockers.push("Write the caption first.");
-  if (ready && unapproved.length) blockers.push(`These claims aren't approved: ${unapproved.map((c) => `“${c.claim_text}”`).join(", ")}.`);
-  if (ready && risky.length && !checked) blockers.push("Tick “I have checked these words”.");
-  const save = async () => {
-    setMessage(null);
-    try {
-      await savePostApi(post?.id ?? null, { ...v, formulation_product_id: v.formulation_product_id || null, owner_account_id: v.owner_account_id || null, asset_ids: assetIds, claim_ids: claimIds, risky_words_checked: checked });
-      onSaved();
-    } catch (e) {
-      setMessage((e as Error).message);
-      setErrors((e as GrowthApiError).fields ?? {});
-    }
-  };
-  const productClaims = data.claims.filter((c) => c.status !== "retired" && (!c.formulation_product_id || !v.formulation_product_id || c.formulation_product_id === v.formulation_product_id));
-  const assets = data.assets.filter((a) => a.status !== "archived" || assetIds.includes(a.id));
-  return (
-    <Dialog title={post ? `Post: ${post.title}` : "New post"} onClose={onClose} wide>
-      <div className="space-y-3 text-black">
-        <ErrorSummary message={message} errors={errors} />
-        <TextField name="post-title" label="Title" value={v.title} onChange={set("title")} required error={errors.title} />
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-          <Select name="post-business" label="Business" value={v.business} onChange={set("business")} options={BUSINESSES} />
-          <Select name="post-product" label="Product" value={v.formulation_product_id} onChange={set("formulation_product_id")} options={[{ value: "", label: "None" }, ...data.products.map((p) => ({ value: p.id, label: p.name }))]} />
-          <Select name="post-platform" label="Platform" value={v.platform} onChange={set("platform")} options={PLATFORMS} />
-          <Select name="post-type" label="Type" value={v.post_type} onChange={set("post_type")} options={POST_TYPES} />
-          <Select name="post-status" label="Status" value={v.status} onChange={set("status")} options={POST_STATUSES.map((s) => ({ value: s.value, label: s.label }))} error={errors.status} />
-          <TextField name="post-date" label="Date" type="date" value={v.scheduled_date} onChange={set("scheduled_date")} error={errors.scheduled_date} />
-          <TextField name="post-time" label="Time" type="time" value={v.scheduled_time} onChange={set("scheduled_time")} error={errors.scheduled_time} />
-          <Select name="post-owner" label="Owner" value={v.owner_account_id} onChange={set("owner_account_id")} options={[{ value: "", label: "Nobody" }, ...data.employees.map((e) => ({ value: e.id, label: e.name }))]} />
-        </div>
-        <ScheduleHintLine data={data} date={v.scheduled_date} time={v.scheduled_time} platform={v.platform} intent={v.post_type === "ad" ? "paid" : null} />
-        {post && <LibraryBasis data={data} post={post} onSynced={() => void reload()} />}
-        <div>
-          <div className="mb-1 flex items-center justify-between">
-            <label htmlFor="f-post-caption" className="text-xs font-medium">Caption ({v.caption.length}/4000)</label>
-            <div className="flex gap-1">
-              <button type="button" className={btn} onClick={() => setTemplateOpen(true)}>Use template</button>
-              <CopyButton text={[v.caption, v.hashtags].filter(Boolean).join("\n\n")} labelText="Copy caption and hashtags" />
-            </div>
-          </div>
-          <textarea id="f-post-caption" rows={6} value={v.caption} onChange={(e) => set("caption")(e.target.value)} className={input} aria-invalid={!!errors.caption} />
-          <p className="mt-1 text-[11px]">Only use claims from the approved list.</p>
-          {templateNote && <p className={infoBox}>{templateNote}</p>}
-        </div>
-        <TextField name="post-hashtags" label="Hashtags" value={v.hashtags} onChange={set("hashtags")} error={errors.hashtags} />
-        {risky.length > 0 && (
-          <div className={warnBox} data-testid="risky-warning">
-            <p>Words to check: {risky.map((w) => `“${w}”`).join(", ")}.</p>
-            <label className="mt-1 flex items-center gap-2 font-medium"><input type="checkbox" checked={checked} onChange={(e) => setChecked(e.target.checked)} /> I have checked these words</label>
-          </div>
-        )}
-        <Picker title="Claims used" items={productClaims.map((c) => ({ id: c.id, label: c.claim_text, extra: CLAIM_STATUS[c.status].label, bad: c.status !== "approved" }))} selected={claimIds} onChange={setClaimIds} />
-        <Picker title="Attached assets" items={assets.map((a) => ({ id: a.id, label: a.title, extra: [label(ASSET_TYPES, a.asset_type), mediaKind(a)?.toUpperCase(), isVideoKind(mediaKind(a)) ? durationLabel(a.duration_seconds) : ""].filter(Boolean).join(" · ") }))} selected={assetIds} onChange={setAssetIds} />
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-          <TextField name="post-project" label="Editing project link" value={v.project_url} onChange={set("project_url")} placeholder="https://" error={errors.project_url} />
-          <TextField name="post-posted-url" label="Posted URL" value={v.posted_url} onChange={set("posted_url")} placeholder="https://" error={errors.posted_url} />
-          <TextField name="post-posted-at" label="Posted on" type="date" value={v.posted_at} onChange={set("posted_at")} error={errors.posted_at} />
-        </div>
-        <TextArea name="post-notes" label="Notes" value={v.notes} onChange={set("notes")} rows={2} error={errors.notes} />
-        {blockers.length > 0 && (
-          <div className={errorBox} role="alert" data-testid="ready-blockers">
-            <p className="font-medium">Before this can be {POST_STATUSES.find((s) => s.value === v.status)?.label}:</p>
-            <ul className="list-disc pl-4">{blockers.map((b) => <li key={b}>{b}</li>)}</ul>
-          </div>
-        )}
-        <div className="flex flex-wrap justify-between gap-2">
-          <div className="flex gap-2">
-            {onDuplicate && <button type="button" className={btn} onClick={onDuplicate}>Duplicate</button>}
-            {post && <button type="button" className={btn} onClick={() => setConfirmArchive(true)}>Archive</button>}
-          </div>
-          <div className="flex gap-2">
-            <button type="button" className={btn} onClick={onClose}>Cancel</button>
-            <button type="button" className={btnPrimary} onClick={save} disabled={blockers.length > 0}>Save post</button>
-          </div>
-        </div>
-      </div>
-      {templateOpen && (
-        <TemplatePicker
-          data={data}
-          productId={v.formulation_product_id}
-          onClose={() => setTemplateOpen(false)}
-          onUse={(text, unknown, missing) => {
-            setV((s) => ({ ...s, caption: text }));
-            setTemplateNote([unknown.length ? `Unknown placeholders left as typed: ${unknown.map((u) => `{${u}}`).join(", ")}.` : "", missing.length ? `No value for: ${missing.map((u) => `{${u}}`).join(", ")}.` : ""].filter(Boolean).join(" ") || null);
-            setTemplateOpen(false);
-          }}
-        />
-      )}
-      {confirmArchive && post && (
-        <ConfirmDialog title="Archive this post?" confirmLabel="Archive" busy={false} error={null} onConfirm={async () => { await archivePostApi(post.id, true); onSaved(); }} onClose={() => setConfirmArchive(false)}>
-          <p>It leaves the calendar. Posts are never deleted.</p>
-        </ConfirmDialog>
-      )}
-    </Dialog>
-  );
-}
-
-function Picker({ title, items, selected, onChange }: { title: string; items: Array<{ id: string; label: string; extra?: string; bad?: boolean }>; selected: string[]; onChange: (ids: string[]) => void }) {
-  const toggle = (id: string) => onChange(selected.includes(id) ? selected.filter((x) => x !== id) : [...selected, id]);
-  return (
-    <fieldset>
-      <legend className="mb-1 text-xs font-medium">{title} ({selected.length})</legend>
-      {items.length === 0 ? (
-        <p className="text-xs">None available.</p>
-      ) : (
-        <ul className="max-h-36 space-y-0.5 overflow-y-auto rounded-md border border-zinc-200 p-1">
-          {items.map((i) => (
-            <li key={i.id}>
-              <label className="flex items-center gap-2 text-xs">
-                <input type="checkbox" checked={selected.includes(i.id)} onChange={() => toggle(i.id)} />
-                <span className="flex-1">{i.label}</span>
-                {i.extra && <span className={i.bad ? "font-medium text-red-700" : ""}>{i.extra}</span>}
-              </label>
-            </li>
-          ))}
-        </ul>
-      )}
-    </fieldset>
   );
 }
 
@@ -736,40 +564,6 @@ function templateVars(data: MarketingData, productId: string) {
   return { product_name: product?.name, tagline: profile?.tagline, short_description: profile?.short_description, hashtags: profile?.hashtags, link: "" };
 }
 
-function TemplatePicker({ data, productId, onClose, onUse }: { data: MarketingData; productId: string; onClose: () => void; onUse: (text: string, unknown: string[], missing: string[]) => void }) {
-  const list = data.templates.filter((t) => !t.archived_at);
-  const [id, setId] = useState(list[0]?.id ?? "");
-  const [link, setLink] = useState("");
-  const t = list.find((x) => x.id === id);
-  const result = t ? applyTemplate(t.body, { ...templateVars(data, productId), link }) : null;
-  return (
-    <Dialog title="Use a caption template" onClose={onClose} wide>
-      <div className="space-y-3 text-black">
-        {list.length === 0 ? (
-          <p className="text-sm">No templates yet. Add one on the Templates tab.</p>
-        ) : (
-          <>
-            <Select name="tpl" label="Template" value={id} onChange={setId} options={list.map((x) => ({ value: x.id, label: x.name }))} />
-            <TextField name="tpl-link" label="Link for {link}" value={link} onChange={setLink} placeholder="https://" />
-            {result && (
-              <>
-                <pre className="whitespace-pre-wrap rounded-md border border-zinc-200 bg-zinc-50 p-2 text-xs">{result.text}</pre>
-                {result.unknown.length > 0 && <p className={warnBox}>Unknown placeholders (left as typed): {result.unknown.map((u) => `{${u}}`).join(", ")}</p>}
-                {result.missing.length > 0 && <p className={infoBox}>No value for: {result.missing.map((u) => `{${u}}`).join(", ")}</p>}
-              </>
-            )}
-          </>
-        )}
-        <div className="flex justify-end gap-2">
-          <button type="button" className={btn} onClick={onClose}>Cancel</button>
-          <button type="button" className={btnPrimary} disabled={!result} onClick={() => result && onUse(result.text, result.unknown, result.missing)}>Use this caption</button>
-        </div>
-      </div>
-    </Dialog>
-  );
-}
-
-// --- Templates -----------------------------------------------------------------------------------
 export function TemplatesTab({ data, reload }: TabProps) {
   const [editing, setEditing] = useState<Template | "new" | null>(null);
   const [showArchived, setShowArchived] = useState(false);

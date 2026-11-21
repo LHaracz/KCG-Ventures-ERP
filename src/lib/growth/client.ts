@@ -9,7 +9,7 @@ import type { AssignableEmployee } from "./employees";
 import type { LaunchDetail, LaunchListRow, MyTask } from "./launches";
 import type { Lead, LeadActivity, LeadListRow, Trip, TripStop } from "./prospectingService";
 import type { Asset, Claim, ClaimEvent, Post, Profile, RiskyWord, Template } from "./marketingService";
-import type { AvoidPhrase, ClosingLine, IngredientTag, Pillar, PremadeRow, RhythmDb, Series, WindowRowDb } from "./libraryService";
+import type { AvoidPhrase, CaptionVersion, ClosingLine, IngredientTag, Pillar, PremadeRow, RhythmDb, Series, WindowRowDb } from "./libraryService";
 import type { ReletterPlan } from "./adLibrary";
 import type { AssetCategoryRow } from "./assetCategories";
 
@@ -107,6 +107,7 @@ export type MarketingData = {
   pillars: Pillar[];
   series: Series[];
   premades: PremadeRow[];
+  duplicateNames: Array<{ name: string; post_ids: string[] }>;
   closingLines: ClosingLine[];
   avoidPhrases: AvoidPhrase[];
   windows: WindowRowDb[];
@@ -150,16 +151,24 @@ export const deleteAssetCategoryApi = (key: string) => growthCall<{ deleted: str
 export const createPillarApi = (body: Record<string, unknown>) => growthCall<{ pillar: Pillar }>(`${M}/pillars`, body);
 export const updatePillarApi = (id: string, body: Record<string, unknown>) => growthCall(`${M}/pillars/${enc(id)}`, body);
 export const reletterApi = (apply: boolean) => growthCall<{ plan: ReletterPlan }>(`${M}/pillars/reletter`, { apply });
-export const saveSeriesApi = (id: string | null, body: Record<string, unknown>) => growthCall(id ? `${M}/series/${enc(id)}` : `${M}/series`, body);
-export const createPremadeApi = (body: Record<string, unknown>) => growthCall<{ id: string; notice: string | null }>(`${M}/library`, body);
-export const updatePremadeApi = (id: string, body: Record<string, unknown>) => growthCall<{ id: string; notice: string | null }>(`${M}/library/${enc(id)}`, body);
-export const premadeActionApi = (id: string, body: Record<string, unknown>) => growthCall<{ id: string }>(`${M}/library/${enc(id)}/action`, body);
-export const premadeBulkApi = (body: Record<string, unknown>) => growthCall<{ count: number }>(`${M}/library/bulk`, body);
+/** Subtopics: new ({ pillar_id, name }) or edit/archive/restore. */
+export const saveSeriesApi = (id: string | null, body: Record<string, unknown>) => growthCall<{ id: string; code: string | null }>(id ? `${M}/series/${enc(id)}` : `${M}/series`, body);
+export const createPremadeApi = (body: Record<string, unknown>) => growthCall<{ id: string; name: string; notice: string | null }>(`${M}/library`, body);
+export const updatePremadeApi = (id: string, body: Record<string, unknown>) => growthCall<{ id: string; name: string; notice: string | null }>(`${M}/library/${enc(id)}`, body);
+export const premadeActionApi = (id: string, body: Record<string, unknown>) => growthCall<{ id: string; name?: string }>(`${M}/library/${enc(id)}/action`, body);
+export const premadeBulkApi = (body: Record<string, unknown>) => growthCall<{ count: number; moved?: Array<{ id: string; old_name: string; new_name: string }> }>(`${M}/library/bulk`, body);
+export type CaptionSaveResult = { ok: true; updated_at: string; notice: string | null } | { conflict: true; current_caption: string; current_updated_at: string };
+export const updateCaptionApi = (id: string, body: { caption: string; expected_updated_at: string; source?: string }) => growthCall<CaptionSaveResult>(`${M}/library/${enc(id)}/caption`, body);
+export const captionHistoryApi = (id: string) => growthCall<{ versions: CaptionVersion[] }>(`${M}/library/${enc(id)}/caption`);
 export const saveClosingLineApi = (id: string | null, body: Record<string, unknown>) => growthCall(id ? `${M}/closing-lines/${enc(id)}` : `${M}/closing-lines`, body);
 export const needsActionApi = (id: string, body: Record<string, unknown>) => growthCall<{ notices: string[]; changed?: number }>(`${M}/library/${enc(id)}/needs`, body);
 export const needsGroupApi = (body: Record<string, unknown>) => growthCall<{ changed: number; notices: string[] }>(`${M}/library/needs`, body);
-export const scheduleFromLibraryApi = (id: string, body: Record<string, unknown>) => growthCall<{ ids: string[]; warnings: string[]; open_needs: number }>(`${M}/library/${enc(id)}/schedule`, body);
-export const syncFromLibraryApi = (postId: string) => growthCall<{ notices: string[] }>(`${M}/posts/${enc(postId)}/sync`, {});
+export const scheduleFromLibraryApi = (id: string, body: Record<string, unknown>) => growthCall<{ ids: string[]; group_id: string }>(`${M}/library/${enc(id)}/schedule`, body);
+export const editScheduleApi = (postId: string, body: Record<string, unknown>) => growthCall<{ added: number; archived: number; updated: number }>(`${M}/posts/${enc(postId)}/schedule`, body);
+export const markPostedApi = (postId: string, body: { posted_url?: string | null }) => growthCall<{ ok: true }>(`${M}/posts/${enc(postId)}/posted`, body);
+export const removeFromCalendarApi = (postId: string) => growthCall<{ removed: number }>(`${M}/posts/${enc(postId)}/remove`, {});
+export type AssetPage = { rows: Array<Asset & { product_ids: string[] }>; total: number; page: number; pages: number };
+export const assetPickerApi = (body: { page: number; category?: string; kind?: string; q?: string; product?: string }) => growthCall<AssetPage>(`${M}/assets/picker`, body);
 export const assetBulkApi = (body: Record<string, unknown>) => growthCall<{ updated: number; failed: Array<{ id: string; title: string; error: string }> }>(`${M}/assets/bulk`, body);
 export const saveIngredientTagApi = (id: string | null, body: Record<string, unknown>) => growthCall<{ id: string }>(id ? `${M}/ingredient-tags/${enc(id)}` : `${M}/ingredient-tags`, body);
 export const rawMaterialNamesApi = () => growthCall<{ names: string[] }>(`${M}/ingredient-tags/raw-materials`);
