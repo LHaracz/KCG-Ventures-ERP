@@ -90,6 +90,7 @@ function ProcurementInner() {
   const [missingInfo, setMissingInfo] = useState(false);
   const [missingPrice, setMissingPrice] = useState(false);
   const [missingLeadTime, setMissingLeadTime] = useState(false);
+  const [coaUnknown, setCoaUnknown] = useState(false);
   const [quick, setQuick] = useState<QuickFilter>(null);
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set(focusId ? [focusId] : []));
   const [linkModal, setLinkModal] = useState<{ materialId: string; linkId: string | null } | null>(null);
@@ -135,9 +136,10 @@ function ProcurementInner() {
   const counts = useMemo(() => summaryCounts(rows), [rows]);
   const rawMissingPrice = useMemo(() => rows.filter((r) => r.missingPrice).length, [rows]);
   const rawMissingLeadTime = useMemo(() => rows.filter((r) => r.missingLeadTime).length, [rows]);
+  const rawCoaUnknown = useMemo(() => rows.filter((r) => r.coaUnknown).length, [rows]);
   const visible = useMemo(
-    () => filterRows(rows, { search, shortagesOnly, missingInfo, missingPrice, missingLeadTime, quick }),
-    [rows, search, shortagesOnly, missingInfo, missingPrice, missingLeadTime, quick],
+    () => filterRows(rows, { search, shortagesOnly, missingInfo, missingPrice, missingLeadTime, coaUnknown, quick }),
+    [rows, search, shortagesOnly, missingInfo, missingPrice, missingLeadTime, coaUnknown, quick],
   );
   const shortages = useMemo(() => shortageGroups(rows), [rows]);
 
@@ -275,6 +277,10 @@ function ProcurementInner() {
             <label className="flex items-center gap-1.5 text-xs text-black" title="The preferred supplier listing has no lead time">
               <input type="checkbox" checked={missingLeadTime} onChange={(e) => setMissingLeadTime(e.target.checked)} />
               Missing lead time ({rawMissingLeadTime})
+            </label>
+            <label className="flex items-center gap-1.5 text-xs text-black" title="No supplier listing yet, or its COA policy is Unknown">
+              <input type="checkbox" checked={coaUnknown} onChange={(e) => setCoaUnknown(e.target.checked)} />
+              COA policy unknown ({rawCoaUnknown})
             </label>
             <span className="text-xs text-black">
               Showing {visible.length} of {rows.length}

@@ -73,6 +73,7 @@ beforeEach(async () => {
     alter table products add column if not exists is_microgreen boolean default false;
   `);
   for (const f of ["formulation.sql", "procurement_suppliers.sql", "procurement_equipment_prices.sql", "retail_invoices.sql", "marketing_sales.sql"]) await pg.exec(migration(f));
+  await pg.exec(`alter table suppliers add column if not exists is_pinned boolean not null default false;`); // receiving_coa_modes.sql
   db = pgliteSupabase(pg) as unknown as Db;
 
   fp = (await one<{ id: string }>(`insert into formulation_products (name) values ('Product A') returning id`)).id;

@@ -19,7 +19,7 @@ import {
 } from "@/lib/feasibility";
 import { useAccess } from "@/components/access/AccessProvider";
 import { YouName } from "@/components/access/People";
-import { computeReleaseWarnings, type ReleaseWarning } from "@/lib/releaseWarnings";
+import { computeReleaseCheck, type ReleaseWarning } from "@/lib/releaseWarnings";
 import { FeatureLink } from "@/components/access/FeatureLink";
 
 type BusinessType = "MiniLeaf" | "BotanIQals";
@@ -37,6 +37,8 @@ type ComplianceCheckState = {
   draft: CompletionActualsDraft;
   loading: boolean;
   warnings: ReleaseWarning[] | null;
+  /** Ingredients with no COA whose COA policy isn't set (information only). */
+  coaPolicyNotSet: string[];
   loadError: string | null;
   acknowledgedNote: string;
   saving: boolean;
@@ -373,18 +375,19 @@ export default function CyclesPage() {
       draft,
       loading: true,
       warnings: null,
+      coaPolicyNotSet: [],
       loadError: null,
       acknowledgedNote: "",
       saving: false,
       saveError: null,
     });
     try {
-      const warnings = await computeReleaseWarnings(supabase, {
+      const { warnings, coaPolicyNotSet } = await computeReleaseCheck(supabase, {
         id: cycle.id,
         start_date: cycle.start_date,
         end_date: cycle.end_date,
       });
-      setComplianceCheck((prev) => (prev && prev.cycle.id === cycle.id ? { ...prev, loading: false, warnings } : prev));
+      setComplianceCheck((prev) => (prev && prev.cycle.id === cycle.id ? { ...prev, loading: false, warnings, coaPolicyNotSet } : prev));
     } catch (err: unknown) {
       setComplianceCheck((prev) =>
         prev && prev.cycle.id === cycle.id
@@ -1070,9 +1073,16 @@ export default function CyclesPage() {
                     {complianceCheck.loadError}
                   </p>
                 ) : complianceCheck.warnings && complianceCheck.warnings.length === 0 ? (
-                  <p className="rounded-md border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm font-medium text-emerald-800">
-                    Clear — no compliance warnings for this cycle.
-                  </p>
+                  <>
+                    <p className="rounded-md border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm font-medium text-emerald-800">
+                      Clear — no compliance warnings for this cycle.
+                    </p>
+                    {complianceCheck.coaPolicyNotSet.length > 0 && (
+                      <p className="text-xs text-black" data-testid="coa-policy-not-set">
+                        COA policy not set for: {complianceCheck.coaPolicyNotSet.join(", ")}
+                      </p>
+                    )}
+                  </>
                 ) : complianceCheck.warnings ? (
                   <>
                     <p className="text-sm font-semibold text-amber-800">
@@ -1083,6 +1093,11 @@ export default function CyclesPage() {
                         <li key={w.key}>• {w.message}</li>
                       ))}
                     </ul>
+                    {complianceCheck.coaPolicyNotSet.length > 0 && (
+                      <p className="text-xs text-black" data-testid="coa-policy-not-set">
+                        COA policy not set for: {complianceCheck.coaPolicyNotSet.join(", ")}
+                      </p>
+                    )}
                     <p className="text-xs text-zinc-600">
                       This doesn&rsquo;t block completion — acknowledge it to continue.
                     </p>

@@ -51,6 +51,8 @@ export type Supplier = {
   zip: string | null;
   country: string | null;
   default_po_payment_terms: string | null;
+  /** Shown at the top of supplier dropdowns (receiving, Procurement pickers). */
+  is_pinned: boolean;
   archived_at: string | null;
   created_at: string;
   updated_at: string;
@@ -152,7 +154,7 @@ export function procurementHref(tab: string | null | undefined, extra: Record<st
 export const SUPPLIER_COLUMNS =
   "id, name, website_url, contact_name, contact_email, contact_phone, account_number, payment_methods, " +
   "payment_notes, ordering_notes, address_line1, address_line2, city, state, zip, country, " +
-  "default_po_payment_terms, archived_at, created_at, updated_at, updated_by_name";
+  "default_po_payment_terms, is_pinned, archived_at, created_at, updated_at, updated_by_name";
 
 export const LINK_COLUMNS =
   "id, raw_material_id, supplier_id, is_preferred, product_url, supplier_item, pack_info, coa_policy, notes, " +

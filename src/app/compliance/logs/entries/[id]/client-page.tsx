@@ -1,5 +1,6 @@
 "use client";
 
+import { coaPolicyLabel } from "@/lib/receivingMode";
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
@@ -30,6 +31,7 @@ export default function LogEntryDetailPage() {
   const [logType, setLogType] = useState<LogType | null>(null);
   const [originalEntry, setOriginalEntry] = useState<{ id: string; entry_number: number } | null>(null);
   const [correctingEntry, setCorrectingEntry] = useState<{ id: string; entry_number: number } | null>(null);
+  const [receiptMode, setReceiptMode] = useState<{ mode: "full" | "simple"; policy: string | null } | null>(null);
   const [files, setFiles] = useState<LogEntryFile[]>([]);
   const [reviews, setReviews] = useState<LogEntryReview[]>([]);
   const { me } = useAccess();
@@ -81,6 +83,10 @@ export default function LogEntryDetailPage() {
       ]);
       if (typeResult.error) throw new Error(typeResult.error.message);
       setLogType(typeResult.data as LogType);
+      if ((typeResult.data as LogType | null)?.special_type === "receiving") {
+        const { data: rd } = await supabase.from("receiving_details").select("entry_mode, coa_policy_at_receipt").eq("log_entry_id", entryId).maybeSingle();
+        setReceiptMode(rd ? { mode: rd.entry_mode === "simple" ? "simple" : "full", policy: rd.coa_policy_at_receipt ?? null } : null);
+      }
       setFiles((filesResult.data ?? []) as LogEntryFile[]);
       setReviews((reviewsResult.data ?? []) as LogEntryReview[]);
       setCorrectingEntry((correctorResult.data as any) ?? null);
@@ -104,7 +110,7 @@ export default function LogEntryDetailPage() {
     if (!user) return;
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user, entryId]);
+  }, [user?.id, entryId]);
 
   const late = entry ? isLateEntry(entry.performed_at, entry.created_at) : false;
 
@@ -243,6 +249,11 @@ export default function LogEntryDetailPage() {
                 <p className="text-sm text-black">
                   Performed {formatDate(entry.performed_at)} by {entry.performed_by_name}
                 </p>
+                {receiptMode && (
+                  <span className="mt-1 inline-block rounded-full bg-zinc-100 px-2 py-0.5 text-[11px] font-medium text-black ring-1 ring-zinc-300" data-testid="receipt-mode">
+                    {receiptMode.mode === "simple" ? `Simple receipt (COA policy: ${coaPolicyLabel(receiptMode.policy)})` : "Full receipt"}
+                  </span>
+                )}
               </div>
               <div className="flex items-center gap-2">
                 <button

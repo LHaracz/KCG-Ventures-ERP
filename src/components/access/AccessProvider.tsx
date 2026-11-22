@@ -57,7 +57,8 @@ export function AccessProvider({ initial, children }: { initial: Me | null; chil
       }
       const res = await fetch("/api/account/me", { headers: { Authorization: `Bearer ${token}` }, cache: "no-store" });
       const body = res.ok ? ((await res.json()) as Me) : null;
-      if (n === seq.current) setMe(body);
+      // Keep the same object when nothing changed, so a repeat check never re-renders forms.
+      if (n === seq.current) setMe((prev) => (prev && body && JSON.stringify(prev) === JSON.stringify(body) ? prev : body));
     } catch {
       if (n === seq.current) setMe(null); // fail closed
     } finally {
@@ -72,7 +73,14 @@ export function AccessProvider({ initial, children }: { initial: Me | null; chil
   }, [pathname, refresh]);
 
   useEffect(() => {
-    const { data } = supabase.auth.onAuthStateChange(() => void refresh());
+    // Repeat events for the same user (tab focus, token refresh) don't need a re-check.
+    let lastUserId: string | null | undefined;
+    const { data } = supabase.auth.onAuthStateChange((event, session) => {
+      const id = session?.user?.id ?? null;
+      if (event !== "SIGNED_OUT" && lastUserId !== undefined && id === lastUserId) return;
+      lastUserId = id;
+      void refresh();
+    });
     return () => data.subscription.unsubscribe();
   }, [refresh]);
 

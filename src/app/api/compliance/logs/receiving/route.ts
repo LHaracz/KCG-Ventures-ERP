@@ -14,7 +14,10 @@ import { callerOf, guardApi } from "@/lib/access/api";
  * RPC, which does the new-raw-material creation, the log_entries +
  * receiving_details + log_entry_files inserts, and the inventory increase
  * (through the same inventory_adjustments/inventory_items mechanism the
- * Raw Materials page itself uses) as a single database transaction. If
+ * Raw Materials page itself uses) as a single database transaction. The
+ * form is full or simple by the COA policy of the raw material's listing
+ * with the chosen supplier; the database derives the mode again and rejects
+ * a payload that doesn't match (receiving_coa_modes.sql). If
  * that RPC call fails for any reason, the already-uploaded files are
  * removed from Storage so nothing orphaned is left behind.
  */
@@ -43,16 +46,21 @@ type SubmitReceivingRequestBody = {
   rawMaterialId?: string | null;
   rawMaterialName?: string | null;
   newRawMaterial?: NewRawMaterialPayload | null;
-  supplier: string;
-  supplierLotNumber: string;
+  /** Required for a new receipt (corrections keep the original's supplier). */
+  supplierId?: string | null;
+  /** The mode the form used; the database derives it again and must agree. */
+  entryMode?: "full" | "simple";
+  /** "Use the full form" was chosen for a pair that would be simple. */
+  forcedFull?: boolean;
+  supplierLotNumber?: string | null;
   quantityReceivedGrams?: number | null;
   quantityAdded: number;
   materialUnitAtReceipt: string;
   expirationDate?: string | null;
   poOrInvoiceNumber?: string | null;
-  packagingIntact: boolean;
-  identityVerified: boolean;
-  coaReceived: boolean;
+  packagingIntact?: boolean | null;
+  identityVerified?: boolean | null;
+  coaReceived?: boolean | null;
   notes?: string | null;
   files?: ReceivingFilePayload[];
   correctsEntryId?: string | null;
@@ -99,14 +107,22 @@ export async function POST(request: Request) {
       if (existingError) return NextResponse.json({ error: existingError.message }, { status: 500 });
       if (existing) return badRequest("An inventory item with this name already exists.");
     }
-    if (!body.supplier?.trim()) return badRequest("Supplier is required.");
-    if (!body.supplierLotNumber?.trim()) return badRequest("Supplier lot number is required.");
+    const mode = body.entryMode === "simple" ? "simple" : "full";
+    if (!body.correctsEntryId && !body.supplierId) return badRequest("Choose a supplier.");
     if (!Number.isFinite(body.quantityAdded) || body.quantityAdded <= 0) {
       return badRequest("Quantity received must be greater than 0.");
     }
     if (!body.materialUnitAtReceipt?.trim()) return badRequest("Missing material unit.");
-    if (typeof body.packagingIntact !== "boolean" || typeof body.identityVerified !== "boolean" || typeof body.coaReceived !== "boolean") {
-      return badRequest("Packaging intact, identity verified, and COA received must each be answered.");
+    if (mode === "full") {
+      if (!body.correctsEntryId && !body.supplierLotNumber?.trim()) return badRequest("Supplier lot number is required.");
+      if (typeof body.packagingIntact !== "boolean" || typeof body.identityVerified !== "boolean" || typeof body.coaReceived !== "boolean") {
+        return badRequest("Packaging intact, identity verified, and COA received must each be answered.");
+      }
+    } else {
+      if (Math.abs(Math.round(body.quantityAdded * 1000) - body.quantityAdded * 1000) > 1e-6) return badRequest("Use at most 3 decimals for the quantity.");
+      if (body.supplierLotNumber?.trim() || body.files?.length || body.packagingIntact != null || body.identityVerified != null || body.coaReceived != null || body.quantityReceivedGrams != null) {
+        return badRequest("A simple receipt has no lot number, grams, packaging, identity, COA or documents.");
+      }
     }
     if (body.correctsEntryId && !body.correctionReason?.trim()) return badRequest("A correction reason is required.");
     for (const file of body.files ?? []) {
@@ -163,36 +179,60 @@ export async function POST(request: Request) {
     // get a values/template_snapshot pair so the generic entries table,
     // entry detail page, and CSV export all work without special-casing
     // receiving entries.
+    const field = (key: string, label: string, field_type: string, required: boolean, unit: string | null = null) => ({
+      key, label, field_type, required, options: null, min_value: null, max_value: null, unit, help_text: null,
+    });
     const templateSnapshot = {
       logTypeName: "Receiving Log",
-      fields: [
-        { key: "raw_material", label: "Raw material", field_type: "text", required: true, options: null, min_value: null, max_value: null, unit: null, help_text: null },
-        { key: "supplier", label: "Supplier", field_type: "text", required: true, options: null, min_value: null, max_value: null, unit: null, help_text: null },
-        { key: "supplier_lot_number", label: "Supplier lot number", field_type: "text", required: true, options: null, min_value: null, max_value: null, unit: null, help_text: null },
-        { key: "internal_lot_id", label: "Internal lot ID", field_type: "text", required: false, options: null, min_value: null, max_value: null, unit: null, help_text: null },
-        { key: "quantity_added", label: "Quantity received", field_type: "number", required: true, options: null, min_value: null, max_value: null, unit: body.materialUnitAtReceipt, help_text: null },
-        { key: "expiration_date", label: "Expiration / retest date", field_type: "date", required: false, options: null, min_value: null, max_value: null, unit: null, help_text: null },
-        { key: "po_or_invoice_number", label: "PO / invoice number", field_type: "text", required: false, options: null, min_value: null, max_value: null, unit: null, help_text: null },
-        { key: "packaging_intact", label: "Packaging intact", field_type: "yes_no", required: true, options: null, min_value: null, max_value: null, unit: null, help_text: null },
-        { key: "identity_verified", label: "Identity verified against COA/label", field_type: "yes_no", required: true, options: null, min_value: null, max_value: null, unit: null, help_text: null },
-        { key: "coa_received", label: "COA received", field_type: "yes_no", required: true, options: null, min_value: null, max_value: null, unit: null, help_text: null },
-        { key: "notes", label: "Notes", field_type: "longtext", required: false, options: null, min_value: null, max_value: null, unit: null, help_text: null },
-      ],
+      entryMode: mode,
+      fields:
+        mode === "full"
+          ? [
+              field("raw_material", "Raw material", "text", true),
+              field("supplier", "Supplier", "text", true),
+              field("supplier_lot_number", "Supplier lot number", "text", true),
+              field("internal_lot_id", "Internal lot ID", "text", false),
+              field("quantity_added", "Quantity received", "number", true, body.materialUnitAtReceipt),
+              field("expiration_date", "Expiration / retest date", "date", false),
+              field("po_or_invoice_number", "PO / invoice number", "text", false),
+              field("packaging_intact", "Packaging intact", "yes_no", true),
+              field("identity_verified", "Identity verified against COA/label", "yes_no", true),
+              field("coa_received", "COA received", "yes_no", true),
+              field("notes", "Notes", "longtext", false),
+            ]
+          : [
+              field("raw_material", "Raw material", "text", true),
+              field("supplier", "Supplier", "text", true),
+              field("internal_lot_id", "Internal lot ID", "text", false),
+              field("quantity_added", "Quantity received", "number", true, body.materialUnitAtReceipt),
+              field("expiration_date", "Expiration date", "date", false),
+              field("po_or_invoice_number", "Invoice number", "text", false),
+              field("notes", "Notes", "longtext", false),
+            ],
     };
 
     const rawMaterialName = body.newRawMaterial?.name?.trim() || body.rawMaterialName?.trim() || null;
-    const values: Record<string, unknown> = {
-      raw_material: rawMaterialName,
-      supplier: body.supplier.trim(),
-      supplier_lot_number: body.supplierLotNumber.trim(),
-      quantity_added: body.quantityAdded,
-      expiration_date: body.expirationDate || "",
-      po_or_invoice_number: body.poOrInvoiceNumber || "",
-      packaging_intact: body.packagingIntact ? "yes" : "no",
-      identity_verified: body.identityVerified ? "yes" : "no",
-      coa_received: body.coaReceived ? "yes" : "no",
-      notes: body.notes || "",
-    };
+    // The supplier name is filled in by the database from the chosen supplier.
+    const values: Record<string, unknown> =
+      mode === "full"
+        ? {
+            raw_material: rawMaterialName,
+            supplier_lot_number: body.supplierLotNumber?.trim() ?? "",
+            quantity_added: body.quantityAdded,
+            expiration_date: body.expirationDate || "",
+            po_or_invoice_number: body.poOrInvoiceNumber || "",
+            packaging_intact: body.packagingIntact ? "yes" : "no",
+            identity_verified: body.identityVerified ? "yes" : "no",
+            coa_received: body.coaReceived ? "yes" : "no",
+            notes: body.notes || "",
+          }
+        : {
+            raw_material: rawMaterialName,
+            quantity_added: body.quantityAdded,
+            expiration_date: body.expirationDate || "",
+            po_or_invoice_number: body.poOrInvoiceNumber || "",
+            notes: body.notes || "",
+          };
 
     const payload = {
       log_type_id: body.logTypeId,
@@ -215,15 +255,17 @@ export async function POST(request: Request) {
       template_snapshot: templateSnapshot,
       correction_reason: body.correctsEntryId ? body.correctionReason?.trim() : null,
       created_by_account: user.id,
-      supplier: body.supplier.trim(),
-      supplier_lot_number: body.supplierLotNumber.trim(),
-      quantity_received_grams: body.quantityReceivedGrams ?? null,
+      supplier_id: body.correctsEntryId ? null : body.supplierId,
+      entry_mode: mode,
+      forced_full: body.forcedFull === true,
+      supplier_lot_number: mode === "full" ? body.supplierLotNumber?.trim() || null : null,
+      quantity_received_grams: mode === "full" ? body.quantityReceivedGrams ?? null : null,
       material_unit_at_receipt: body.materialUnitAtReceipt.trim(),
       expiration_date: body.expirationDate || null,
       po_or_invoice_number: body.poOrInvoiceNumber?.trim() || null,
-      packaging_intact: body.packagingIntact,
-      identity_verified: body.identityVerified,
-      coa_received: body.coaReceived,
+      packaging_intact: mode === "full" ? body.packagingIntact : null,
+      identity_verified: mode === "full" ? body.identityVerified : null,
+      coa_received: mode === "full" ? body.coaReceived : null,
       notes: body.notes?.trim() || null,
       files: verifiedFiles,
     };

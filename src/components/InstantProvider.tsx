@@ -3,6 +3,7 @@
 import { ReactNode, createContext, useContext, useEffect, useState } from "react";
 import type { User } from "@supabase/supabase-js";
 import { supabase } from "@/lib/supabaseClient";
+import { clearAllDrafts } from "@/lib/useFormDraft";
 
 type SupabaseContextValue = {
   supabase: typeof supabase;
@@ -26,7 +27,7 @@ export function SupabaseProvider({ children }: { children: ReactNode }) {
         data: { user },
       } = await supabase.auth.getUser();
       if (!mounted) return;
-      setUser(user ?? null);
+      setUser((prev) => (prev && user && prev.id === user.id ? prev : user ?? null));
       setIsLoading(false);
     };
 
@@ -34,8 +35,14 @@ export function SupabaseProvider({ children }: { children: ReactNode }) {
 
     const {
       data: subscription,
-    } = supabase.auth.onAuthStateChange((_event, session) => {
-      setUser(session?.user ?? null);
+    } = supabase.auth.onAuthStateChange((event, session) => {
+      const next = session?.user ?? null;
+      if (event === "SIGNED_OUT" || !next) clearAllDrafts();
+      // Supabase repeats SIGNED_IN / TOKEN_REFRESHED / INITIAL_SESSION when a
+      // tab regains focus. For the same person, keep the existing user object
+      // so pages and forms that depend on it don't reload and lose what was
+      // typed. A different user (or signing out) still updates as before.
+      setUser((prev) => (prev && next && prev.id === next.id ? prev : next));
     });
 
     return () => {

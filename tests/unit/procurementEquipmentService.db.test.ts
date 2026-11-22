@@ -78,7 +78,8 @@ beforeEach(async () => {
   await pg.exec(migration("procurement_equipment_prices.sql"));
   // Supplier lead times (added by marketing_sales.sql, which needs other tables too).
   await pg.exec(`alter table raw_material_suppliers add column if not exists lead_time_days integer check (lead_time_days between 0 and 365);
-    alter table raw_material_suppliers add column if not exists lead_time_note text;`);
+    alter table raw_material_suppliers add column if not exists lead_time_note text;
+    alter table suppliers add column if not exists is_pinned boolean not null default false;`); // receiving_coa_modes.sql
   db = pgliteSupabase(pg) as unknown as Db;
 });
 

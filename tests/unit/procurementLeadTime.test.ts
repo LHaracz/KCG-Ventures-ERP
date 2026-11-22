@@ -14,7 +14,7 @@ const supplier = (id: string, name: string): Supplier =>
   ({
     id, name, website_url: `https://${id}.example.test`, contact_name: null, contact_email: null, contact_phone: null, account_number: null,
     payment_methods: [], payment_notes: null, ordering_notes: null, address_line1: null, address_line2: null, city: null, state: null, zip: null,
-    country: null, default_po_payment_terms: null, archived_at: null, created_at: "", updated_at: "", updated_by_name: null,
+    country: null, default_po_payment_terms: null, is_pinned: false, archived_at: null, created_at: "", updated_at: "", updated_by_name: null,
   }) as Supplier;
 const link = (id: string, raw: string, sup: string, over: Partial<SupplierLink> = {}): SupplierLink => ({
   id, raw_material_id: raw, supplier_id: sup, is_preferred: false, product_url: null, supplier_item: null, pack_info: null, coa_policy: "unknown",

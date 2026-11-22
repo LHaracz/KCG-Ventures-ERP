@@ -2,7 +2,9 @@
  * Release-warnings panel (Phase 5) — the compliance check shown before the
  * actuals modal when Complete Production is chosen on a BotanIQals cycle.
  * Warnings only, never a hard block (see cycles/page.tsx's
- * beginCompleteProduction). Four checks, each documented at its call site
+ * beginCompleteProduction). The COA check skips ingredients whose
+ * preferred listing says a COA is not provided, and lists ingredients with
+ * no COA policy set as information only. Four checks, each documented at its call site
  * below; reuses the exact same overdue logic as the Logs hub
  * (complianceOverdue.ts) so "overdue" means the same thing everywhere.
  */
@@ -26,8 +28,71 @@ export type ReleaseCheckCycle = {
   end_date: string | null;
 };
 
+export type ReleaseCheck = {
+  warnings: ReleaseWarning[];
+  /** Ingredients with no COA on file whose COA policy isn't set (information only, no acknowledgement). */
+  coaPolicyNotSet: string[];
+};
+
+/**
+ * COA policies of each raw material's preferred listing, through the
+ * locked-down coa_policies_for_release function (Planner users can't read
+ * supplier listings). Returns null when the policies can't be read (error
+ * or timeout), so the caller keeps today's warnings.
+ */
+type RpcClient = { rpc: (name: string, args: Record<string, unknown>) => PromiseLike<{ data: unknown; error: unknown }> };
+
+export async function readReleaseCoaPolicies(supabase: RpcClient, ids: string[], timeoutMs = 8000): Promise<Map<string, string | null> | null> {
+  if (ids.length === 0) return new Map();
+  try {
+    const out = new Map<string, string | null>();
+    for (let i = 0; i < ids.length; i += 200) {
+      const call = supabase.rpc("coa_policies_for_release", { p_raw_material_ids: ids.slice(i, i + 200) });
+      const timeout = new Promise<{ data: unknown; error: unknown }>((resolve) => setTimeout(() => resolve({ data: null, error: new Error("timeout") }), timeoutMs));
+      const { data, error } = await Promise.race([call, timeout]);
+      if (error || !Array.isArray(data)) return null;
+      for (const r of data as Array<{ raw_material_id: string; coa_policy: string | null }>) out.set(r.raw_material_id, r.coa_policy ?? null);
+    }
+    return out;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Sorts ingredients with no COA on file by their COA policy:
+ * 'not_available' is skipped, 'unknown' or no preferred listing (a row with
+ * a null policy) goes to the information line, and 'included', 'request',
+ * or a policy that couldn't be read keeps the "No COA on file" warning.
+ */
+export function splitMissingCoa(
+  missing: ReadonlyArray<{ id: string; name: string }>,
+  policies: Map<string, string | null> | null,
+): { warn: Array<{ id: string; name: string }>; notSet: string[] } {
+  const warn: Array<{ id: string; name: string }> = [];
+  const notSet: string[] = [];
+  for (const m of missing) {
+    if (!policies || !policies.has(m.id)) {
+      warn.push(m);
+      continue;
+    }
+    const p = policies.get(m.id);
+    if (p === "not_available") continue;
+    if (p === null || p === undefined || p === "unknown") notSet.push(m.name);
+    else warn.push(m);
+  }
+  return { warn, notSet };
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- the Supabase client, as before
 export async function computeReleaseWarnings(supabase: any, cycle: ReleaseCheckCycle): Promise<ReleaseWarning[]> {
+  return (await computeReleaseCheck(supabase, cycle)).warnings;
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- the Supabase client, as before
+export async function computeReleaseCheck(supabase: any, cycle: ReleaseCheckCycle): Promise<ReleaseCheck> {
   const warnings: ReleaseWarning[] = [];
+  const coaPolicyNotSet: string[] = [];
   const now = new Date();
 
   const [typesResult, cycleTargetsResult] = await Promise.all([
@@ -189,18 +254,25 @@ export async function computeReleaseWarnings(supabase: any, cycle: ReleaseCheckC
         coaEntryIds = new Set((coaFileRows ?? []).map((f: any) => f.log_entry_id));
       }
 
+      const missing: Array<{ id: string; name: string }> = [];
       for (const [materialId, materialName] of rawMaterials.entries()) {
         const entryIds = receiptsByMaterial.get(materialId) ?? [];
         const hasCoa = entryIds.some((id) => coaEntryIds.has(id));
-        if (!hasCoa) {
-          warnings.push({
-            key: `coa:${materialId}`,
-            message: `No COA on file for ${materialName}.`,
-          });
-        }
+        if (!hasCoa) missing.push({ id: materialId, name: materialName });
       }
+      // By COA policy (preferred listing). If the policies can't be read,
+      // every missing COA stays a warning, as before.
+      const policies = await readReleaseCoaPolicies(supabase, missing.map((m) => m.id));
+      const split = splitMissingCoa(missing, policies);
+      for (const m of split.warn) {
+        warnings.push({
+          key: `coa:${m.id}`,
+          message: `No COA on file for ${m.name}.`,
+        });
+      }
+      coaPolicyNotSet.push(...split.notSet);
     }
   }
 
-  return warnings;
+  return { warnings, coaPolicyNotSet };
 }

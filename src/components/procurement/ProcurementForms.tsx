@@ -7,6 +7,7 @@
  * the same rules the server uses (src/lib/procurement/validation.ts), and
  * every save goes through /api/procurement.
  */
+import { sortSuppliersForPicker } from "@/lib/receivingMode";
 import { useEffect, useId, useMemo, useState, type ReactNode } from "react";
 import {
   addEquipmentLinkApi,
@@ -194,6 +195,7 @@ export type SupplierDraft = {
   zip: string;
   country: string;
   default_po_payment_terms: string;
+  is_pinned: boolean;
 };
 
 export function supplierToDraft(s?: Supplier | null): SupplierDraft {
@@ -214,6 +216,7 @@ export function supplierToDraft(s?: Supplier | null): SupplierDraft {
     zip: s?.zip ?? "",
     country: s?.country ?? "",
     default_po_payment_terms: s?.default_po_payment_terms ?? "",
+    is_pinned: s?.is_pinned ?? false,
   };
 }
 
@@ -233,6 +236,10 @@ export function SupplierFields({ draft, onChange, errors }: { draft: SupplierDra
         <Text name="contact_phone" text="Contact phone" value={draft.contact_phone} onChange={(v) => set({ contact_phone: v })} error={errors.contact_phone} />
         <Text name="account_number" text="Account number" value={draft.account_number} onChange={(v) => set({ account_number: v })} error={errors.account_number} />
       </div>
+      <label className="flex items-center gap-2 text-xs text-black">
+        <input type="checkbox" checked={draft.is_pinned} onChange={(e) => set({ is_pinned: e.target.checked })} />
+        Show at the top of supplier dropdowns
+      </label>
       <fieldset>
         <legend className={label}>Payment methods</legend>
         <div className="flex flex-wrap gap-1.5" role="group" aria-label="Payment methods">
@@ -436,7 +443,8 @@ export function LinkModal({
   const editing = !!link;
   const taken = useMemo(() => new Set(target.takenSupplierIds), [target.takenSupplierIds]);
   const choices = useMemo(
-    () => suppliers.filter((s) => !s.archived_at).sort((a, b) => a.name.localeCompare(b.name, "en", { sensitivity: "base" })),
+    // Pinned suppliers first (alphabetical), then the rest alphabetically.
+    () => sortSuppliersForPicker(suppliers.filter((s) => !s.archived_at)),
     [suppliers],
   );
   const [mode, setMode] = useState<"existing" | "new">(choices.length === 0 ? "new" : "existing");

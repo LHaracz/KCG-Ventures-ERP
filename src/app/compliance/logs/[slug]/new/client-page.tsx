@@ -17,6 +17,7 @@ import {
   type LogType,
 } from "@/lib/complianceLogs";
 import { FeatureLink } from "@/components/access/FeatureLink";
+import { draftKey, useFormDraft } from "@/lib/useFormDraft";
 
 const inputClassName =
   "w-full rounded-md border border-zinc-300 bg-white px-3 py-2.5 text-sm text-black placeholder:text-zinc-400 shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500";
@@ -132,9 +133,40 @@ function NewLogEntryPageInner() {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user, slug, correctsEntryId]);
+  }, [user?.id, slug, correctsEntryId]);
 
   const sortedFields = useMemo(() => activeFieldsSorted(fields), [fields]);
+
+  // Draft saving (generic log types only; the Receiving form has its own).
+  const draftState = { performedAt, values, correctiveAction, correctionReason };
+  const draftJson = JSON.stringify({ values, correctiveAction, correctionReason });
+  const [startJson, setStartJson] = useState<string | null>(null);
+  const draftReady = !!user && !loading && !loadError && !!logType && logType.special_type !== "receiving";
+  useEffect(() => {
+    if (draftReady && startJson === null) setStartJson(draftJson);
+  }, [draftReady, startJson, draftJson]);
+  const draft = useFormDraft(
+    draftReady && startJson !== null && user ? draftKey(user.id, `log:${slug}:${correctsEntryId ? `correct-${correctsEntryId}` : "new"}`) : null,
+    draftState,
+    {
+      dirty: startJson !== null && draftJson !== startJson,
+      onRestore: (d) => {
+        if (d.performedAt) setPerformedAt(d.performedAt);
+        setValues(d.values ?? {});
+        setCorrectiveAction(d.correctiveAction ?? "");
+        setCorrectionReason(d.correctionReason ?? "");
+      },
+    },
+  );
+  const discardDraft = () => {
+    draft.clear();
+    if (startJson) {
+      const d = JSON.parse(startJson) as { values: Record<string, unknown>; correctiveAction: string; correctionReason: string };
+      setValues(d.values);
+      setCorrectiveAction(d.correctiveAction);
+      setCorrectionReason(d.correctionReason);
+    }
+  };
 
   const setFieldValue = (key: string, value: unknown) => {
     setValues((prev) => ({ ...prev, [key]: value }));
@@ -215,6 +247,7 @@ function NewLogEntryPageInner() {
         .select("id")
         .single();
       if (error) throw new Error(error.message);
+      draft.finish();
       router.push(`/compliance/logs/entries/${data.id}`);
     } catch (err: any) {
       setSubmitError(err.message || "Failed to save this entry.");
@@ -275,6 +308,18 @@ function NewLogEntryPageInner() {
                 </FeatureLink>
               )}
             </div>
+
+            {draft.restoredAt && (
+              <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-sky-300 bg-sky-50 p-3 text-sm text-black" role="status" data-testid="draft-banner">
+                <span>
+                  Restored your unsaved draft from{" "}
+                  {new Date(draft.restoredAt).toLocaleString("en-US", { timeZone: "America/New_York", dateStyle: "medium", timeStyle: "short" })}.
+                </span>
+                <button type="button" onClick={discardDraft} className="rounded-md border border-zinc-300 bg-white px-3 py-1.5 text-xs font-medium text-black">
+                  Discard draft
+                </button>
+              </div>
+            )}
 
             <div className="space-y-4 rounded-md border border-zinc-200 bg-white p-4">
               {correctsEntryId && (

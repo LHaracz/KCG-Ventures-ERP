@@ -26,6 +26,8 @@ export type SupplierValues = {
   zip: string | null;
   country: string | null;
   default_po_payment_terms: string | null;
+  /** "Show at the top of supplier dropdowns". */
+  is_pinned: boolean;
 };
 
 export type LinkValues = {
@@ -65,7 +67,7 @@ export const SUPPLIER_TEXT_FIELDS = [
 export const EMPTY_SUPPLIER: SupplierValues = {
   name: "", website_url: null, contact_name: null, contact_email: null, contact_phone: null, account_number: null,
   payment_methods: [], payment_notes: null, ordering_notes: null, address_line1: null, address_line2: null, city: null,
-  state: null, zip: null, country: null, default_po_payment_terms: null,
+  state: null, zip: null, country: null, default_po_payment_terms: null, is_pinned: false,
 };
 export const EMPTY_LINK: LinkValues = { product_url: null, supplier_item: null, pack_info: null, coa_policy: "unknown", notes: null, price: null, price_note: null, lead_time_days: null, lead_time_note: null };
 export const EMPTY_EQUIPMENT_LINK: EquipmentLinkValues = { product_url: null, supplier_item: null, price: null, price_note: null, notes: null };
@@ -185,6 +187,7 @@ export function validateSupplier(input: unknown): Checked<SupplierValues> {
       zip: address.zip,
       country: address.country,
       default_po_payment_terms,
+      is_pinned: raw.is_pinned === true,
     },
   };
 }

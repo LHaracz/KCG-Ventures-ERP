@@ -36,7 +36,7 @@ const NOTES = ["PAYNOTE-call first", "ORDERNOTE-before noon", "LISTINGNOTE-ask f
 const sup = (id: string, name: string, over: Partial<Supplier> = {}): Supplier => ({
   id, name, website_url: null, contact_name: null, contact_email: null, contact_phone: null, account_number: null,
   payment_methods: [], payment_notes: null, ordering_notes: null, address_line1: null, address_line2: null, city: null,
-  state: null, zip: null, country: null, default_po_payment_terms: null, archived_at: null,
+  state: null, zip: null, country: null, default_po_payment_terms: null, is_pinned: false, archived_at: null,
   created_at: "2026-11-01T00:00:00Z", updated_at: "2026-11-01T00:00:00Z", updated_by_name: null, ...over,
 });
 const cat = (id: string, name: string, sort: number, archived = false): EquipmentCategory => ({
